@@ -1,0 +1,164 @@
+"""What the tools accept and return: the server's public shape."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import BaseModel, Field
+
+
+class Status(StrEnum):
+    """Where a task stands. Only `DONE` and `CANCELLED` close it."""
+
+    TODO = "todo"
+    DOING = "doing"
+    BLOCKED = "blocked"
+    DONE = "done"
+    CANCELLED = "cancelled"
+
+
+class Priority(StrEnum):
+    URGENT = "urgent"
+    HIGH = "high"
+    NORMAL = "normal"
+    LOW = "low"
+
+
+OPEN_STATUSES: tuple[Status, ...] = (Status.TODO, Status.DOING, Status.BLOCKED)
+CLOSED_STATUSES: tuple[Status, ...] = (Status.DONE, Status.CANCELLED)
+
+#: Priorities are stored as a rank so SQL can order by them.
+RANKS: dict[Priority, int] = {
+    Priority.URGENT: 0,
+    Priority.HIGH: 1,
+    Priority.NORMAL: 2,
+    Priority.LOW: 3,
+}
+PRIORITIES: dict[int, Priority] = {rank: name for name, rank in RANKS.items()}
+
+
+class Origin(StrEnum):
+    """How the current project was chosen."""
+
+    ARGUMENT = "argument"
+    PINNED = "pinned"
+    DIRECTORY = "directory"
+    CREATED = "created"
+
+
+class ProjectOut(BaseModel):
+    """A project with its task counts."""
+
+    id: int
+    slug: str
+    name: str
+    root: str
+    description: str = ""
+    archived: bool = False
+    open_tasks: int = 0
+    total_tasks: int = 0
+    created_at: float
+    updated_at: float
+
+
+class TaskOut(BaseModel):
+    id: int
+    project: str = Field(description="Slug of the owning project.")
+    title: str
+    body: str = ""
+    status: Status
+    priority: Priority
+    tags: list[str] = Field(default_factory=list)
+    created_at: float
+    updated_at: float
+    closed_at: float | None = None
+    snippet: str | None = Field(default=None, description="Matched text, search results only.")
+
+
+class NoteOut(BaseModel):
+    """A piece of knowledge about a project: a titled markdown text, addressed by id."""
+
+    id: int
+    project: str = Field(description="Slug of the owning project.")
+    title: str
+    body: str = ""
+    tags: list[str] = Field(default_factory=list)
+    shared: bool = Field(default=False, description="Visible from every project.")
+    created_at: float
+    updated_at: float
+    snippet: str | None = Field(default=None, description="Matched text, search results only.")
+
+
+class Projects(BaseModel):
+    items: list[ProjectOut]
+    count: int
+
+
+class Tasks(BaseModel):
+    items: list[TaskOut]
+    count: int
+    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+
+
+class Notes(BaseModel):
+    items: list[NoteOut]
+    count: int
+    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+
+
+class Matches(BaseModel):
+    """What one search found: tasks and notes, best match first inside each list."""
+
+    tasks: list[TaskOut]
+    notes: list[NoteOut]
+    count: int = Field(description="Tasks and notes matched, together.")
+    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+
+
+class Scope(BaseModel):
+    """The project the tools work on when no project is named."""
+
+    project: ProjectOut
+    origin: Origin
+    cwd: str
+    database: str
+    state: str
+
+
+class Stats(BaseModel):
+    project: str | None = None
+    total: int = 0
+    open: int = Field(default=0, description="Tasks with status todo, doing, or blocked.")
+    closed: int = Field(default=0, description="Tasks with status done or cancelled.")
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_priority: dict[str, int] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+    notes: int = Field(default=0, description="Notes in scope, including shared notes.")
+
+
+class Deleted(BaseModel):
+    id: int
+    title: str
+    deleted: bool
+    detail: str = ""
+
+
+__all__ = [
+    "CLOSED_STATUSES",
+    "OPEN_STATUSES",
+    "PRIORITIES",
+    "RANKS",
+    "Deleted",
+    "Matches",
+    "NoteOut",
+    "Notes",
+    "Origin",
+    "Priority",
+    "ProjectOut",
+    "Projects",
+    "Scope",
+    "Stats",
+    "Status",
+    "TaskOut",
+    "Tasks",
+]

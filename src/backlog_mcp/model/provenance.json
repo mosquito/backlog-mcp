@@ -1,0 +1,16 @@
+{
+  "source": "sentence-transformers/static-similarity-mrl-multilingual-v1",
+  "revision": "b68f4122911bcffcd6e1f695f2d99cd6788972d8",
+  "url": "https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1/tree/b68f4122911bcffcd6e1f695f2d99cd6788972d8",
+  "model2vec_version": "0.9.0",
+  "numpy_version": "2.5.3",
+  "quantization": "int8",
+  "dimensions": 256,
+  "reduction": "Matryoshka truncation from 1024 to 256 dimensions",
+  "license": "Apache-2.0",
+  "files": {
+    "model.safetensors": "abe855ab297ab140d9908d42c5349708d1ed63df572a71cf27ed00201c52a42e",
+    "tokenizer.json": "eb5277f01feea0221d7171f1164206077295ecff2d748ee9403bceccef9634b9",
+    "config.json": "c6c34d5d3a3036010cb6c249186fc13ebd25262d02c8ec560882d6979c18d3cf"
+  }
+}

@@ -1,0 +1,541 @@
+"""The command line: one process per call, through `main`."""
+
+import json
+import os
+import tomllib
+from collections.abc import Iterator, Sequence
+from pathlib import Path
+
+import pytest
+
+from backlog_mcp import cli, render
+from backlog_mcp.models import Priority, Status
+from backlog_mcp.store import Note, Task
+
+
+class Runner:
+    """Calls `main` with the paths of one temporary workspace already filled in."""
+
+    def __init__(self, root: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        self.root = root
+        self.capsys = capsys
+        self.database = root.parent / "backlog.sqlite3"
+        self.state = root.parent / "state.json"
+
+    def __call__(self, *argv: str) -> tuple[int, str]:
+        code = cli.main(
+            [
+                "--database",
+                str(self.database),
+                "--state",
+                str(self.state),
+                "--root",
+                str(self.root),
+                *argv,
+            ]
+        )
+        captured = self.capsys.readouterr()
+        return code, captured.out + captured.err
+
+
+@pytest.fixture
+def run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Runner]:
+    root = tmp_path / "workspace"
+    (root / ".git").mkdir(parents=True)
+    #: The machine running the tests may have its own configuration and environment.
+    monkeypatch.setattr(cli.paths, "config_files", list)
+    for name in [key for key in os.environ if key.startswith("BACKLOG_MCP_")]:
+        monkeypatch.delenv(name)
+    #: A fixed width keeps the tables and the panels off the width of whatever terminal runs this.
+    for output in (render.console, render.errors):
+        monkeypatch.setattr(output, "size", (120, 40))
+    yield Runner(root, capsys)
+
+
+def task(**changes: object) -> Task:
+    values: dict[str, object] = {
+        "id": 7,
+        "project_id": 1,
+        "project": "workspace",
+        "title": "Write the form",
+        "body": "Some detail",
+        "status": Status.DOING,
+        "priority": Priority.HIGH,
+        "tags": ["docs", "cli"],
+        "created_at": 0.0,
+        "updated_at": 0.0,
+        "closed_at": None,
+    }
+    values.update(changes)
+    return Task(**values)  # type: ignore[arg-type]
+
+
+def test_no_command_prints_the_help(run: Runner) -> None:
+    code, output = run()
+    assert code == 0
+    assert "Serve MCP, on stdio or over HTTP" in output
+    assert "install" in output
+
+
+def test_add_list_search_and_close_one_task(run: Runner) -> None:
+    code, output = run("add", "Ship", "the", "release", "-t", "ops", "-t", "urgent-ish")
+    assert code == 0
+    assert "added #1 to workspace" in output
+    assert "ops, urgent-ish" in output
+
+    code, output = run("list")
+    assert code == 0
+    assert "1 task(s) of workspace" in output
+    assert "Ship the release" in output
+
+    code, output = run("search", "rele")
+    assert "1 task match(es)" in output
+    assert "note match(es)" not in output
+    #: The title column stays the title; a body excerpt would be the `match` column.
+    assert "Ship the release" in output
+
+    code, output = run("close", "1")
+    assert code == 0
+    assert "#1 is done" in output
+    assert run("list")[1].count("Ship the release") == 0
+    assert "Ship the release" in run("list", "--every")[1]
+    assert "Ship the release" in run("list", "--status", "done")[1]
+
+
+def test_statuses_move_back_and_forth(run: Runner) -> None:
+    run("add", "Move me")
+    for command, expected in [
+        ("start", "doing"),
+        ("block", "blocked"),
+        ("cancel", "cancelled"),
+        ("reopen", "todo"),
+    ]:
+        code, output = run(command, "1")
+        assert code == 0
+        assert f"#1 is {expected}" in output
+    assert run("close", "999") == (1, "no task #999\n")
+
+
+def test_show_prints_the_body_and_the_fields(run: Runner) -> None:
+    run("add", "Explain", "-b", "The long description.", "--priority", "urgent")
+    code, output = run("show", "1")
+    assert code == 0
+    assert "#1 Explain" in output
+    assert "The long description." in output
+    assert "urgent" in output
+    assert run("show", "42") == (1, "no task #42\n")
+
+
+def test_skills_are_listed_and_printed_in_full(run: Runner) -> None:
+    code, output = run("skills")
+    assert code == 0
+    assert "planning" in output
+    assert "triage" in output
+    code, output = run("skills", "triage")
+    assert code == 0
+    assert "skill://triage/SKILL.md" in output
+    assert "task_update" in output
+    assert run("skills", "nothing") == (1, "no skill 'nothing'\n")
+
+
+def test_an_empty_library_says_so(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli.skills, "library", cli.skills.Library(tmp_path / "empty"))
+    assert run("skills") == (1, "no skills\n")
+
+
+def test_projects_pin_and_scope(run: Runner, tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    run("add", "Local work")
+    code, output = run("--project", str(other), "add", "Elsewhere")
+    assert code == 2
+    assert "no project" in output
+
+    assert run("use", str(other))[0] == 2
+    code, output = run("current")
+    assert "workspace" in output
+    assert "directory" in output
+
+    code, output = run("projects")
+    assert "workspace" in output
+    code, output = run("use", "workspace")
+    assert "pinned" in output
+    assert run("current")[1].count("pinned") == 1
+    assert "directory" in run("use", "--clear")[1]
+
+
+def test_move_between_projects_and_count(run: Runner, tmp_path: Path) -> None:
+    second = tmp_path / "second"
+    second.mkdir()
+    run("add", "Travelling task")
+    #: Visiting the other directory registers it as a project of its own.
+    run("-r", str(second), "current")
+    code, output = run("move", "1", "second")
+    assert code == 0
+    assert "#1 now belongs to second" in output
+    assert run("list")[1].count("Travelling task") == 0
+    assert "Travelling task" in run("--project", "second", "list")[1]
+    assert "2 open of 2" not in run("current")[1]
+
+    code, output = run("stats", "--all-projects")
+    assert "total" in output
+    assert "every project" in output
+
+
+@pytest.mark.parametrize("flags", [[], ["--yes"]])
+def test_delete_does_not_prompt(run: Runner, flags: list[str]) -> None:
+    run("add", "Delete me")
+    assert run("delete", "1", *flags) == (0, "deleted #1\n")
+    assert run("delete", "1", *flags) == (1, "no task #1\n")
+
+
+def test_create_and_edit_use_the_form(run: Runner, monkeypatch: pytest.MonkeyPatch) -> None:
+    written = (
+        "Title: From the editor\nStatus: doing\nPriority: high\nTags: docs, api\n\nThe body.\n"
+    )
+    monkeypatch.setattr(cli, "compose", lambda text: written)
+    code, output = run("create")
+    assert code == 0
+    assert "added #1" in output
+    assert "The body." in output
+
+    monkeypatch.setattr(cli, "compose", lambda text: "Title: Renamed\n\nOther body.\n")
+    code, output = run("edit", "1")
+    assert code == 0
+    assert "updated #1" in output
+    assert "Renamed" in output
+
+    monkeypatch.setattr(cli, "compose", lambda text: None)
+    assert run("edit", "1") == (0, "nothing changed\n")
+    assert run("create") == (1, "nothing written, no task added\n")
+
+    monkeypatch.setattr(cli, "compose", lambda text: "Title:\n\nNo title at all.\n")
+    assert run("edit", "1")[0] == 1
+    assert run("create")[0] == 1
+    assert run("edit", "999") == (1, "no task #999\n")
+
+
+def test_form_round_trip() -> None:
+    parsed = cli.parse_form(cli.form_of(task()))
+    assert parsed == {
+        "title": "Write the form",
+        "body": "Some detail",
+        "status": Status.DOING,
+        "priority": Priority.HIGH,
+        "tags": ["docs", "cli"],
+    }
+    empty = cli.parse_form(cli.form_of())
+    assert empty == {
+        "title": "",
+        "body": "",
+        "status": Status.TODO,
+        "priority": Priority.NORMAL,
+        "tags": [],
+    }
+
+
+def test_form_keeps_text_that_looks_like_a_header() -> None:
+    text = "Title: One\n\nNote: this line is body, not a field.\nSecond line.\n"
+    parsed = cli.parse_form(text)
+    assert parsed["title"] == "One"
+    assert parsed["body"] == "Note: this line is body, not a field.\nSecond line."
+
+
+def test_compose_returns_none_when_nothing_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VISUAL", "true")
+    assert cli.compose("Title: kept\n") is None
+    monkeypatch.setenv("VISUAL", "/usr/bin/sed -i.bak s/kept/changed/")
+    written = cli.compose("Title: kept\n")
+    assert written is not None and "changed" in written
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [({"VISUAL": "code -w"}, ["code", "-w"]), ({"EDITOR": "nano"}, ["nano"]), ({}, ["vi"])],
+)
+def test_editor_choice(
+    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], expected: list[str]
+) -> None:
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    assert cli.editor() == expected
+
+
+def test_install_writes_both_client_files(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    #: Neither client CLI is installed here, so both fall back to writing the files.
+    monkeypatch.setattr(cli, "run", lambda command: False)
+    monkeypatch.setattr(cli, "server_command", lambda: ("/usr/bin/backlog", ["mcp"]))
+
+    code, output = run("install")
+    assert code == 0
+    assert "claude: backlog written" in output
+    assert "codex: backlog written" in output
+
+    claude = json.loads((home / ".claude.json").read_text())
+    assert claude["mcpServers"]["backlog"] == {
+        "type": "stdio",
+        "command": "/usr/bin/backlog",
+        "args": ["mcp"],
+        "env": {},
+    }
+    codex = tomllib.loads((home / ".codex" / "config.toml").read_text())
+    assert codex["mcp_servers"]["backlog"] == {
+        "command": "/usr/bin/backlog",
+        "args": ["mcp"],
+        "default_tools_approval_mode": "approve",
+    }
+    assert codex["sandbox_mode"] == "danger-full-access"
+    settings = json.loads((home / ".claude" / "settings.json").read_text())
+    assert settings["permissions"]["allow"] == ["mcp__backlog__*"]
+
+    code, output = run("install")
+    assert "already registered" in output
+    assert run("install", "--claude", "--force")[0] == 0
+
+
+def test_install_prefers_the_client_cli(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    calls: list[Sequence[str]] = []
+    monkeypatch.setattr(cli, "run", lambda command: bool(calls.append(command)) or True)
+    monkeypatch.setattr(cli, "server_command", lambda: ("/usr/bin/backlog", ["mcp"]))
+    code, output = run("install", "--name", "tasks")
+    assert code == 0
+    assert calls[0][:2] == ["claude", "mcp"]
+    assert calls[1][:2] == ["codex", "mcp"]
+    assert "tasks registered" in output
+
+
+def test_server_command_points_at_this_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli.sys, "argv", ["/usr/bin/python", "-m", "backlog_mcp"])
+    command, arguments = cli.server_command()
+    assert command == cli.sys.executable
+    assert arguments == ["-m", "backlog_mcp", "mcp"]
+
+
+def test_server_main_runs_the_server_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli, "main", lambda argv: bool(seen.append(list(argv))) or 0)
+    assert cli.server_main(["--protocol", "stdio"]) == 0
+    assert seen == [["mcp", "--protocol", "stdio"]]
+
+
+def test_note_group_prints_its_help_and_opens_nothing(run: Runner) -> None:
+    code, output = run("note")
+    assert code == 0
+    assert "note [-h] {list,show,add,append,edit,delete}" in output
+    assert "List the notes of this project" in output
+    assert "append" in output
+    assert not run.database.exists()
+
+
+def test_notes_add_replace_append_search_and_show(run: Runner) -> None:
+    code, output = run("note", "add", "dev", "vm", "-b", "host: vm-3.internal", "-t", "infra")
+    assert code == 0
+    assert "added note #1 to workspace" in output
+    assert "vm-3.internal" in output
+
+    code, output = run("note", "add", "dev", "vm", "-b", "host: vm-4.internal")
+    assert code == 0
+    assert "replaced note #1 in workspace" in output
+    assert "vm-3.internal" not in output
+
+    code, output = run("note", "append", "1", "port", "2222")
+    assert code == 0
+    assert "appended to note #1" in output
+    assert "port 2222" in output
+
+    code, output = run("note", "list")
+    assert code == 0
+    assert "1 note(s) of workspace" in output
+    assert "dev vm" in output
+
+    run("add", "Move the vm, see note #1")
+    code, output = run("search", "vm")
+    assert code == 0
+    assert "1 task match(es) for 'vm' in workspace" in output
+    assert "1 note match(es) for 'vm' in workspace" in output
+    #: The title column keeps the title; the excerpt with the hit is the `match` column.
+    assert "dev vm" in output
+    assert "[vm]" in output
+
+    code, output = run("note", "show", "1")
+    assert code == 0
+    assert "note #1 dev vm" in output
+    assert "vm-4.internal" in output
+    assert "infra" in output
+    assert run("note", "show", "42") == (1, "no note #42\n")
+    assert run("note", "append", "42", "more") == (1, "no note #42\n")
+
+
+def test_shared_notes_show_up_in_another_project(run: Runner, tmp_path: Path) -> None:
+    second = tmp_path / "second"
+    second.mkdir()
+    run("-r", str(second), "note", "add", "staging", "-b", "https://staging", "--shared")
+    run("-r", str(second), "note", "add", "private")
+
+    code, output = run("note", "list")
+    assert code == 0
+    assert "1 note(s) of workspace" in output
+    assert "staging" in output
+    assert "private" not in output
+    #: A note from another board says where it comes from, and that it is shared.
+    assert "second" in output
+    assert "yes" in output
+
+    assert "private" in run("note", "list", "--all-projects")[1]
+    assert "2 note(s) of every project" in run("note", "list", "--all-projects")[1]
+    assert "1 note(s)" in run("note", "list", "--shared")[1]
+    assert "every project sees it" in run("note", "show", "1")[1]
+
+
+@pytest.mark.parametrize("flags", [[], ["--yes"]])
+def test_note_delete_does_not_prompt(run: Runner, flags: list[str]) -> None:
+    run("note", "add", "Delete me")
+    assert run("note", "delete", "1", *flags) == (0, "deleted note #1\n")
+    assert run("note", "delete", "1", *flags) == (1, "no note #1\n")
+
+
+def test_note_edit_uses_the_form(run: Runner, monkeypatch: pytest.MonkeyPatch) -> None:
+    run("note", "add", "Old", "-b", "old body")
+    written = "Title: New\nTags: infra, docs\nShared: yes\n\n# Hosts\n\nNew body.\n"
+    monkeypatch.setattr(cli, "compose", lambda text: written)
+    code, output = run("note", "edit", "1")
+    assert code == 0
+    assert "updated note #1" in output
+    assert "New" in output
+    assert "docs, infra" in output
+    assert "every project sees it" in output
+    assert "Hosts" in output
+    assert "New body." in output
+
+    monkeypatch.setattr(cli, "compose", lambda text: None)
+    assert run("note", "edit", "1") == (0, "nothing changed\n")
+    monkeypatch.setattr(cli, "compose", lambda text: "Title:\n\nNo title at all.\n")
+    assert run("note", "edit", "1")[0] == 1
+    assert run("note", "edit", "999") == (1, "no note #999\n")
+
+
+def test_note_form_round_trip() -> None:
+    existing = Note(
+        id=1,
+        project_id=1,
+        project="workspace",
+        title="Dev vm",
+        body="# Hosts\n\nvm-3.internal",
+        tags=["infra"],
+        shared=True,
+        created_at=0.0,
+        updated_at=0.0,
+    )
+    #: The body is markdown, so its `#` headings survive; only the hints on top are dropped.
+    assert cli.parse_note_form(cli.note_form_of(existing)) == {
+        "title": "Dev vm",
+        "body": "# Hosts\n\nvm-3.internal",
+        "tags": ["infra"],
+        "shared": True,
+    }
+    assert cli.parse_note_form(cli.note_form_of()) == {
+        "title": "",
+        "body": "",
+        "tags": [],
+        "shared": False,
+    }
+
+
+@pytest.mark.parametrize("entity", ["task", "note"])
+@pytest.mark.parametrize("explicit_yes", [False, True])
+def test_delete_confirms_other_project_only(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entity: str, explicit_yes: bool
+) -> None:
+    other = tmp_path / "other"
+    (other / ".git").mkdir(parents=True)
+    prefix = ["note"] if entity == "note" else []
+    assert run("--root", str(other), *prefix, "add", "Elsewhere")[0] == 0
+    prompts: list[str] = []
+
+    def decline(prompt: str, **kwargs: object) -> bool:
+        prompts.append(prompt)
+        return False
+
+    monkeypatch.setattr(cli.Confirm, "ask", decline)
+    if explicit_yes:
+        assert run(*prefix, "delete", "1", "--yes")[0] == 0
+        assert prompts == []
+    else:
+        assert run(*prefix, "delete", "1") == (1, "nothing deleted\n")
+        assert "other" in prompts[0]
+        assert run(*prefix, "show", "1")[0] == 0
+        monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: True)
+        assert run(*prefix, "delete", "1")[0] == 0
+    assert run(*prefix, "show", "1")[0] == 1
+
+
+def test_note_bodies_are_limited_on_the_command_line(
+    run: Runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    code, output = run("note", "add", "limit", "-b", "x" * 1025)
+    assert (code, output) == (1, "a note holds at most 1024 characters, this one has 1025\n")
+    assert run("note", "add", "limit", "-b", "x" * 1024)[0] == 0
+    code, output = run("note", "append", "1", "y")
+    assert code == 1 and "at most 1024 characters" in output
+    monkeypatch.setattr(cli, "compose", lambda text: "Title: limit\n\n" + "z" * 1025 + "\n")
+    code, output = run("note", "edit", "1")
+    assert code == 1 and "at most 1024 characters" in output
+    assert "x" * 1024 in run("note", "show", "1")[1].replace("│", "").replace("\n", "").replace(
+        " ", ""
+    )
+
+
+def test_stats_shows_open_closed_and_note_counts(run: Runner) -> None:
+    run("add", "Open work")
+    run("add", "Finished work")
+    run("close", "2")
+    run("add", "Cancelled work")
+    run("cancel", "3")
+    run("note", "add", "User preference")
+    code, output = run("stats")
+    assert code == 0
+    rows = [line.split("│") for line in output.splitlines() if "│" in line]
+    counts = {cells[1].strip(): cells[2].strip() for cells in rows}
+    assert counts["open tasks"] == "1"
+    assert counts["closed tasks"] == "2"
+    assert counts["total tasks"] == "3"
+    assert counts["notes"] == "1"
+
+
+@pytest.mark.parametrize("name", ["*", "work.*", "", "work\nother"])
+def test_install_rejects_ambiguous_server_names(
+    run: Runner, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    def forbidden(command: Sequence[str]) -> bool:
+        pytest.fail("invalid names must fail before client configuration changes")
+
+    monkeypatch.setattr(cli, "run", forbidden)
+    code, output = run("install", "--name", name)
+    assert code == 1
+    assert "server name must contain only" in output
+
+
+@pytest.mark.parametrize("client", ["claude", "codex"])
+def test_install_changes_only_selected_client(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, client: str
+) -> None:
+    directory = tmp_path / "client-home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: directory))
+    monkeypatch.setattr(cli, "run", lambda command: False)
+    assert run("install", f"--{client}")[0] == 0
+    assert (directory / ".claude" / "settings.json").exists() is (client == "claude")
+    assert (directory / ".codex" / "config.toml").exists() is (client == "codex")
