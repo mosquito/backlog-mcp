@@ -79,14 +79,14 @@ async def test_scope_pin_and_unpin(client: BaseClient, backlog: Backlog) -> None
     pinned = await call(client, "project_use", project=other["slug"])
     assert pinned["origin"] == "pinned"
     assert pinned["project"]["id"] == other["id"]
-    assert State(backlog.state.path).pinned == other["slug"]
+    assert State(backlog.state.path).pinned(backlog.computer) == other["slug"]
     task = await call(client, "task_add", title="Pinned task")
     assert task["project"] == other["slug"]
 
     unpinned = await call(client, "project_use")
     assert unpinned["origin"] == "directory"
     assert unpinned["project"]["id"] == current["project"]["id"]
-    assert State(backlog.state.path).pinned is None
+    assert State(backlog.state.path).pinned(backlog.computer) is None
 
 
 async def test_explicit_project_overrides_pin(client: BaseClient, backlog: Backlog) -> None:

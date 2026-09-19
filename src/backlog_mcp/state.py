@@ -1,4 +1,4 @@
-"""The state file: which project the tools work on when the directory does not say."""
+"""The state file: the name of this computer, and the project pinned on each computer."""
 
 from __future__ import annotations
 
@@ -9,15 +9,19 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .computer import check, hostname
+
 log = logging.getLogger(__name__)
 
-VERSION = 1
+VERSION = 2
 
 
 class State:
     """A small JSON file, written whole and replaced atomically.
 
-    It holds a pin, not a cache: the database stays the only source of truth about projects.
+    It holds the name of this computer and the pins, not a cache: the database stays the only
+    source of truth about projects. Pins are kept per computer, because one HTTP server answers
+    for several of them.
     """
 
     def __init__(self, path: Path | str) -> None:
@@ -54,24 +58,56 @@ class State:
         self.write(values)
         return values
 
+    def table(self, key: str) -> dict[str, str]:
+        """A mapping of computer name to project slug, with anything malformed dropped."""
+        value = self.read().get(key)
+        if not isinstance(value, dict):
+            return {}
+        return {
+            name: slug
+            for name, slug in value.items()
+            if isinstance(name, str) and isinstance(slug, str) and slug
+        }
+
     @property
-    def pinned(self) -> str | None:
-        """The slug a user chose with `project_use`, if any."""
-        value = self.read().get("pinned_project")
+    def computer(self) -> str | None:
+        """The name this computer was given on first use, if any."""
+        value = self.read().get("computer")
         return value if isinstance(value, str) and value else None
 
-    def pin(self, slug: str | None) -> None:
-        self.update(pinned_project=slug)
+    def computer_name(self, explicit: str | None = None) -> str:
+        """The name of this computer: the one given, else the one remembered, else the host name.
 
-    @property
-    def last_project(self) -> str | None:
-        value = self.read().get("last_project")
-        return value if isinstance(value, str) and value else None
+        The host name is remembered on first use. A later change of the host name then does not
+        move the projects to a new computer.
+        """
+        if explicit:
+            return check(explicit)
+        if remembered := self.computer:
+            return remembered
+        name = hostname()
+        self.update(computer=name)
+        return name
 
-    def remember(self, slug: str) -> None:
+    def pinned(self, computer: str) -> str | None:
+        """The slug a user chose with `project_use` on that computer, if any."""
+        return self.table("pins").get(computer)
+
+    def pin(self, computer: str, slug: str | None) -> None:
+        pins = self.table("pins")
+        if slug:
+            pins[computer] = slug
+        else:
+            pins.pop(computer, None)
+        self.update(pins=pins)
+
+    def last_project(self, computer: str) -> str | None:
+        return self.table("last").get(computer)
+
+    def remember(self, computer: str, slug: str) -> None:
         """Record the project last worked on. Diagnostic only; it never changes resolution."""
-        if self.last_project != slug:
-            self.update(last_project=slug)
+        if self.last_project(computer) != slug:
+            self.update(last={**self.table("last"), computer: slug})
 
 
 __all__ = ["VERSION", "State"]

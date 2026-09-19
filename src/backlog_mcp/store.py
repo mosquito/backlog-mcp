@@ -12,9 +12,11 @@ from typing import Any
 
 import aiosqlite
 
+from .computer import hostname
 from .models import OPEN_STATUSES, PRIORITIES, RANKS, Priority, Status
 
-#: Applied in order; the file's `user_version` says how many already ran.
+#: Applied in order; the file's `user_version` says how many already ran. `:computer` is the
+#: name of this computer, given to the projects registered before projects had one.
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
     (
         """CREATE TABLE projects (
@@ -94,6 +96,26 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             VALUES (new.id, new.title, new.body, new.tags);
         END""",
     ),
+    (
+        """CREATE TABLE projects_v3 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            computer TEXT NOT NULL,
+            root TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            UNIQUE (computer, root)
+        )""",
+        """INSERT INTO projects_v3
+            (id, slug, name, computer, root, description, archived, created_at, updated_at)
+            SELECT id, slug, name, :computer, root, description, archived, created_at, updated_at
+            FROM projects""",
+        "DROP TABLE projects",
+        "ALTER TABLE projects_v3 RENAME TO projects",
+    ),
 )
 
 OPEN_LIST = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
@@ -104,9 +126,11 @@ COUNTS = (
     f"AND t.status IN ({OPEN_LIST})) AS open_tasks"
 )
 
-TASK_COLUMNS = "t.*, p.slug AS project"
+TASK_COLUMNS = "t.*, p.slug AS project, p.computer AS computer"
 
-NOTE_COLUMNS = "n.*, p.slug AS project"
+NOTE_COLUMNS = "n.*, p.slug AS project, p.computer AS computer"
+
+PROJECTS_JOIN = "JOIN projects p ON p.id = t.project_id"
 
 #: A note is a short fact, not a page; the body stops here, in characters.
 NOTE_LIMIT = 1024
@@ -149,6 +173,7 @@ class Project:
     id: int
     slug: str
     name: str
+    computer: str
     root: str
     description: str
     archived: bool
@@ -163,6 +188,7 @@ class Task:
     id: int
     project_id: int
     project: str
+    computer: str
     title: str
     body: str
     status: Status
@@ -179,6 +205,7 @@ class Note:
     id: int
     project_id: int
     project: str
+    computer: str
     title: str
     body: str
     tags: list[str]
@@ -194,6 +221,7 @@ def to_project(row: aiosqlite.Row) -> Project:
         id=row["id"],
         slug=row["slug"],
         name=row["name"],
+        computer=row["computer"],
         root=row["root"],
         description=row["description"],
         archived=bool(row["archived"]),
@@ -210,6 +238,7 @@ def to_task(row: aiosqlite.Row) -> Task:
         id=row["id"],
         project_id=row["project_id"],
         project=row["project"],
+        computer=row["computer"],
         title=row["title"],
         body=row["body"],
         status=Status(row["status"]),
@@ -228,6 +257,7 @@ def to_note(row: aiosqlite.Row) -> Note:
         id=row["id"],
         project_id=row["project_id"],
         project=row["project"],
+        computer=row["computer"],
         title=row["title"],
         body=row["body"],
         tags=split_tags(row["tags"]),
@@ -242,10 +272,13 @@ class Store:
     """One SQLite file holding every project and every task.
 
     The connection opens on first use, so a `Store` can be built before there is an event loop.
+    `computer` names this computer; it is given to the projects of a file written before
+    projects had a computer, and defaults to the host name.
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, *, computer: str | None = None) -> None:
         self.path = Path(path) if path != ":memory:" else Path(":memory:")
+        self.computer = computer
         self.connection: aiosqlite.Connection | None = None
         self.opening = asyncio.Lock()
 
@@ -261,20 +294,25 @@ class Store:
                 connection = await aiosqlite.connect(str(self.path))
                 connection.row_factory = aiosqlite.Row
                 await connection.execute("PRAGMA journal_mode=WAL")
-                await connection.execute("PRAGMA foreign_keys=ON")
                 await connection.execute("PRAGMA busy_timeout=5000")
                 await self.migrate(connection)
+                await connection.execute("PRAGMA foreign_keys=ON")
                 self.connection = connection
             return self.connection
 
     async def migrate(self, connection: aiosqlite.Connection) -> None:
-        """Run the migrations this file has not seen yet."""
+        """Run the migrations this file has not seen yet.
+
+        Foreign keys must be off here: one migration rebuilds `projects`, and a cascade would
+        else delete every task and note.
+        """
         async with connection.execute("PRAGMA user_version") as cursor:
             row = await cursor.fetchone()
         done = int(row[0]) if row else 0
+        parameters = {"computer": self.computer or hostname()}
         for number, steps in enumerate(MIGRATIONS[done:], start=done + 1):
             for statement in steps:
-                await connection.execute(statement)
+                await connection.execute(statement, parameters)
             await connection.execute(f"PRAGMA user_version={number}")
             await connection.commit()
 
@@ -302,39 +340,61 @@ class Store:
         row = await self.row(f"SELECT p.*, {COUNTS} FROM projects p WHERE p.slug = ?", (slug,))
         return to_project(row) if row else None
 
-    async def project_by_root(self, root: Path | str) -> Project | None:
-        row = await self.row(f"SELECT p.*, {COUNTS} FROM projects p WHERE p.root = ?", (str(root),))
+    async def project_by_root(self, root: Path | str, *, computer: str) -> Project | None:
+        """The project registered for exactly this directory of that computer."""
+        row = await self.row(
+            f"SELECT p.*, {COUNTS} FROM projects p WHERE p.computer = ? AND p.root = ?",
+            (computer, str(root)),
+        )
         return to_project(row) if row else None
 
-    async def project_for_path(self, path: Path) -> Project | None:
-        """The registered project whose root is the closest ancestor of `path`."""
+    async def project_for_path(self, path: Path, *, computer: str) -> Project | None:
+        """The project of that computer whose root is the closest ancestor of `path`."""
         candidates = [str(path), *(str(parent) for parent in path.parents)]
         holes = ", ".join("?" for _ in candidates)
         rows = await self.rows(
-            f"SELECT p.*, {COUNTS} FROM projects p WHERE p.root IN ({holes})", candidates
+            f"SELECT p.*, {COUNTS} FROM projects p WHERE p.computer = ? AND p.root IN ({holes})",
+            (computer, *candidates),
         )
         found = [to_project(row) for row in rows]
         return max(found, key=lambda item: len(item.root)) if found else None
 
-    async def projects(self, *, archived: bool = False) -> list[Project]:
-        where = "" if archived else "WHERE p.archived = 0"
+    async def projects(
+        self, *, archived: bool = False, computer: str | None = None
+    ) -> list[Project]:
+        """Every project of one computer, or of all of them when `computer` is None."""
+        clauses: list[str] = []
+        parameters: list[Any] = []
+        if not archived:
+            clauses.append("p.archived = 0")
+        if computer is not None:
+            clauses.append("p.computer = ?")
+            parameters.append(computer)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
-            f"SELECT p.*, {COUNTS} FROM projects p {where} ORDER BY p.archived, p.slug"
+            f"SELECT p.*, {COUNTS} FROM projects p {where} ORDER BY p.archived, p.computer, p.slug",
+            parameters,
         )
         return [to_project(row) for row in rows]
+
+    async def computers(self) -> list[str]:
+        """Every computer with a registered project, sorted."""
+        rows = await self.rows("SELECT DISTINCT computer FROM projects ORDER BY computer")
+        return [row["computer"] for row in rows]
 
     async def slugs(self) -> list[str]:
         return [row["slug"] for row in await self.rows("SELECT slug FROM projects ORDER BY slug")]
 
     async def add_project(
-        self, *, slug: str, name: str, root: Path | str, description: str = ""
+        self, *, slug: str, name: str, root: Path | str, computer: str, description: str = ""
     ) -> Project:
         connection = await self.open()
         now = time.time()
         cursor = await connection.execute(
-            "INSERT INTO projects (slug, name, root, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (slug, name, str(root), description, now, now),
+            "INSERT INTO projects "
+            "(slug, name, computer, root, description, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (slug, name, computer, str(root), description, now, now),
         )
         await connection.commit()
         created = await self.project(cursor.lastrowid or 0)
@@ -464,12 +524,17 @@ class Store:
         status: Sequence[Status] | None,
         tag: str | None,
         priority: Priority | None,
+        computer: str | None = None,
     ) -> tuple[list[str], list[Any]]:
+        """The WHERE clauses of a task query over `tasks t` joined with `projects p`."""
         clauses: list[str] = []
         parameters: list[Any] = []
         if project_id is not None:
             clauses.append("t.project_id = ?")
             parameters.append(project_id)
+        if computer is not None:
+            clauses.append("p.computer = ?")
+            parameters.append(computer)
         if status:
             clauses.append(f"t.status IN ({', '.join('?' for _ in status)})")
             parameters.extend(item.value for item in status)
@@ -488,16 +553,17 @@ class Store:
         status: Sequence[Status] | None = None,
         tag: str | None = None,
         priority: Priority | None = None,
+        computer: str | None = None,
         order: str = "backlog",
         limit: int = 50,
         offset: int = 0,
     ) -> list[Task]:
         clauses, parameters = self.filters(
-            project_id=project_id, status=status, tag=tag, priority=priority
+            project_id=project_id, status=status, tag=tag, priority=priority, computer=computer
         )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
-            f"SELECT {TASK_COLUMNS} FROM tasks t JOIN projects p ON p.id = t.project_id "
+            f"SELECT {TASK_COLUMNS} FROM tasks t {PROJECTS_JOIN} "
             f"{where} ORDER BY {ORDERS[order]} LIMIT ? OFFSET ?",
             (*parameters, limit, offset),
         )
@@ -510,12 +576,15 @@ class Store:
         status: Sequence[Status] | None = None,
         tag: str | None = None,
         priority: Priority | None = None,
+        computer: str | None = None,
     ) -> int:
         clauses, parameters = self.filters(
-            project_id=project_id, status=status, tag=tag, priority=priority
+            project_id=project_id, status=status, tag=tag, priority=priority, computer=computer
         )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        row = await self.row(f"SELECT COUNT(*) AS found FROM tasks t {where}", parameters)
+        row = await self.row(
+            f"SELECT COUNT(*) AS found FROM tasks t {PROJECTS_JOIN} {where}", parameters
+        )
         return int(row["found"]) if row else 0
 
     async def search(
@@ -525,17 +594,19 @@ class Store:
         project_id: int | None = None,
         status: Sequence[Status] | None = None,
         tag: str | None = None,
+        computer: str | None = None,
         limit: int = 20,
     ) -> list[Task]:
         """Full-text search over title, body and tags, best match first.
 
-        Pass `project_id` to stay inside one project, or leave it out to search every project.
+        Pass `project_id` to stay inside one project, `computer` to stay on one computer, or
+        neither to search every project.
         """
         match = match_query(query)
         if not match:
             return []
         clauses, parameters = self.filters(
-            project_id=project_id, status=status, tag=tag, priority=None
+            project_id=project_id, status=status, tag=tag, priority=None, computer=computer
         )
         extra = f"AND {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
@@ -550,23 +621,32 @@ class Store:
         )
         return [to_task(row) for row in rows]
 
-    async def tags(self, *, project_id: int | None = None) -> list[str]:
-        clauses = ["tags != ''"]
-        parameters: list[Any] = []
-        if project_id is not None:
-            clauses.append("project_id = ?")
-            parameters.append(project_id)
-        rows = await self.rows(f"SELECT tags FROM tasks WHERE {' AND '.join(clauses)}", parameters)
+    async def tags(
+        self, *, project_id: int | None = None, computer: str | None = None
+    ) -> list[str]:
+        clauses, parameters = self.filters(
+            project_id=project_id, status=None, tag=None, priority=None, computer=computer
+        )
+        clauses.append("t.tags != ''")
+        rows = await self.rows(
+            f"SELECT t.tags FROM tasks t {PROJECTS_JOIN} WHERE {' AND '.join(clauses)}",
+            parameters,
+        )
         found: set[str] = set()
         for row in rows:
             found.update(split_tags(row["tags"]))
         return sorted(found)
 
-    async def group(self, column: str, *, project_id: int | None = None) -> dict[str, int]:
-        where = "WHERE project_id = ?" if project_id is not None else ""
-        parameters = (project_id,) if project_id is not None else ()
+    async def group(
+        self, column: str, *, project_id: int | None = None, computer: str | None = None
+    ) -> dict[str, int]:
+        clauses, parameters = self.filters(
+            project_id=project_id, status=None, tag=None, priority=None, computer=computer
+        )
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
-            f"SELECT {column} AS key, COUNT(*) AS found FROM tasks {where} GROUP BY {column}",
+            f"SELECT t.{column} AS key, COUNT(*) AS found FROM tasks t {PROJECTS_JOIN} "
+            f"{where} GROUP BY t.{column}",
             parameters,
         )
         return {str(row["key"]): int(row["found"]) for row in rows}
@@ -670,14 +750,22 @@ class Store:
         return bool(cursor.rowcount)
 
     def note_filters(
-        self, *, project_id: int | None, tag: str | None, shared: bool | None
+        self,
+        *,
+        project_id: int | None,
+        tag: str | None,
+        shared: bool | None,
+        computer: str | None = None,
     ) -> tuple[list[str], list[Any]]:
-        """A project sees its own notes and every shared note of the other projects."""
+        """A project, or a computer, sees its own notes and every shared note of the others."""
         clauses: list[str] = []
         parameters: list[Any] = []
         if project_id is not None:
             clauses.append("(n.project_id = ? OR n.shared = 1)")
             parameters.append(project_id)
+        if computer is not None:
+            clauses.append("(p.computer = ? OR n.shared = 1)")
+            parameters.append(computer)
         if shared is not None:
             clauses.append("n.shared = ?")
             parameters.append(int(shared))
@@ -692,10 +780,13 @@ class Store:
         project_id: int | None = None,
         tag: str | None = None,
         shared: bool | None = None,
+        computer: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Note]:
-        clauses, parameters = self.note_filters(project_id=project_id, tag=tag, shared=shared)
+        clauses, parameters = self.note_filters(
+            project_id=project_id, tag=tag, shared=shared, computer=computer
+        )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
             f"SELECT {NOTE_COLUMNS} FROM notes n JOIN projects p ON p.id = n.project_id "
@@ -710,10 +801,16 @@ class Store:
         project_id: int | None = None,
         tag: str | None = None,
         shared: bool | None = None,
+        computer: str | None = None,
     ) -> int:
-        clauses, parameters = self.note_filters(project_id=project_id, tag=tag, shared=shared)
+        clauses, parameters = self.note_filters(
+            project_id=project_id, tag=tag, shared=shared, computer=computer
+        )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        row = await self.row(f"SELECT COUNT(*) AS found FROM notes n {where}", parameters)
+        row = await self.row(
+            f"SELECT COUNT(*) AS found FROM notes n JOIN projects p ON p.id = n.project_id {where}",
+            parameters,
+        )
         return int(row["found"]) if row else 0
 
     async def search_notes(
@@ -723,16 +820,20 @@ class Store:
         project_id: int | None = None,
         tag: str | None = None,
         shared: bool | None = None,
+        computer: str | None = None,
         limit: int = 20,
     ) -> list[Note]:
         """Full-text search over the title, the body and the tags of the notes in reach.
 
-        Pass `project_id` to stay in one project plus the shared notes, or leave it out for all.
+        Pass `project_id` to stay in one project plus the shared notes, `computer` to stay on
+        one computer plus the shared notes, or neither for all.
         """
         match = match_query(query)
         if not match:
             return []
-        clauses, parameters = self.note_filters(project_id=project_id, tag=tag, shared=shared)
+        clauses, parameters = self.note_filters(
+            project_id=project_id, tag=tag, shared=shared, computer=computer
+        )
         extra = f"AND {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
             f"SELECT {NOTE_COLUMNS}, "

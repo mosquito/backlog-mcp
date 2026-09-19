@@ -1,6 +1,7 @@
 """The HTTP front end: Basic auth, the console, and the same MCP surface as stdio."""
 
 import json
+from base64 import b64encode, urlsafe_b64encode
 
 import pytest
 from aiohttp import ClientSession, encode_basic_auth
@@ -80,6 +81,97 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
     assert stored.title == "Over HTTP"
 
 
+async def test_the_query_string_serves_a_client_as_another_computer(backlog: Backlog) -> None:
+    app = application(backlog, console=False)
+    await backlog.view(computer="laptop").save(root="/srv/app", name="App")
+    async with TestServer(app) as server:
+        endpoint = server.make_url(ENDPOINT_PATH)
+        fixed = str(endpoint.with_query(computer="laptop", project="app"))
+        async with Client(fixed, pick(None)) as client:
+            await client.initialize()
+            scope = payload(await client.call_tool("project_current", {}))
+            assert scope["computer"] == "laptop"
+            assert scope["origin"] == "argument"
+            assert scope["project"]["slug"] == "app"
+            assert scope["project"]["here"] is True
+            task = payload(await client.call_tool("task_add", {"title": "From the laptop"}))
+            assert task["computer"] == "laptop"
+        async with Client(str(endpoint.with_query(computer="laptop")), pick(None)) as client:
+            await client.initialize()
+            #: No project chosen is a state, not an error: `project_use` may clear a pin here.
+            scope = payload(await client.call_tool("project_current", {}))
+            assert (scope["project"], scope["origin"], scope["computer"]) == (
+                None,
+                "none",
+                "laptop",
+            )
+            cleared = payload(await client.call_tool("project_use", {}))
+            assert cleared["origin"] == "none"
+            result = await client.call_tool("task_add", {"title": "Nowhere"})
+            assert isinstance(result, CallToolResult) and result.is_error
+            assert isinstance(result.content[0], TextContent)
+            assert "project=<slug>" in result.content[0].text
+        async with Client(str(endpoint), pick(None)) as client:
+            await client.initialize()
+            scope = payload(await client.call_tool("project_current", {}))
+            assert scope["computer"] == "here"
+            assert scope["project"]["here"] is True
+            listed = payload(await client.call_tool("project_list", {"all_computers": True}))
+            assert {item["slug"]: item["here"] for item in listed["items"]}["app"] is False
+        async with (
+            ClientSession() as session,
+            session.post(endpoint.with_query(computer="bad name"), json={}) as response,
+        ):
+            assert response.status == 400
+            assert "invalid computer name" in await response.text()
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        b64encode(b"a:>>>").decode(),  # standard alphabet, escaped by the URL builder
+        urlsafe_b64encode(b"a:>>>").decode(),
+        urlsafe_b64encode(b"a:>>>").decode().rstrip("="),
+    ],
+)
+async def test_the_auth_query_parameter_stands_in_for_the_header(
+    backlog: Backlog, token: str
+) -> None:
+    app = application(backlog, user="a", password=">>>", console=False)
+    async with TestServer(app) as server:
+        endpoint = server.make_url(ENDPOINT_PATH)
+        async with Client(str(endpoint.with_query(auth=token)), pick(None)) as client:
+            await client.initialize()
+            task = payload(await client.call_tool("task_add", {"title": "Via the URL"}))
+            assert task["title"] == "Via the URL"
+        async with ClientSession() as session:
+            #: A raw `+` in the query decodes to a space; the server puts it back.
+            raw = f"{endpoint}?auth={b64encode(b'a:>>>').decode()}"
+            assert "+" in raw
+            async with session.post(raw, json={}) as response:
+                assert response.status != 401
+            for wrong in (
+                "garbage!",
+                b64encode(b"a:wrong").decode(),
+                b64encode(b"nocolon").decode(),
+            ):
+                async with session.post(endpoint.with_query(auth=wrong), json={}) as response:
+                    assert response.status == 401
+
+
+@pytest.mark.parametrize("trust_proxy", [False, True])
+async def test_a_foreign_origin_is_refused_unless_the_proxy_is_trusted(
+    backlog: Backlog, trust_proxy: bool
+) -> None:
+    app = application(backlog, console=False, trust_proxy=trust_proxy)
+    async with (
+        TestServer(app) as server,
+        ClientSession(headers={"Origin": "https://evil.example"}) as session,
+        session.post(server.make_url(ENDPOINT_PATH), json={}) as response,
+    ):
+        assert (response.status == 403) is not trust_proxy
+
+
 async def test_console_can_be_disabled(backlog: Backlog) -> None:
     async with (
         TestClient(TestServer(application(backlog, console=False))) as client,
@@ -120,6 +212,16 @@ def test_credentials_reads_only_a_well_formed_header(
 ) -> None:
     request = make_mocked_request("GET", ENDPOINT_PATH, headers=header)
     assert credentials(request) == expected
+
+
+def test_credentials_prefer_the_header_over_the_query() -> None:
+    query = f"{ENDPOINT_PATH}?auth={b64encode(b'url:one').decode()}"
+    assert credentials(make_mocked_request("GET", query)) == ("url", "one")
+    headed = make_mocked_request(
+        "GET", query, headers={"Authorization": encode_basic_auth("head", "two")}
+    )
+    assert credentials(headed) == ("head", "two")
+    assert credentials(make_mocked_request("GET", f"{ENDPOINT_PATH}?auth=")) is None
 
 
 async def test_without_a_password_the_server_asks_for_nothing(backlog: Backlog) -> None:

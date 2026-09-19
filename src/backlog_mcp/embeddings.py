@@ -95,7 +95,11 @@ class Encoded(ResultModel):
 class Search(BaseModel):
     query: Text = Field(description="Words or meaning to find in titles, bodies and tags.")
     project: str | None = Field(default=None, description="Defaults to the current project.")
-    all_projects: bool = False
+    all_projects: bool = Field(default=False, description="Every project of this computer.")
+    computer: str | None = Field(
+        default=None, description="Every project of the named computer instead."
+    )
+    all_computers: bool = Field(default=False, description="Every project of every computer.")
     status: list[Status] | None = Field(default=None, description="Task statuses only.")
     tag: str | None = None
     limit: int = Field(default=20, ge=1, le=200, description="Most tasks, and most notes.")
@@ -126,6 +130,10 @@ class Matches(BaseModel):
     notes: list[NoteHit]
     count: int
     project: str | None
+    computer: str | None = Field(
+        default=None,
+        description="Computer of the project or computer covered, absent when every computer.",
+    )
 
 
 async def encode(texts: list[str]) -> NDArray[np.float32]:
@@ -302,35 +310,53 @@ def match_ids(
 
 async def search(args: Search, backlog: Backlog) -> Matches:
     """Merge FTS and semantic IDs, then fetch current records from SQLite."""
-    project = None if args.all_projects else await backlog.resolve(args.project)
-    project_id = project.id if project else None
+    reach = await backlog.reach(
+        args.project,
+        all_projects=args.all_projects,
+        computer=args.computer,
+        all_computers=args.all_computers,
+    )
+    project_id, computer = reach.project_id, reach.computer
+
+    def inside(record: Task | Note) -> bool:
+        """True when the record is in reach by itself, shared notes aside."""
+        if project_id is not None:
+            return record.project_id == project_id
+        if computer is not None:
+            return record.computer == computer
+        return True
+
     lexical_tasks = await backlog.store.search(
-        args.query, project_id=project_id, status=args.status, tag=args.tag, limit=args.limit
+        args.query,
+        project_id=project_id,
+        computer=computer,
+        status=args.status,
+        tag=args.tag,
+        limit=args.limit,
     )
     lexical_notes = await backlog.store.search_notes(
-        args.query, project_id=project_id, tag=args.tag, limit=args.limit
+        args.query, project_id=project_id, computer=computer, tag=args.tag, limit=args.limit
     )
     task_snippets = {item.id: item.snippet for item in lexical_tasks}
     note_snippets = {item.id: item.snippet for item in lexical_notes}
     del lexical_tasks, lexical_notes
     vectors = await indexes(backlog)
     tasks = await backlog.store.tasks(
-        project_id=project_id, status=args.status, tag=args.tag, limit=-1
+        project_id=project_id, computer=computer, status=args.status, tag=args.tag, limit=-1
     )
-    notes = await backlog.store.notes(project_id=project_id, tag=args.tag, limit=-1)
+    notes = await backlog.store.notes(
+        project_id=project_id, computer=computer, tag=args.tag, limit=-1
+    )
     tag = args.tag.strip().lower() if args.tag else None
     allowed_tasks = {
         item.id
         for item in tasks
-        if (project_id is None or item.project_id == project_id)
+        if inside(item)
         and (not args.status or item.status in args.status)
         and (not tag or tag in item.tags)
     }
     allowed_notes = {
-        item.id
-        for item in notes
-        if (project_id is None or item.project_id == project_id or item.shared)
-        and (not tag or tag in item.tags)
+        item.id for item in notes if (inside(item) or item.shared) and (not tag or tag in item.tags)
     }
     del tasks, notes
     task_ids, note_ids = await asyncio.to_thread(
@@ -349,7 +375,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     ranked_notes = list(dict.fromkeys([*note_snippets, *note_scores]))[: args.limit]
     for record_id in ranked_tasks:
         task = await backlog.store.task(record_id)
-        if task is None or (project_id is not None and task.project_id != project_id):
+        if task is None or not inside(task):
             continue
         if (args.status and task.status not in args.status) or (tag and tag not in task.tags):
             continue
@@ -358,9 +384,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         task_hits.append(TaskHit(**data, score=task_scores.get(record_id)))
     for record_id in ranked_notes:
         note = await backlog.store.note(record_id)
-        if note is None:
-            continue
-        if project_id is not None and note.project_id != project_id and not note.shared:
+        if note is None or not (inside(note) or note.shared):
             continue
         if tag and tag not in note.tags:
             continue
@@ -371,7 +395,8 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         tasks=task_hits,
         notes=note_hits,
         count=len(task_hits) + len(note_hits),
-        project=project.slug if project else None,
+        project=reach.slug,
+        computer=reach.scope_computer,
     )
 
 

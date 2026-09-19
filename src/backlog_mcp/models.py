@@ -44,6 +44,8 @@ class Origin(StrEnum):
     PINNED = "pinned"
     DIRECTORY = "directory"
     CREATED = "created"
+    #: A computer with no project chosen: nothing named, nothing pinned, no directory here.
+    NONE = "none"
 
 
 class ProjectOut(BaseModel):
@@ -52,7 +54,14 @@ class ProjectOut(BaseModel):
     id: int
     slug: str
     name: str
-    root: str
+    computer: str = Field(description="Computer the root directory is on.")
+    root: str = Field(description="Root directory, as a path on `computer`.")
+    here: bool = Field(
+        description=(
+            "False when the project is on another computer: its files are not reachable "
+            "from this one."
+        )
+    )
     description: str = ""
     archived: bool = False
     open_tasks: int = 0
@@ -64,6 +73,7 @@ class ProjectOut(BaseModel):
 class TaskOut(BaseModel):
     id: int
     project: str = Field(description="Slug of the owning project.")
+    computer: str = Field(description="Computer the owning project is on.")
     title: str
     body: str = ""
     status: Status
@@ -80,6 +90,7 @@ class NoteOut(BaseModel):
 
     id: int
     project: str = Field(description="Slug of the owning project.")
+    computer: str = Field(description="Computer the owning project is on.")
     title: str
     body: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -94,16 +105,22 @@ class Projects(BaseModel):
     count: int
 
 
+#: The `computer` of a listing: the project's, or the one named, or nothing for all of them.
+COVERED = "Computer of the project or computer covered, absent when every computer."
+
+
 class Tasks(BaseModel):
     items: list[TaskOut]
     count: int
     project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    computer: str | None = Field(default=None, description=COVERED)
 
 
 class Notes(BaseModel):
     items: list[NoteOut]
     count: int
     project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    computer: str | None = Field(default=None, description=COVERED)
 
 
 class Matches(BaseModel):
@@ -113,13 +130,22 @@ class Matches(BaseModel):
     notes: list[NoteOut]
     count: int = Field(description="Tasks and notes matched, together.")
     project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    computer: str | None = Field(default=None, description=COVERED)
 
 
 class Scope(BaseModel):
-    """The project the tools work on when no project is named."""
+    """The project the tools work on when no project is named, and the computer this is."""
 
-    project: ProjectOut
-    origin: Origin
+    project: ProjectOut | None = Field(
+        description="The current project; null when this computer has none chosen."
+    )
+    origin: Origin = Field(
+        description="How the project was chosen; `none` when there is no project."
+    )
+    computer: str = Field(description="Computer this session works from.")
+    computers: list[str] = Field(
+        default_factory=list, description="Every computer with a registered project."
+    )
     cwd: str
     database: str
     state: str
@@ -127,6 +153,8 @@ class Scope(BaseModel):
 
 class Stats(BaseModel):
     project: str | None = None
+    computer: str | None = Field(default=None, description=COVERED)
+    this_computer: str = Field(description="Computer this session works from.")
     total: int = 0
     open: int = Field(default=0, description="Tasks with status todo, doing, or blocked.")
     closed: int = Field(default=0, description="Tasks with status done or cancelled.")

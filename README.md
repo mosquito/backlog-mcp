@@ -133,6 +133,46 @@ backlog list --project other-project
 backlog --project other-project list
 ```
 
+### Computers
+
+A project is a directory tree on one computer, and every project remembers its computer. One
+database can therefore hold the boards of several machines: a synced SQLite file, or one HTTP
+server every machine talks to. The name comes from `computer = "..."` in the config file or
+`--computer`; else it is the short host name, remembered in the state file on first use, so a
+renamed host keeps its projects.
+
+```bash
+backlog current                    # names this computer and lists the others
+backlog projects                   # the projects of this computer
+backlog projects --all-computers   # every project, with a column for the other computers
+backlog list --computer laptop     # open tasks of every project on the laptop
+backlog search deploy --all-computers
+backlog move 3 laptop-app          # a task moves between computers like between projects
+```
+
+Listings stay on this computer unless `--computer` or `--all-computers` widens them, and shared
+notes are visible from every computer. Over MCP the same selectors are the `computer` and
+`all_computers` arguments, and every project, task and note names its computer. A project on
+another computer says `here: false`; the server's instructions tell the agent that its root is a
+path on that computer, so it may read and change the tasks but must not touch the files.
+
+Over HTTP one server answers for every computer. A client connects as one of them with query
+parameters on the endpoint URL:
+
+```
+https://backlog.example.com/mcp?computer=laptop&project=app
+```
+
+`computer` names the computer the client runs on, and `project` fixes its current project, since
+the server cannot see the client's working directory. A client that cannot send an
+`Authorization` header passes the credentials in the URL instead, as `auth=<base64 of
+user:password>`; the header wins when both are present. Without `project`, the project pinned with
+`project_use` on that computer counts; with neither, `project_current` reports `origin: none`
+and the tools that need a current project ask for one. `project_save` with an explicit `root`
+checks that the directory exists on this computer; for another computer it takes the path as
+given. Every client shares the credentials and may name any computer: the server tells the
+computers apart, it does not keep them from each other.
+
 ### Notes
 
 Code changes; notes remain. Notes preserve lasting user context unavailable elsewhere:
@@ -173,11 +213,17 @@ backlog note add communication --shared # visible from every project
 ```bash
 backlog mcp                                        # stdio, what a client starts itself
 backlog mcp --protocol=http --http-port=3009       # endpoint /mcp, console /
-backlog mcp --protocol=http --http-user=me --http-password=secret
+backlog-mcp --protocol=http --http-user=me --http-password=secret
 ```
 
-Over HTTP the endpoint lives at `/mcp` and the bundled console at `/`. A user and a password turn
-Basic auth on; without them every request is served, so bind to `127.0.0.1`.
+`backlog-mcp` is `backlog mcp` without the word. A config file holds these options in its
+`[mcp]` table, and the environment as `BACKLOG_MCP_HTTP_PORT` and friends; `--config FILE` is
+accepted before and after `mcp`. Over HTTP the
+endpoint lives at `/mcp` and the bundled console at `/`. A user and a password turn Basic auth
+on; without them every request is served, so bind to `127.0.0.1`. The endpoint refuses a browser
+`Origin` other than its own, against DNS rebinding; behind a TLS-terminating reverse proxy the
+scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
+validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
 
 The agent gets 17 tools (`project_current`, `project_use`, `project_list`, `project_save`,
 `task_add`, `task_get`, `task_list`, `task_update`, `task_move`, `task_delete`, `note_save`,
@@ -242,11 +288,31 @@ backlog skills triage   # the instructions in full
 | What | Path | Override |
 | --- | --- | --- |
 | Projects, tasks and notes | `$XDG_DATA_HOME/backlog-mcp/backlog.sqlite3` | `--database`, `BACKLOG_MCP_DATABASE` |
-| The pinned project | `$XDG_STATE_HOME/backlog-mcp/state.json` | `--state`, `BACKLOG_MCP_STATE` |
-| Defaults | `/etc/backlog-mcp/config.ini`, `$XDG_CONFIG_HOME/backlog-mcp/config.ini`, `./.backlog-mcp.ini` | `--config` |
+| The computer name and the pins | `$XDG_STATE_HOME/backlog-mcp/state.json` | `--state`, `BACKLOG_MCP_STATE` |
+| Defaults | `/etc/backlog-mcp/config.toml`, `$XDG_CONFIG_HOME/backlog-mcp/config.toml`, `./.backlog-mcp.toml` | `--config` |
 
-Every option can come from the command line, from `BACKLOG_MCP_*` in the environment, or from the
-config file, in that order.
+Every global option, and every option of `backlog mcp`, can come from the command line, from
+`BACKLOG_MCP_*` in the environment, or from a TOML config file, in that order. The server options
+form the `[mcp]` table of the file. The options of the other commands are command-line only.
+
+`--generate-config` writes the effective options as a config file. Options given before the flag
+are written active, the rest as commented-out defaults; on `backlog mcp` the flag sees the server
+options typed before it. A password given before the flag lands in the file, so keep that file
+private.
+
+```bash
+backlog --generate-config -                        # print the template
+backlog mcp --protocol=http --http-port=3009 --generate-config ~/.config/backlog-mcp/config.toml
+```
+
+```toml
+computer = "laptop"
+
+[mcp]
+protocol = "http"
+http_listen = "127.0.0.1"
+http_port = 3009
+```
 
 ## The library
 

@@ -21,8 +21,13 @@ async def backlog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
     root.mkdir()
     # Keep checkout discovery inside the temporary directory.
     (root / ".git").mkdir()
+    # A project root must exist: the tests register `../other` as a second project.
+    (tmp_path / "other").mkdir()
     instance = Backlog(
-        Store(tmp_path / "backlog.sqlite3"), State(tmp_path / "state.json"), cwd=root
+        Store(tmp_path / "backlog.sqlite3"),
+        State(tmp_path / "state.json"),
+        cwd=root,
+        computer="here",
     )
     token = ACTIVE.set(instance)
     try:

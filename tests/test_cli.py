@@ -59,6 +59,7 @@ def task(**changes: object) -> Task:
         "id": 7,
         "project_id": 1,
         "project": "workspace",
+        "computer": "here",
         "title": "Write the form",
         "body": "Some detail",
         "status": Status.DOING,
@@ -318,6 +319,114 @@ def test_install_prefers_the_client_cli(
     assert "tasks registered" in output
 
 
+def test_generate_config_writes_the_global_options_and_reads_back(
+    run: Runner, tmp_path: Path
+) -> None:
+    target = tmp_path / "config.toml"
+    with pytest.raises(SystemExit) as raised:
+        run("--log-level", "debug", "--generate-config", str(target))
+    assert raised.value.code == 0
+    text = target.read_text()
+    loaded = tomllib.loads(text)
+    assert loaded["log_level"] == "debug"
+    assert loaded["database"] == str(run.database)
+    assert loaded["state"] == str(run.state)
+    #: The subcommand was not parsed yet: its table holds commented-out defaults only.
+    assert loaded["mcp"] == {}
+    assert "# http_port = 3009" in text
+    #: The flag writes the file and opens nothing.
+    assert not run.database.exists()
+    assert "generate_config" not in loaded
+
+    code = cli.main(["--config", str(target), "current"])
+    run.capsys.readouterr()
+    assert code == 0
+    assert run.database.exists()
+
+
+def test_generate_config_on_the_server_command_sees_its_options(
+    run: Runner, tmp_path: Path
+) -> None:
+    target = tmp_path / "config.toml"
+    with pytest.raises(SystemExit) as raised:
+        run("mcp", "--protocol", "http", "--http-port", "3010", "--generate-config", str(target))
+    assert raised.value.code == 0
+    loaded = tomllib.loads(target.read_text())
+    assert loaded["mcp"] == {"protocol": "http", "http_port": 3010}
+
+
+def test_generate_config_prints_defaults_commented_out(run: Runner) -> None:
+    with pytest.raises(SystemExit) as raised:
+        run("--generate-config", "-")
+    assert raised.value.code == 0
+    text = run.capsys.readouterr().out
+    assert '# log_level = "info"' in text
+    assert "# Directory to scope to" in text
+    assert "[mcp]" in text
+    assert '# protocol = "stdio"' in text
+    assert "# http_port = 3009" in text
+    #: The other commands take their options on the command line only.
+    assert "[install]" not in text
+    assert "[list]" not in text
+
+
+def test_server_options_come_from_the_config_file(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text('[mcp]\nprotocol = "http"\nhttp_port = 4321\nhttp_trust_proxy = true\n')
+    seen: dict[str, object] = {}
+
+    async def serve(backlog: object, **kw: object) -> None:
+        seen.update(kw)
+
+    monkeypatch.setattr(cli.httpd, "serve", serve)
+    assert cli.main(["--config", str(target), "mcp"]) == 0
+    assert seen["port"] == 4321
+    assert seen["trust_proxy"] is True
+    #: The flag is accepted after the subcommand too, which is where `backlog-mcp` puts it.
+    seen.clear()
+    assert cli.server_main(["--config", str(target)]) == 0
+    assert seen["port"] == 4321
+    #: The search list reaches `backlog-mcp` too, and the command line still wins.
+    monkeypatch.setattr(cli.paths, "config_files", lambda: [target])
+    assert cli.server_main(["--http-port", "5000"]) == 0
+    assert seen["port"] == 5000
+    monkeypatch.setenv("BACKLOG_MCP_HTTP_PORT", "6000")
+    assert cli.server_main([]) == 0
+    assert seen["port"] == 6000
+
+
+def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
+    code, output = run("--computer", "desk", "current")
+    assert code == 0
+    assert "desk" in output
+    elsewhere = tmp_path / "laptop-work"
+    elsewhere.mkdir()
+    code, output = run(
+        "--computer", "laptop", "--root", str(elsewhere), "add", "Fix the laptop build"
+    )
+    assert code == 0
+    code, output = run("--computer", "desk", "list", "--all-projects")
+    assert code == 0
+    assert "Fix the laptop build" not in output
+    code, output = run("--computer", "desk", "list", "--computer", "laptop")
+    assert code == 0
+    assert "Fix the laptop build" in output
+    assert "laptop" in output
+    code, output = run("--computer", "desk", "list", "--all-computers")
+    assert "Fix the laptop build" in output
+    code, output = run("--computer", "desk", "projects", "--all-computers")
+    assert "laptop-work" in output
+    code, output = run("--computer", "desk", "stats", "--computer", "laptop")
+    assert "every project on laptop" in output
+    code, output = run("--computer", "desk", "list", "--computer", "nowhere")
+    assert code == 2
+    assert "known computers" in output
+    code, output = run("--computer", "two words", "current")
+    assert code != 0
+
+
 def test_server_command_points_at_this_interpreter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli.sys, "argv", ["/usr/bin/python", "-m", "backlog_mcp"])
     command, arguments = cli.server_command()
@@ -433,6 +542,7 @@ def test_note_form_round_trip() -> None:
         id=1,
         project_id=1,
         project="workspace",
+        computer="here",
         title="Dev vm",
         body="# Hosts\n\nvm-3.internal",
         tags=["infra"],

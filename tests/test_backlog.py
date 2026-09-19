@@ -16,6 +16,7 @@ def instance(tmp_path: Path, cwd: Path, project: str | None = None) -> Backlog:
         State(tmp_path / "state.json"),
         cwd=cwd,
         project=project,
+        computer="here",
     )
 
 
@@ -43,7 +44,7 @@ async def test_the_directory_decides_and_the_project_is_made_once(tmp_path: Path
     project, origin = await backlog.current()
     assert origin is Origin.CREATED
     assert project.root == str(root)
-    assert backlog.state.last_project == project.slug
+    assert backlog.state.last_project("here") == project.slug
 
     again, origin = await backlog.current()
     assert origin is Origin.DIRECTORY
@@ -74,16 +75,16 @@ async def test_a_pin_beats_the_directory_and_a_dead_pin_is_dropped(tmp_path: Pat
 
     local, _ = await backlog.current()
     other = await backlog.create(there)
-    backlog.state.pin(other.slug)
+    backlog.state.pin("here", other.slug)
     pinned, origin = await backlog.current()
     assert origin is Origin.PINNED
     assert pinned.id == other.id
 
-    backlog.state.pin("gone")
+    backlog.state.pin("here", "gone")
     fallback, origin = await backlog.current()
     assert origin is Origin.DIRECTORY
     assert fallback.id == local.id
-    assert backlog.state.pinned is None
+    assert backlog.state.pinned("here") is None
     await backlog.store.close()
 
 
@@ -94,7 +95,7 @@ async def test_the_named_project_beats_everything(tmp_path: Path) -> None:
     there.mkdir()
     backlog = instance(tmp_path, here)
     other = await backlog.create(there, name="Other")
-    backlog.state.pin((await backlog.create(here)).slug)
+    backlog.state.pin("here", (await backlog.create(here)).slug)
 
     backlog.named = other.slug
     chosen, origin = await backlog.current()

@@ -1,0 +1,30 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# The log is read by people; the tools only colour a terminal unless told.
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # The model weights live in Git LFS; the semantic search tests read them.
+      - uses: actions/checkout@v7
+        with:
+          lfs: true
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - run: uv sync --all-groups
+
+      - run: uv run ruff format --check src tests
+      - run: uv run ruff check src tests
+      - run: uv run mypy src
+      - run: uv run pytest -v --cov=backlog_mcp --cov-report=term-missing

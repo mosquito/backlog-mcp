@@ -28,8 +28,8 @@ async def store(tmp_path: Path) -> AsyncIterator[Store]:
         await instance.close()
 
 
-async def register(store: Store, slug: str, root: Path) -> Project:
-    return await store.add_project(slug=slug, name=slug, root=root)
+async def register(store: Store, slug: str, root: Path, computer: str = "here") -> Project:
+    return await store.add_project(slug=slug, name=slug, root=root, computer=computer)
 
 
 def test_tag_helpers_normalise() -> None:
@@ -61,10 +61,13 @@ async def test_reopening_keeps_the_schema_and_the_rows(tmp_path: Path) -> None:
 async def test_project_for_path_takes_the_deepest_root(store: Store, tmp_path: Path) -> None:
     outer = await register(store, "outer", tmp_path)
     inner = await register(store, "inner", tmp_path / "inner")
-    assert (await store.project_for_path(tmp_path / "inner" / "deep")).id == inner.id
-    assert (await store.project_for_path(tmp_path / "other")).id == outer.id
-    assert await store.project_for_path(Path("/nowhere")) is None
-    assert await store.project_by_root(tmp_path / "inner") == inner
+    deep = tmp_path / "inner" / "deep"
+    assert (await store.project_for_path(deep, computer="here")).id == inner.id
+    assert (await store.project_for_path(tmp_path / "other", computer="here")).id == outer.id
+    assert await store.project_for_path(Path("/nowhere"), computer="here") is None
+    assert await store.project_for_path(deep, computer="elsewhere") is None
+    assert await store.project_by_root(tmp_path / "inner", computer="here") == inner
+    assert await store.project_by_root(tmp_path / "inner", computer="elsewhere") is None
     assert await store.project_by_slug("missing") is None
     assert await store.slugs() == ["inner", "outer"]
 
@@ -175,12 +178,18 @@ async def test_an_older_file_gains_the_notes_table(tmp_path: Path) -> None:
     connection.commit()
     connection.close()
 
-    store = Store(path)
+    store = Store(path, computer="old-box")
     opened = await store.open()
     async with opened.execute("PRAGMA user_version") as cursor:
         row = await cursor.fetchone()
     assert row is not None and row[0] == len(MIGRATIONS)
     assert await store.count_tasks() == 1
+    #: The projects of a file from before computers belong to the computer that upgraded it.
+    upgraded = await store.project(1)
+    assert upgraded is not None and upgraded.computer == "old-box"
+    assert (await store.task(1)) is not None
+    async with opened.execute("PRAGMA foreign_key_check") as cursor:
+        assert await cursor.fetchall() == []
     saved = await store.add_note(project_id=1, title="dev vm", body="host: vm-3")
     assert [item.id for item in await store.search_notes("vm")] == [saved.id]
     await store.close()

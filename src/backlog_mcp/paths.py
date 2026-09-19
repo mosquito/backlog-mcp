@@ -11,9 +11,9 @@ from pathlib import Path
 
 APP = "backlog-mcp"
 
-#: Read as INI, lowest priority first. A missing file is skipped.
-SYSTEM_CONFIG = Path("/etc") / APP / "config.ini"
-LOCAL_CONFIG = Path(".") / f".{APP}.ini"
+#: Read as TOML, lowest priority first. A missing file is skipped.
+SYSTEM_CONFIG = Path("/etc") / APP / "config.toml"
+LOCAL_CONFIG = Path(".") / f".{APP}.toml"
 
 
 def base(variable: str, fallback: str) -> Path:
@@ -48,7 +48,7 @@ def state_path() -> Path:
 
 def config_files() -> list[Path]:
     """The config search list: system, then user, then the current directory."""
-    return [SYSTEM_CONFIG, config_home() / APP / "config.ini", LOCAL_CONFIG]
+    return [SYSTEM_CONFIG, config_home() / APP / "config.toml", LOCAL_CONFIG]
 
 
 __all__ = [

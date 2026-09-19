@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -20,7 +21,7 @@ import rtoml
 from rich.prompt import Confirm
 
 from . import embeddings, httpd, paths, skills
-from .backlog import Backlog, UnknownProject
+from .backlog import Backlog, Reach, UnknownProject
 from .models import OPEN_STATUSES, Priority, Status
 from .render import (
     console,
@@ -105,9 +106,10 @@ def repeated(*aliases: str, help: str, choices: tuple[str, ...] | None = None) -
 
 def build(options: CLI) -> Backlog:
     """The backlog the global options describe."""
-    store = Store(options.database or paths.database_path())
     state = State(options.state or paths.state_path())
-    return Backlog(store, state, cwd=options.root, project=options.project)
+    computer = state.computer_name(options.computer)
+    store = Store(options.database or paths.database_path(), computer=computer)
+    return Backlog(store, state, cwd=options.root, project=options.project, computer=computer)
 
 
 def editor() -> list[str]:
@@ -211,6 +213,36 @@ def note_form_of(existing: Note | None = None) -> str:
     )
 
 
+class ConfigTemplate(argclass.TOMLConfigGenerator):
+    """The TOML the config files are read as, with the log level written as a lowercase name.
+
+    Only the root options and the tables in `TABLES` are written: the other commands take
+    their options on the command line. A log level given on the command line or in the
+    environment arrives as an integer. `--log-level` accepts names only, so an integer would
+    not read back.
+    """
+
+    #: The subcommands whose options a config file may set.
+    TABLES = frozenset({"mcp"})
+
+    def render(self, fields: Sequence[argclass.ConfigField]) -> str:
+        kept = [
+            self.named(field)
+            for field in fields
+            if not field.attr_path[:-1] or field.attr_path[0] in self.TABLES
+        ]
+        return super().render(kept)
+
+    @staticmethod
+    def named(field: argclass.ConfigField) -> argclass.ConfigField:
+        if field.key != "log_level" or field.value is None:
+            return field
+        value = field.value
+        if isinstance(value, int):
+            value = logging.getLevelName(value)
+        return dataclasses.replace(field, value=str(value).lower())
+
+
 class Command(argclass.Parser):
     """One subcommand. The root parser opens the backlog, then awaits this."""
 
@@ -236,6 +268,16 @@ class Command(argclass.Parser):
         own: str | None = getattr(self, "scope", None)
         return own or self.options().project
 
+    async def reach(self) -> Reach:
+        """What a listing covers, from the project and computer options of this command."""
+        #: The attribute is `at`, not `computer`, for the same reason as `scope`.
+        return await self.backlog.reach(
+            self.reference(),
+            all_projects=bool(getattr(self, "all_projects", False)),
+            computer=getattr(self, "at", None) or None,
+            all_computers=bool(getattr(self, "all_computers", False)),
+        )
+
     def show_help(self) -> int:
         """Print the help of this command, the way `--help` after it does.
 
@@ -258,7 +300,10 @@ class Command(argclass.Parser):
 
 
 class Serve(Command):
-    """Run the MCP server: on stdio by default, or over HTTP with `--protocol=http`."""
+    """Run the MCP server: on stdio by default, or over HTTP with `--protocol=http`.
+
+    These options also come from the `[mcp]` table of a config file and from `BACKLOG_MCP_*`.
+    """
 
     protocol: str = argclass.Argument(
         default="stdio",
@@ -275,7 +320,24 @@ class Serve(Command):
         help="Basic auth password. Without a user and a password the server asks for nothing",
     )
     http_no_console: bool = argclass.Argument(
-        default=False, help="Do not serve the bundled MCP console at /console"
+        default=False, help="Do not serve the bundled MCP console at /"
+    )
+    http_trust_proxy: bool = argclass.Argument(
+        default=False,
+        help=(
+            "Behind a TLS-terminating reverse proxy: skip the Origin check of the endpoint, "
+            "the proxy validates origins instead"
+        ),
+    )
+    generate_config: str = argclass.Argument(
+        action=argclass.GenerateConfigAction,
+        generator=ConfigTemplate,
+        metavar="FILE",
+        help=(
+            "Write a TOML config file with these options in its [mcp] table and exit; '-' "
+            "prints it. Options given before this flag are written active, the rest as "
+            "commented-out defaults"
+        ),
     )
 
     async def stdio(self) -> int:
@@ -299,6 +361,7 @@ class Serve(Command):
                     user=self.http_user,
                     password=str(self.http_password),
                     console=not self.http_no_console,
+                    trust_proxy=self.http_trust_proxy,
                 )
             case _:
                 await self.stdio()
@@ -322,22 +385,52 @@ class Use(Command):
     clear: bool = argclass.Argument(default=False, help="Forget the pin and follow the directory")
 
     async def __call__(self) -> int:
+        computer = self.backlog.computer
         if self.clear:
-            self.backlog.state.pin(None)
+            self.backlog.state.pin(computer, None)
         elif self.target:
-            self.backlog.state.pin((await self.backlog.lookup(self.target)).slug)
+            self.backlog.state.pin(computer, (await self.backlog.lookup(self.target)).slug)
         console.print(scope_panel(await scope_of(self.backlog)))
         return 0
 
 
+def computer_options() -> tuple[str, bool]:
+    """The two arguments that widen a listing to another computer, or to all of them.
+
+    The class annotations do not reach here, so the type and the action are explicit.
+    """
+    at: str = argclass.Argument(
+        "--computer",
+        type=str,
+        default="",
+        help="Every project on that computer instead of this one",
+    )
+    all_computers: bool = argclass.Argument(
+        "--all-computers",
+        action=argclass.Actions.STORE_TRUE,
+        default=False,
+        help="Every project on every computer",
+    )
+    return at, all_computers
+
+
 class Projects(Command):
-    """List every registered project."""
+    """List the registered projects of this computer, or of another, or of all."""
 
     archived: bool = argclass.Argument(default=False, help="Include archived projects")
+    at, all_computers = computer_options()
 
     async def __call__(self) -> int:
-        found = await self.backlog.store.projects(archived=self.archived)
-        console.print(projects_table([project_out(item) for item in found]))
+        reach = await self.backlog.reach(
+            all_projects=True, computer=self.at or None, all_computers=self.all_computers
+        )
+        found = await self.backlog.store.projects(archived=self.archived, computer=reach.computer)
+        computer = self.backlog.computer
+        console.print(
+            projects_table(
+                [project_out(item, computer=computer) for item in found], computer=computer
+            )
+        )
         return 0
 
 
@@ -346,8 +439,9 @@ class List(Command):
 
     scope: str = argclass.Argument("-p", "--project", default=None, help="Project to list")
     all_projects: bool = argclass.Argument(
-        "-a", "--all-projects", default=False, help="List tasks of every project"
+        "-a", "--all-projects", default=False, help="List tasks of every project on this computer"
     )
+    at, all_computers = computer_options()
     status: list[str] = repeated(
         "--status",
         choices=STATUSES,
@@ -364,20 +458,21 @@ class List(Command):
         return None if self.every else list(OPEN_STATUSES)
 
     async def __call__(self) -> int:
-        project = None if self.all_projects else await self.backlog.resolve(self.reference())
+        reach = await self.reach()
         found = await self.backlog.store.tasks(
-            project_id=project.id if project else None,
+            project_id=reach.project_id,
+            computer=reach.computer,
             status=self.wanted(),
             tag=self.tag or None,
             priority=Priority(self.priority) if self.priority else None,
             limit=self.limit,
         )
-        where = project.slug if project else "every project"
         console.print(
             tasks_table(
                 [task_out(item) for item in found],
-                title=f"{len(found)} task(s) of {where}",
-                wide=project is None,
+                title=f"{len(found)} task(s) of {reach.label}",
+                wide=reach.project is None,
+                computer=self.backlog.computer,
             )
         )
         return 0
@@ -389,8 +484,9 @@ class Search(Command):
     query: list[str] = argclass.Argument("query", nargs="+", help="Words or meaning to search for")
     scope: str = argclass.Argument("-p", "--project", default=None, help="Project to search")
     all_projects: bool = argclass.Argument(
-        "-a", "--all-projects", default=False, help="Search every project"
+        "-a", "--all-projects", default=False, help="Search every project on this computer"
     )
+    at, all_computers = computer_options()
     tag: str = argclass.Argument(default="", help="Only tasks and notes carrying this tag")
     limit: int = argclass.Argument(default=20, help="Most matches to print, of each kind")
     min_score: float = argclass.Argument(
@@ -403,17 +499,26 @@ class Search(Command):
             query=text,
             project=self.reference(),
             all_projects=self.all_projects,
+            computer=self.at or None,
+            all_computers=self.all_computers,
             tag=self.tag or None,
             limit=self.limit,
             min_score=self.min_score,
         )
         matches = await embeddings.search(args, self.backlog)
-        where = matches.project or "every project"
+        if matches.project:
+            where = matches.project
+        elif matches.computer:
+            where = f"every project on {matches.computer}"
+        else:
+            where = "every project on every computer"
+        computer = self.backlog.computer
         console.print(
             tasks_table(
                 matches.tasks,
                 title=f"{len(matches.tasks)} task match(es) for {text!r} in {where}",
                 wide=matches.project is None,
+                computer=computer,
             )
         )
         if matches.notes:
@@ -423,6 +528,7 @@ class Search(Command):
                     title=f"{len(matches.notes)} note match(es) for {text!r} in {where}",
                     wide=matches.project is None
                     or any(item.project != matches.project for item in matches.notes),
+                    computer=computer,
                 )
             )
         return 0
@@ -438,7 +544,7 @@ class Show(Command):
         if task is None:
             fail(f"no task #{self.id}")
             return 1
-        console.print(task_panel(task_out(task)))
+        console.print(task_panel(task_out(task), computer=self.backlog.computer))
         return 0
 
 
@@ -463,7 +569,7 @@ class Add(Command):
             tags=self.tag,
         )
         note(f"added #{task.id} to {project.slug}")
-        console.print(task_panel(task_out(task)))
+        console.print(task_panel(task_out(task), computer=self.backlog.computer))
         return 0
 
 
@@ -484,7 +590,7 @@ class Create(Command):
             return 1
         task = await self.backlog.store.add_task(project_id=project.id, **fields)
         note(f"added #{task.id} to {project.slug}")
-        console.print(task_panel(task_out(task)))
+        console.print(task_panel(task_out(task), computer=self.backlog.computer))
         return 0
 
 
@@ -509,7 +615,7 @@ class Edit(Command):
         changed = await self.backlog.store.update_task(task.id, **fields)
         assert changed is not None, "the task edited is gone"
         note(f"updated #{changed.id}")
-        console.print(task_panel(task_out(changed)))
+        console.print(task_panel(task_out(changed), computer=self.backlog.computer))
         return 0
 
 
@@ -594,11 +700,16 @@ class Delete(Command):
             fail(f"no task #{self.id}")
             return 1
         current = await self.backlog.resolve(self.reference())
+        where = (
+            task.project
+            if task.computer == current.computer
+            else f"{task.project} on {task.computer}"
+        )
         if (
             task.project_id != current.id
             and not self.yes
             and not Confirm.ask(
-                f"delete task #{task.id} {task.title!r} from {task.project!r}? "
+                f"delete task #{task.id} {task.title!r} from {where!r}? "
                 f"Current project: {current.slug}",
                 default=False,
             )
@@ -615,12 +726,12 @@ class Stats(Command):
 
     scope: str = argclass.Argument("-p", "--project", default=None, help="Project to count")
     all_projects: bool = argclass.Argument(
-        "-a", "--all-projects", default=False, help="Count every project together"
+        "-a", "--all-projects", default=False, help="Count every project on this computer together"
     )
+    at, all_computers = computer_options()
 
     async def __call__(self) -> int:
-        project = None if self.all_projects else await self.backlog.resolve(self.reference())
-        console.print(stats_view(await stats_of(self.backlog, project)))
+        console.print(stats_view(await stats_of(self.backlog, await self.reach())))
         return 0
 
 
@@ -629,28 +740,30 @@ class NoteList(Command):
 
     scope: str = argclass.Argument("-p", "--project", default=None, help="Project to list")
     all_projects: bool = argclass.Argument(
-        "-a", "--all-projects", default=False, help="List notes of every project"
+        "-a", "--all-projects", default=False, help="List notes of every project on this computer"
     )
+    at, all_computers = computer_options()
     tag: str = argclass.Argument(default="", help="Only notes carrying this tag")
     shared: bool = argclass.Argument("--shared", default=False, help="Only shared notes")
     limit: int = argclass.Argument(default=50, help="Most notes to print")
 
     async def __call__(self) -> int:
-        project = None if self.all_projects else await self.backlog.resolve(self.reference())
+        reach = await self.reach()
         found = await self.backlog.store.notes(
-            project_id=project.id if project else None,
+            project_id=reach.project_id,
+            computer=reach.computer,
             tag=self.tag or None,
             shared=True if self.shared else None,
             limit=self.limit,
         )
-        where = project.slug if project else "every project"
         #: A shared note of another project shows up here, so say where it comes from.
-        wide = project is None or any(item.project_id != project.id for item in found)
+        wide = reach.project is None or any(item.project_id != reach.project_id for item in found)
         console.print(
             notes_table(
                 [note_out(item) for item in found],
-                title=f"{len(found)} note(s) of {where}",
+                title=f"{len(found)} note(s) of {reach.label}",
                 wide=wide,
+                computer=self.backlog.computer,
             )
         )
         return 0
@@ -666,7 +779,7 @@ class NoteShow(Command):
         if found is None:
             fail(f"no note #{self.id}")
             return 1
-        console.print(note_panel(note_out(found)))
+        console.print(note_panel(note_out(found), computer=self.backlog.computer))
         return 0
 
 
@@ -709,7 +822,7 @@ class NoteAdd(Command):
             assert replaced is not None, "the note replaced is gone"
             saved = replaced
             note(f"replaced note #{saved.id} in {project.slug}")
-        console.print(note_panel(note_out(saved)))
+        console.print(note_panel(note_out(saved), computer=self.backlog.computer))
         return 0
 
 
@@ -731,7 +844,7 @@ class NoteAppend(Command):
             return 1
         assert updated is not None, "the note appended to is gone"
         note(f"appended to note #{updated.id}")
-        console.print(note_panel(note_out(updated)))
+        console.print(note_panel(note_out(updated), computer=self.backlog.computer))
         return 0
 
 
@@ -760,7 +873,7 @@ class NoteEdit(Command):
             return 1
         assert updated is not None, "the note edited is gone"
         note(f"updated note #{updated.id}")
-        console.print(note_panel(note_out(updated)))
+        console.print(note_panel(note_out(updated), computer=self.backlog.computer))
         return 0
 
 
@@ -1016,7 +1129,12 @@ def install_codex(name: str, command: str, arguments: list[str], *, force: bool)
 
 
 class CLI(argclass.Parser):
-    """Defaults come from the config files, then `BACKLOG_MCP_*`, then these arguments."""
+    """Defaults come from the config files, then `BACKLOG_MCP_*`, then these arguments.
+
+    The options of `backlog mcp` read the `[mcp]` table of the same files and the same
+    environment prefix. `--generate-config` here, or on `mcp`, writes both back. The options
+    of the other commands are command-line only.
+    """
 
     log_level: int = argclass.LogLevel
 
@@ -1052,6 +1170,24 @@ class CLI(argclass.Parser):
         default=None,
         help="Work on this project whatever the directory says: a slug, or a path inside it",
     )
+    computer: str = argclass.Argument(
+        "--computer",
+        default=None,
+        help=(
+            "Name of this computer, the one the projects of this directory tree belong to "
+            "(default: the name remembered in the state file, else the short host name)"
+        ),
+    )
+    generate_config: str = argclass.Argument(
+        action=argclass.GenerateConfigAction,
+        generator=ConfigTemplate,
+        metavar="FILE",
+        help=(
+            "Write these options and the [mcp] table as a TOML config file and exit; '-' "
+            "prints it. Options given before this flag are written active, the rest as "
+            "commented-out defaults"
+        ),
+    )
 
     mcp = Serve(
         help="Serve MCP, on stdio or over HTTP",
@@ -1059,8 +1195,15 @@ class CLI(argclass.Parser):
             "Run the MCP server on the same backlog the other commands use. stdio is the "
             "transport clients start by themselves; --protocol=http serves the endpoint at "
             "/mcp and the bundled console at /, behind Basic auth when a user and a password "
-            "are given."
+            "are given. `backlog-mcp` is the same command without the word mcp. Over HTTP, "
+            "?computer=<name>&project=<slug> on the endpoint URL serves a client as another "
+            "computer."
         ),
+        #: The same prefix as the root, so the port is BACKLOG_MCP_HTTP_PORT, not _MCP_MCP_.
+        auto_env_var_prefix="BACKLOG_MCP_",
+        #: `--config` after `mcp` as well, so `backlog-mcp --config FILE` works.
+        config_argument="--config",
+        config_parser_class=argclass.TOMLDefaultsParser,
     )
     current = Current(
         help="Show which project the commands work on",
@@ -1079,9 +1222,10 @@ class CLI(argclass.Parser):
         ),
     )
     projects = Projects(
-        help="List every registered project",
+        help="List the registered projects",
         description=(
-            "Print every project with its root directory and its open and total task counts. "
+            "Print the projects of this computer with their root directory and their open and "
+            "total task counts; --computer shows another computer's, --all-computers all. "
             "Archived projects are hidden until --archived asks for them."
         ),
     )
@@ -1206,7 +1350,12 @@ class CLI(argclass.Parser):
         if not isinstance(command, Command):
             self.print_help()
             return 0
-        backlog = build(self)
+        try:
+            backlog = build(self)
+        except ValueError as error:
+            #: A computer name that is not one plain word.
+            fail(str(error))
+            return 2
         #: The command and the MCP handlers resolve the backlog the same way.
         use(backlog)
         try:
@@ -1224,6 +1373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Entry point. stdout carries the MCP protocol, so every log line goes to stderr."""
     parser = CLI(
         config_files=paths.config_files(),
+        config_parser_class=argclass.TOMLDefaultsParser,
         config_argument="--config",
         auto_env_var_prefix="BACKLOG_MCP_",
         description=f"backlog {VERSION}: projects and tasks, on the command line and over MCP",

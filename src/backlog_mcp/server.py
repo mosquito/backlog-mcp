@@ -12,7 +12,7 @@ from aiohttp_tiny_mcp.models import CompleteParams, TextResourceContents
 from pydantic import BaseModel, Field
 
 from . import embeddings, skills
-from .backlog import Backlog, UnknownProject
+from .backlog import Backlog, Reach, UnknownProject
 from .models import (
     CLOSED_STATUSES,
     OPEN_STATUSES,
@@ -44,7 +44,16 @@ Scope. Every tool works on one project, the current one, unless the call names a
 current project is the one this server was started on, else the project pinned by \
 `project_use`, else the project whose root contains the working directory, else a project \
 registered for that directory on the spot. `project_current` reports which project is current \
-and which of those reasons chose it.
+and which of those reasons chose it. A computer reached over HTTP with nothing named and nothing \
+pinned has no current project: `project_current` then says `origin: none`, and the tools that \
+need a project ask for one.
+
+Computers. A project is a directory tree on one computer, and one backlog can hold the projects \
+of several computers. `project_current` reports the computer this session works from and every \
+computer that has a project. Every project, task and note says which computer it is on, and a \
+project says `here: false` when it is on another one. The `root` of such a project is a path on \
+that computer: do not read, edit, build or run anything there from this one, and say so when a \
+task needs it. Tasks and notes can still be read, created, edited and moved from anywhere.
 
 Naming a project. A `project` argument takes a slug, such as `backlog-mcp`, or any path inside \
 the project, such as `.` or `~/dev/thing`. A name that matches nothing is an error and creates \
@@ -74,10 +83,12 @@ one short note per topic. Use `note_save` to replace outdated context and `note_
 related facts. A supplied body replaces the whole body. Omit guesses, duplicates, and secrets. \
 Shared notes are visible across projects. Link notes by stable id, such as `note #3`.
 
-Reach. `task_list`, `note_list`, `search` and `stats` stay inside one project, \
-and cover every project at once with `all_projects=true`. Task and note ids are \
-unique across projects, so `task_get`, `task_update`, `task_move`, `task_delete`, `note_get`, \
-`note_append` and `note_delete` take an id and no project.
+Reach. `task_list`, `note_list`, `search` and `stats` stay inside one project, cover every \
+project of this computer with `all_projects=true`, every project of another computer with \
+`computer=<name>`, and everything with `all_computers=true`; `project_list` takes the same two \
+computer arguments. Shared notes are visible from every project and every computer. Task and \
+note ids are unique across projects and computers, so `task_get`, `task_update`, `task_move`, \
+`task_delete`, `note_get`, `note_append` and `note_delete` take an id and no project.
 
 Search. `search` is the default retrieval tool for project knowledge and previous work. Search at \
 session start, before investigating a problem or choosing an approach, before asking the \
@@ -136,12 +147,15 @@ def bound() -> Backlog:
     return ACTIVE.get()
 
 
-def project_out(project: Project) -> ProjectOut:
+def project_out(project: Project, *, computer: str) -> ProjectOut:
+    """The project as the tools return it; `computer` is the one this session works from."""
     return ProjectOut(
         id=project.id,
         slug=project.slug,
         name=project.name,
+        computer=project.computer,
         root=project.root,
+        here=project.computer == computer,
         description=project.description,
         archived=project.archived,
         open_tasks=project.open_tasks,
@@ -155,6 +169,7 @@ def task_out(task: Task) -> TaskOut:
     return TaskOut(
         id=task.id,
         project=task.project,
+        computer=task.computer,
         title=task.title,
         body=task.body,
         status=task.status,
@@ -171,6 +186,7 @@ def note_out(note: Note) -> NoteOut:
     return NoteOut(
         id=note.id,
         project=note.project,
+        computer=note.computer,
         title=note.title,
         body=note.body,
         tags=note.tags,
@@ -183,23 +199,27 @@ def note_out(note: Note) -> NoteOut:
 
 async def scope_of(backlog: Backlog) -> Scope:
     """Where the tools work, and why there."""
-    project, origin = await backlog.current()
+    project, origin = await backlog.scope()
     return Scope(
-        project=project_out(project),
+        project=project_out(project, computer=backlog.computer) if project else None,
         origin=origin,
+        computer=backlog.computer,
+        computers=await backlog.store.computers(),
         cwd=str(backlog.cwd),
         database=str(backlog.store.path),
         state=str(backlog.state.path),
     )
 
 
-async def stats_of(backlog: Backlog, project: Project | None) -> Stats:
-    """Counts for one project, or for every project when `project` is None."""
-    project_id = project.id if project else None
-    by_priority = await backlog.store.group("priority", project_id=project_id)
-    by_status = await backlog.store.group("status", project_id=project_id)
+async def stats_of(backlog: Backlog, reach: Reach) -> Stats:
+    """Counts for one project, for one computer, or for everything."""
+    project_id, computer = reach.project_id, reach.computer
+    by_priority = await backlog.store.group("priority", project_id=project_id, computer=computer)
+    by_status = await backlog.store.group("status", project_id=project_id, computer=computer)
     return Stats(
-        project=project.slug if project else None,
+        project=reach.slug,
+        computer=reach.scope_computer,
+        this_computer=backlog.computer,
         total=sum(by_status.values()),
         open=sum(by_status.get(status.value, 0) for status in OPEN_STATUSES),
         closed=sum(by_status.get(status.value, 0) for status in CLOSED_STATUSES),
@@ -209,8 +229,8 @@ async def stats_of(backlog: Backlog, project: Project | None) -> Stats:
             for rank, count in by_priority.items()
             if int(rank) in PRIORITIES
         },
-        tags=await backlog.store.tags(project_id=project_id),
-        notes=await backlog.store.count_notes(project_id=project_id),
+        tags=await backlog.store.tags(project_id=project_id, computer=computer),
+        notes=await backlog.store.count_notes(project_id=project_id, computer=computer),
     )
 
 
@@ -219,13 +239,6 @@ def statuses(wanted: list[Status] | None, *, default_open: bool = True) -> list[
     if wanted:
         return wanted
     return list(OPEN_STATUSES) if default_open else None
-
-
-async def scoped(backlog: Backlog, reference: str | None, all_projects: bool) -> Project | None:
-    """The project to filter by, or `None` to reach across every project."""
-    if all_projects:
-        return None
-    return await backlog.resolve(reference)
 
 
 async def stale(uris: list[str]) -> None:
@@ -290,6 +303,10 @@ class ProjectRef(BaseModel):
 
 class ListProjects(BaseModel):
     archived: bool = Field(default=False, description="Include archived projects.")
+    computer: str | None = Field(
+        default=None, description="Projects of this other computer instead of this one."
+    )
+    all_computers: bool = Field(default=False, description="Projects of every computer.")
 
 
 class SaveProject(BaseModel):
@@ -323,7 +340,13 @@ class AddTask(BaseModel):
 
 class ListTasks(BaseModel):
     project: str | None = Field(default=None, description="Defaults to the current project.")
-    all_projects: bool = Field(default=False, description="List tasks from every project.")
+    all_projects: bool = Field(
+        default=False, description="List tasks from every project of this computer."
+    )
+    computer: str | None = Field(
+        default=None, description="Every project of the named computer instead."
+    )
+    all_computers: bool = Field(default=False, description="Every project of every computer.")
     status: list[Status] | None = Field(
         default=None, description="Statuses to include. Defaults to the open ones."
     )
@@ -399,7 +422,13 @@ class ReadNote(BaseModel):
 
 class ListNotes(BaseModel):
     project: str | None = Field(default=None, description="Defaults to the current project.")
-    all_projects: bool = Field(default=False, description="List notes from every project.")
+    all_projects: bool = Field(
+        default=False, description="List notes from every project of this computer."
+    )
+    computer: str | None = Field(
+        default=None, description="Every project of the named computer instead."
+    )
+    all_computers: bool = Field(default=False, description="Every project of every computer.")
     tag: str | None = None
     shared: bool | None = Field(default=None, description="Only shared notes, or only local.")
     limit: int = Field(default=50, ge=1, le=500)
@@ -408,7 +437,13 @@ class ListNotes(BaseModel):
 
 class StatsOf(BaseModel):
     project: str | None = Field(default=None, description="Defaults to the current project.")
-    all_projects: bool = Field(default=False, description="Count every project together.")
+    all_projects: bool = Field(
+        default=False, description="Count every project of this computer together."
+    )
+    computer: str | None = Field(
+        default=None, description="Every project of the named computer instead."
+    )
+    all_computers: bool = Field(default=False, description="Every project of every computer.")
 
 
 @registry.tool(title="Current project", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
@@ -419,9 +454,16 @@ async def project_current(args: Nothing, backlog: Backlog) -> Scope:
 
 @registry.tool(title="List projects", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def project_list(args: ListProjects, backlog: Backlog) -> Projects:
-    """List registered projects with open and total task counts."""
-    found = await backlog.store.projects(archived=args.archived)
-    return Projects(items=[project_out(item) for item in found], count=len(found))
+    """List the projects of this computer with open and total task counts.
+
+    `computer` lists another computer's projects, `all_computers` every project there is."""
+    reach = await backlog.reach(
+        all_projects=True, computer=args.computer, all_computers=args.all_computers
+    )
+    found = await backlog.store.projects(archived=args.archived, computer=reach.computer)
+    return Projects(
+        items=[project_out(item, computer=backlog.computer) for item in found], count=len(found)
+    )
 
 
 @registry.tool(title="Register or update a project", annotations=Hint.IDEMPOTENT)
@@ -435,7 +477,7 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
         archived=args.archived,
     )
     await changed()
-    return project_out(project)
+    return project_out(project, computer=backlog.computer)
 
 
 @registry.tool(title="Pin a project", annotations=Hint.IDEMPOTENT)
@@ -445,9 +487,9 @@ async def project_use(args: UseProject, backlog: Backlog) -> Scope:
     A project fixed at server startup takes precedence."""
     if args.project:
         project = await backlog.lookup(args.project)
-        backlog.state.pin(project.slug)
+        backlog.state.pin(backlog.computer, project.slug)
     else:
-        backlog.state.pin(None)
+        backlog.state.pin(backlog.computer, None)
     return await scope_of(backlog)
 
 
@@ -472,9 +514,15 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks:
     """List tasks for an inventory or complete review; prefer `search` for finding work.
 
     Defaults to open tasks. Use filters and pagination."""
-    project = await scoped(backlog, args.project, args.all_projects)
+    reach = await backlog.reach(
+        args.project,
+        all_projects=args.all_projects,
+        computer=args.computer,
+        all_computers=args.all_computers,
+    )
     found = await backlog.store.tasks(
-        project_id=project.id if project else None,
+        project_id=reach.project_id,
+        computer=reach.computer,
         status=statuses(args.status),
         tag=args.tag,
         priority=args.priority,
@@ -483,7 +531,8 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks:
         offset=args.offset,
     )
     total = await backlog.store.count_tasks(
-        project_id=project.id if project else None,
+        project_id=reach.project_id,
+        computer=reach.computer,
         status=statuses(args.status),
         tag=args.tag,
         priority=args.priority,
@@ -491,7 +540,8 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks:
     return Tasks(
         items=[task_out(item) for item in found],
         count=total,
-        project=project.slug if project else None,
+        project=reach.slug,
+        computer=reach.scope_computer,
     )
 
 
@@ -554,10 +604,15 @@ async def confirm_cross_project_delete(
             detail="this client cannot confirm deletion from another project",
         )
     kind = "task" if isinstance(record, Task) else "note"
+    where = (
+        record.project
+        if record.computer == current.computer
+        else f"{record.project} on {record.computer}"
+    )
     raise NeedInput(
         {
             key: elicit(
-                f"Delete {kind} #{record.id} ({record.title!r}) from {record.project!r}? "
+                f"Delete {kind} #{record.id} ({record.title!r}) from {where!r}? "
                 f"The current project is {current.slug!r}. This cannot be undone.",
                 {"type": "object", "properties": {"ok": {"type": "boolean"}}},
             )
@@ -639,21 +694,28 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes:
     """List project notes and shared notes for an inventory or complete review.
 
     Prefer `search` for finding information. Use filters and pagination."""
-    project = await scoped(backlog, args.project, args.all_projects)
+    reach = await backlog.reach(
+        args.project,
+        all_projects=args.all_projects,
+        computer=args.computer,
+        all_computers=args.all_computers,
+    )
     found = await backlog.store.notes(
-        project_id=project.id if project else None,
+        project_id=reach.project_id,
+        computer=reach.computer,
         tag=args.tag,
         shared=args.shared,
         limit=args.limit,
         offset=args.offset,
     )
     total = await backlog.store.count_notes(
-        project_id=project.id if project else None, tag=args.tag, shared=args.shared
+        project_id=reach.project_id, computer=reach.computer, tag=args.tag, shared=args.shared
     )
     return Notes(
         items=[note_out(item) for item in found],
         count=total,
-        project=project.slug if project else None,
+        project=reach.slug,
+        computer=reach.scope_computer,
     )
 
 
@@ -685,20 +747,28 @@ async def search(args: embeddings.Search, backlog: Backlog) -> embeddings.Matche
 @registry.tool(title="Backlog statistics", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def stats(args: StatsOf, backlog: Backlog) -> Stats:
     """Count open tasks, closed tasks, and notes, with status and priority breakdowns and tags."""
-    return await stats_of(backlog, await scoped(backlog, args.project, args.all_projects))
+    reach = await backlog.reach(
+        args.project,
+        all_projects=args.all_projects,
+        computer=args.computer,
+        all_computers=args.all_computers,
+    )
+    return await stats_of(backlog, reach)
 
 
 @registry.resource("backlog://project", mime_type="application/json")
 async def current_project(args: Nothing, backlog: Backlog) -> dict[str, Any]:
-    """The project the tools work on."""
-    project, origin = await backlog.current()
-    return {"project": project_out(project).model_dump(), "origin": origin.value}
+    """The project the tools work on, or `null` with origin `none` when there is none."""
+    project, origin = await backlog.scope()
+    shown = project_out(project, computer=backlog.computer).model_dump() if project else None
+    return {"project": shown, "origin": origin.value, "computer": backlog.computer}
 
 
 @registry.resource("backlog://projects", mime_type="application/json")
 async def all_projects(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
-    """Every registered project."""
-    return [project_out(item).model_dump() for item in await backlog.store.projects()]
+    """Every registered project of this computer."""
+    found = await backlog.store.projects(computer=backlog.computer)
+    return [project_out(item, computer=backlog.computer).model_dump() for item in found]
 
 
 @registry.resource("backlog://tasks", mime_type="application/json")
@@ -793,22 +863,36 @@ registry.extension(skills.extension)
 class Standup(BaseModel):
     project: str | None = None
     all_projects: bool = False
+    computer: str | None = None
+    all_computers: bool = False
 
 
 @registry.prompt
 async def standup(args: Standup, backlog: Backlog) -> str:
     """Draft a standup update from what closed recently and what is still open."""
-    project = await scoped(backlog, args.project, args.all_projects)
-    project_id = project.id if project else None
-    done = await backlog.store.tasks(
-        project_id=project_id, status=[Status.DONE], order="recent", limit=10
+    reach = await backlog.reach(
+        args.project,
+        all_projects=args.all_projects,
+        computer=args.computer,
+        all_computers=args.all_computers,
     )
-    open_ = await backlog.store.tasks(project_id=project_id, status=list(OPEN_STATUSES), limit=15)
+    done = await backlog.store.tasks(
+        project_id=reach.project_id,
+        computer=reach.computer,
+        status=[Status.DONE],
+        order="recent",
+        limit=10,
+    )
+    open_ = await backlog.store.tasks(
+        project_id=reach.project_id,
+        computer=reach.computer,
+        status=list(OPEN_STATUSES),
+        limit=15,
+    )
     lines = [f"- done: {item.title}" for item in done]
     lines += [f"- {item.status.value} ({item.priority.value}): {item.title}" for item in open_]
-    where = "every project" if project is None else project.slug
     return (
-        f"Backlog for {where}:\n\n"
+        f"Backlog for {reach.label}:\n\n"
         + ("\n".join(lines) or "- nothing recorded yet")
         + "\n\nWrite a short standup update: done, next, blockers."
     )
@@ -832,7 +916,7 @@ async def groom(args: Groom, backlog: Backlog) -> str:
         for item in found
     ]
     return (
-        f"Open backlog of {project.slug} ({project.root}):\n\n"
+        f"Open backlog of {project.slug} ({project.root} on {project.computer}):\n\n"
         + ("\n".join(lines) or "- nothing open")
         + "\n\nReview it: what should be done first, what duplicates what, "
         "and which items are too vague to start. Suggest concrete edits."
@@ -848,6 +932,8 @@ async def complete(args: CompleteParams, backlog: Backlog) -> list[str]:
     match args.argument.name, args.ref.type:
         case "project", _:
             return [slug for slug in await backlog.store.slugs() if slug.startswith(value)]
+        case "computer", _:
+            return [name for name in await backlog.store.computers() if name.startswith(value)]
         case "tag", _:
             project, _origin = await backlog.current()
             tags = await backlog.store.tags(project_id=project.id)
