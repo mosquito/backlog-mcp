@@ -1377,6 +1377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config_argument="--config",
         auto_env_var_prefix="BACKLOG_MCP_",
         description=f"backlog {VERSION}: projects and tasks, on the command line and over MCP",
+        #: argparse obeys FORCE_COLOR like rich does; a pipe gets plain help text.
+        color=sys.stdout.isatty(),
     )
     parser.parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(level=parser.log_level, stream=sys.stderr, format=LOG_FORMAT)

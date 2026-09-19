@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from collections.abc import Iterable, Sequence
 
@@ -33,8 +34,19 @@ PRIORITY_STYLE = {
 
 UNITS = ((86400.0, "d"), (3600.0, "h"), (60.0, "m"))
 
-console = Console()
-errors = Console(stderr=True)
+
+def terminal(*, stderr: bool = False) -> Console:
+    """A console that colours a terminal only.
+
+    Rich obeys `FORCE_COLOR` even on a pipe or a file. A stream that is not a TTY gets no
+    control codes at all, so captured output stays plain text.
+    """
+    stream = sys.stderr if stderr else sys.stdout
+    return Console(stderr=stderr, force_terminal=None if stream.isatty() else False)
+
+
+console = terminal()
+errors = terminal(stderr=True)
 
 
 def age(moment: float) -> str:
