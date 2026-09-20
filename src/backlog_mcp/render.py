@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from rich.box import ROUNDED
@@ -110,11 +110,6 @@ def priority_text(priority: Priority) -> Text:
     return Text(priority.value, style=PRIORITY_STYLE[priority])
 
 
-def elsewhere(items: Iterable[TaskOut | NoteOut | ProjectOut], computer: str | None) -> bool:
-    """True when a record is on another computer than `computer`, so the column is needed."""
-    return computer is not None and any(item.computer != computer for item in items)
-
-
 def tasks_table(
     items: Sequence[TaskOut], *, title: str, wide: bool = False, computer: str | None = None
 ) -> Table:
@@ -125,13 +120,10 @@ def tasks_table(
     """
     #: Search results carry an excerpt of the body; a plain listing has none, so no column.
     matched = any(item.snippet for item in items)
-    away = elsewhere(items, computer)
     table = titled(title)
     table.add_column("id", justify="right", style="bold")
     if wide:
         table.add_column("project", style="magenta")
-    if away:
-        table.add_column("computer", style="yellow")
     table.add_column("status")
     table.add_column("pri")
     table.add_column("title", overflow="fold")
@@ -143,8 +135,6 @@ def tasks_table(
         row = [str(item.id)]
         if wide:
             row.append(item.project)
-        if away:
-            row.append(item.computer if item.computer != computer else "")
         cells: list[str | Text] = [
             *row,
             status_text(item.status),
@@ -164,13 +154,10 @@ def notes_table(
     """One row per note. `wide` adds the project column, for listings that cross projects."""
     matched = any(item.snippet for item in items)
     shared = any(item.shared for item in items)
-    away = elsewhere(items, computer)
     table = titled(title)
     table.add_column("id", justify="right", style="bold")
     if wide:
         table.add_column("project", style="magenta")
-    if away:
-        table.add_column("computer", style="yellow")
     table.add_column("title", overflow="fold")
     if matched:
         table.add_column("match", overflow="fold", style="dim italic")
@@ -182,8 +169,6 @@ def notes_table(
         cells: list[str | Text] = [str(item.id)]
         if wide:
             cells.append(item.project)
-        if away:
-            cells.append(item.computer if item.computer != computer else "")
         cells.append(Text(item.title))
         if matched:
             cells.append(Text(excerpt(item.snippet)))
@@ -195,12 +180,9 @@ def notes_table(
 
 
 def projects_table(items: Sequence[ProjectOut], *, computer: str | None = None) -> Table:
-    """One row per project. A project on another computer names it, and its root is dim."""
-    away = elsewhere(items, computer)
+    """One row per logical project, with all its path bindings."""
     table = titled("projects")
     table.add_column("slug", style="bold magenta")
-    if away:
-        table.add_column("computer", style="yellow")
     table.add_column("open", justify="right")
     table.add_column("total", justify="right", style="dim")
     table.add_column("root", overflow="fold")
@@ -208,9 +190,7 @@ def projects_table(items: Sequence[ProjectOut], *, computer: str | None = None) 
     for item in items:
         slug = Text(item.slug, style="dim strike" if item.archived else "bold magenta")
         cells: list[str | Text] = [slug]
-        if away:
-            cells.append(item.computer if item.computer != computer else "")
-        root = Text(item.root, style="dim" if computer and item.computer != computer else "")
+        root = Text(", ".join(f"{root.computer}:{root.root or '—'}" for root in item.roots))
         cells.extend([str(item.open_tasks), str(item.total_tasks), root, item.name])
         table.add_row(*cells)
     return table
@@ -243,10 +223,8 @@ def width() -> int:
 
 
 def owner(item: TaskOut | NoteOut, computer: str | None) -> Text:
-    """The project of a record, and its computer when that is not the one given."""
-    if computer is None or item.computer == computer:
-        return Text(item.project, style="magenta")
-    return Text.assemble((item.project, "magenta"), " on ", (item.computer, "yellow"))
+    """The logical project that owns a record."""
+    return Text(item.project, style="magenta")
 
 
 def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
@@ -365,7 +343,11 @@ def scope_panel(scope: Scope) -> Panel:
             [
                 ("project", Text(project.slug, style="bold magenta")),
                 ("chosen by", Text(scope.origin.value, style="dim")),
-                ("root", Text(project.root)),
+                (
+                    "roots",
+                    Text(", ".join(f"{root.computer}:{root.root or '—'}" for root in project.roots)
+                    ),
+                ),
                 ("tasks", Text(f"{project.open_tasks} open of {project.total_tasks}")),
             ]
         )

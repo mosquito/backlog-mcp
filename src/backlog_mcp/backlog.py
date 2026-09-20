@@ -298,7 +298,9 @@ class Backlog:
                     path = self.absolute(directory)
                     if not self.remote and not path.is_dir():
                         raise ValueError(f"no such directory on {self.computer!r}: {path}")
-                    project = await self.store.add_root(project.id, computer=self.computer, root=path)
+                    project = await self.store.add_root(
+                        project.id, computer=self.computer, root=path
+                    )
                 else:
                     project = await self.store.add_root(project.id, computer=self.computer, root="")
             case str() as named, None:

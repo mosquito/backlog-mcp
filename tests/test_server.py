@@ -72,7 +72,7 @@ async def test_catalogue(client: BaseClient) -> None:
 async def test_scope_pin_and_unpin(client: BaseClient, backlog: Backlog) -> None:
     current = await call(client, "project_current")
     assert current["origin"] == "created"
-    assert current["project"]["root"] == str(backlog.cwd)
+    assert current["project"]["roots"] == [{"computer": "here", "root": str(backlog.cwd)}]
     assert current["database"] == str(backlog.store.path)
     assert current["state"] == str(backlog.state.path)
     assert (await call(client, "project_current"))["origin"] == "directory"

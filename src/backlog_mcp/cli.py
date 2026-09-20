@@ -347,7 +347,7 @@ class Serve(Command):
 
         backlog = self.backlog
         project, origin = await backlog.current()
-        log.info("project %s (%s) at %s", project.slug, origin.value, project.root)
+        log.info("project %s (%s)", project.slug, origin.value)
         log.info("serving %s on stdio, database %s", registry.info.name, backlog.store.path)
         await run_stdio(registry)
         return 0
@@ -711,11 +711,7 @@ class Delete(Command):
             fail(f"no task #{self.id}")
             return 1
         current = await self.backlog.resolve(self.reference())
-        where = (
-            task.project
-            if task.computer == current.computer
-            else f"{task.project} on {task.computer}"
-        )
+        where = task.project
         if (
             task.project_id != current.id
             and not self.yes

@@ -137,7 +137,7 @@ def application(
     async def opened(_: web.Application) -> None:
         await backlog.store.open()
         project, origin = await backlog.current()
-        log.info("project %s (%s) at %s", project.slug, origin.value, project.root)
+        log.info("project %s (%s)", project.slug, origin.value)
 
     async def closed(_: web.Application) -> None:
         await backlog.store.close()

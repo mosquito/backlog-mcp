@@ -49,36 +49,36 @@ def test_pins_are_kept_per_computer(tmp_path: Path) -> None:
     assert state.pinned("nowhere") is None
 
 
-async def test_the_same_root_is_another_project_on_another_computer(tmp_path: Path) -> None:
+async def test_one_project_has_roots_on_several_computers(tmp_path: Path) -> None:
     store = Store(tmp_path / "backlog.sqlite3", computer="desk")
     root = "/home/me/work"
     one = await store.add_project(slug="work", name="work", root=root, computer="desk")
-    two = await store.add_project(slug="work-2", name="work", root=root, computer="laptop")
+    two = await store.add_root(one.id, computer="laptop", root=root)
     assert await store.computers() == ["desk", "laptop"]
-    assert [item.slug for item in await store.projects()] == ["work", "work-2"]
-    assert [item.slug for item in await store.projects(computer="laptop")] == ["work-2"]
+    assert [item.slug for item in await store.projects()] == ["work"]
+    assert [item.slug for item in await store.projects(computer="laptop")] == ["work"]
     found = await store.project_by_root(root, computer="laptop")
-    assert found is not None and found.id == two.id
-    assert (await store.project_for_path(Path(root) / "src", computer="desk")) == one
+    assert found is not None and found.id == one.id == two.id
+    assert (await store.project_for_path(Path(root) / "src", computer="desk")).id == one.id
 
     await store.add_task(project_id=one.id, title="Here", tags=["desk"])
-    there = await store.add_task(project_id=two.id, title="There", tags=["laptop"])
-    assert there.computer == "laptop"
-    assert [item.title for item in await store.tasks(computer="laptop")] == ["There"]
-    assert await store.count_tasks(computer="desk") == 1
+    await store.add_task(project_id=two.id, title="There", tags=["laptop"])
+    assert [item.title for item in await store.tasks(computer="laptop")] == ["Here", "There"]
+    assert await store.count_tasks(computer="desk") == 2
     assert await store.count_tasks() == 2
-    assert await store.tags(computer="laptop") == ["laptop"]
-    assert await store.group("status", computer="laptop") == {"todo": 1}
-    assert [item.title for item in await store.search("There", computer="desk")] == []
+    assert await store.tags(computer="laptop") == ["desk", "laptop"]
+    assert await store.group("status", computer="laptop") == {"todo": 2}
+    assert [item.title for item in await store.search("There", computer="desk")] == ["There"]
     assert [item.title for item in await store.search("There", computer="laptop")] == ["There"]
 
     #: Shared notes cross computers, the others stay on theirs.
     await store.add_note(project_id=one.id, title="local", body="alpha")
     await store.add_note(project_id=two.id, title="shared", body="bravo", shared=True)
     assert {item.title for item in await store.notes(computer="desk")} == {"local", "shared"}
-    assert await store.count_notes(computer="laptop") == 1
+    assert await store.count_notes(computer="laptop") == 2
     assert [item.title for item in await store.search_notes("bravo", computer="desk")] == ["shared"]
-    assert await store.search_notes("alpha", computer="laptop") == []
+    laptop_notes = await store.search_notes("alpha", computer="laptop")
+    assert [item.title for item in laptop_notes] == ["local"]
     await store.close()
 
 
@@ -92,7 +92,7 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
         computer="desk",
     )
     local, _ = await backlog.current()
-    assert local.computer == "desk"
+    assert local.roots[0].computer == "desk"
 
     laptop = backlog.view(computer="laptop")
     assert laptop.remote is True and laptop.computer == "laptop"
@@ -108,7 +108,7 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
     with pytest.raises(ValueError, match="absolute path"):
         await laptop.save(root="relative/app")
     app = await laptop.save(root="/srv/app/./", name="App")
-    assert (app.computer, app.root, app.slug) == ("laptop", "/srv/app", "app")
+    assert (app.roots[0].computer, app.roots[0].root, app.slug) == ("laptop", "/srv/app", "app")
     #: The same path on this computer is a different project, once the directory exists.
     same = tmp_path / "srv" / "app"
     same.mkdir(parents=True)
@@ -124,14 +124,14 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
     assert backlog.state.pinned("desk") is None
 
     #: A slug reaches any computer, a path only this one.
-    assert (await backlog.lookup("twin")).computer == "laptop"
-    assert (await backlog.lookup(str(same))).computer == "desk"
+    assert (await backlog.lookup("twin")).roots[0].computer == "laptop"
+    assert (await backlog.lookup(str(same))).roots[0].computer == "desk"
 
     assert (await backlog.reach()).project == local
     assert (await backlog.reach(all_projects=True)).computer == "desk"
     assert (await backlog.reach(computer="laptop")).computer == "laptop"
     assert (await backlog.reach(project="app", computer="laptop")).project == app
-    with pytest.raises(UnknownProject, match="project 'app' is on 'laptop', not 'desk'"):
+    with pytest.raises(UnknownProject, match="has no binding"):
         await backlog.reach(project="app", computer="desk")
     assert (await backlog.reach(all_computers=True)).computer is None
     assert (await backlog.reach(all_computers=True)).label == "every project on every computer"
@@ -159,24 +159,23 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
         "app": False,
     }
     theirs = await call(client, "project_list", computer="laptop")
-    assert [item["computer"] for item in theirs["items"]] == ["laptop"]
+    assert theirs["items"][0]["roots"] == [{"computer": "laptop", "root": "/srv/app"}]
 
     local = await call(client, "task_add", title="Local work")
-    assert local["computer"] == "here"
+    assert local["project"] == mine
     #: A listing of one project names that project's computer, not the filter given.
-    assert (await call(client, "task_list"))["computer"] == "here"
-    assert (await call(client, "stats"))["computer"] == "here"
+    assert (await call(client, "task_list"))["computer"] is None
+    assert (await call(client, "stats"))["computer"] is None
     assert (await call(client, "task_list", all_projects=True))["count"] == 1
     away = await call(client, "task_list", computer="laptop")
     assert away["computer"] == "laptop"
-    assert [item["computer"] for item in away["items"]] == ["laptop"]
     assert (await call(client, "task_list", all_computers=True))["count"] == 2
 
     #: Semantic matches score anything above zero, so only exact matches count here.
     assert (await call(client, "search", query="laptop", min_score=1))["count"] == 0
     found = await call(client, "search", query="laptop", all_computers=True)
     assert found["computer"] is None
-    assert found["tasks"][0]["computer"] == "laptop"
+    assert found["tasks"][0]["project"] == "app"
 
     counted = await call(client, "stats", computer="laptop")
     assert (counted["computer"], counted["total"]) == ("laptop", 1)

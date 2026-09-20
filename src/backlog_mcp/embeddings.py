@@ -336,7 +336,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         if project_id is not None:
             return record.project_id == project_id
         if computer is not None:
-            return record.computer == computer
+            return True
         return True
 
     lexical_tasks = await backlog.store.search(

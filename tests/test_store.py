@@ -11,6 +11,7 @@ from backlog_mcp.store import (
     MIGRATIONS,
     NOTE_LIMIT,
     Project,
+    ProjectRoot,
     Store,
     clean_tags,
     match_query,
@@ -188,7 +189,7 @@ async def test_an_older_file_gains_the_notes_table(tmp_path: Path) -> None:
     assert await store.count_tasks() == 1
     #: The projects of a file from before computers belong to the computer that upgraded it.
     upgraded = await store.project(1)
-    assert upgraded is not None and upgraded.computer == "old-box"
+    assert upgraded is not None and upgraded.roots == [ProjectRoot("old-box", "/tmp/old")]
     assert (await store.task(1)) is not None
     async with opened.execute("PRAGMA foreign_key_check") as cursor:
         assert await cursor.fetchall() == []

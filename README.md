@@ -339,7 +339,7 @@ async def main(directory: Path) -> None:
 
     project, origin = await backlog.current()
     assert origin.value == "created"      # the directory was not registered yet
-    assert project.root == str(directory)
+    assert project.roots[0].root == str(directory)
 
     task = await backlog.store.add_task(
         project_id=project.id,

@@ -26,6 +26,7 @@ from .models import (
     Notes,
     Priority,
     ProjectOut,
+    ProjectRootOut,
     Projects,
     Scope,
     Stats,
@@ -70,12 +71,11 @@ and which of those reasons chose it. A computer reached over HTTP with nothing n
 pinned has no current project: `project_current` then says `origin: none`, and the tools that \
 need a project ask for one.
 
-Computers. A project is a directory tree on one computer, and one backlog can hold the projects \
-of several computers. `project_current` reports the computer this session works from and every \
-computer that has a project. Every project, task and note says which computer it is on, and a \
-project says `here: false` when it is on another one. The `root` of such a project is a path on \
-that computer: do not read, edit, build or run anything there from this one, and say so when a \
-task needs it. Tasks and notes can still be read, created, edited and moved from anywhere.
+Computers. One logical project can have several `(computer, root)` bindings. `project_current` \
+reports the computer this session works from and every computer with a binding; a project lists \
+its bindings in `roots` and says `here: true` only when this computer has a non-empty path. An \
+empty root is a contextual binding with no files. Do not read, edit, build or run a path belonging \
+to another computer. Tasks and notes belong to the logical project, not to one computer.
 
 Naming a project. A `project` argument takes a slug, such as `backlog-mcp`, or any path inside \
 the project, such as `.` or `~/dev/thing`. A name that matches nothing is an error and creates \
@@ -184,9 +184,8 @@ def project_out(project: Project, *, computer: str) -> ProjectOut:
         id=project.id,
         slug=project.slug,
         name=project.name,
-        computer=project.computer,
-        root=project.root,
-        here=project.computer == computer,
+        roots=[ProjectRootOut(computer=root.computer, root=root.root) for root in project.roots],
+        here=any(root.computer == computer and root.root for root in project.roots),
         description=project.description,
         archived=project.archived,
         open_tasks=project.open_tasks,
@@ -200,7 +199,6 @@ def task_out(task: Task) -> TaskOut:
     return TaskOut(
         id=task.id,
         project=task.project,
-        computer=task.computer,
         title=task.title,
         body=task.body,
         status=task.status,
@@ -244,7 +242,6 @@ def task_list_item(task: Task) -> TaskListItem:
     return TaskListItem(
         id=task.id,
         project=task.project,
-        computer=task.computer,
         title=task.title,
         status=task.status,
         priority=task.priority,
@@ -260,7 +257,6 @@ def note_out(note: Note) -> NoteOut:
     return NoteOut(
         id=note.id,
         project=note.project,
-        computer=note.computer,
         title=note.title,
         body=note.body,
         tags=note.tags,
@@ -276,7 +272,6 @@ def note_list_item(note: Note) -> NoteListItem:
     return NoteListItem(
         id=note.id,
         project=note.project,
-        computer=note.computer,
         title=note.title,
         tags=note.tags,
         shared=note.shared,
@@ -761,11 +756,7 @@ async def confirm_cross_project_delete(
                 "pass confirm=true to proceed"
             ),
         )
-    where = (
-        record.project
-        if record.computer == current.computer
-        else f"{record.project} on {record.computer}"
-    )
+    where = record.project
     raise NeedInput(
         {
             key: elicit(
@@ -1087,7 +1078,7 @@ async def groom(args: Groom, backlog: Backlog) -> str:
         for item in found
     ]
     return (
-        f"Open backlog of {project.slug} ({project.root} on {project.computer}):\n\n"
+        f"Open backlog of {project.slug}:\n\n"
         + ("\n".join(lines) or "- nothing open")
         + "\n\nReview it: what should be done first, what duplicates what, "
         "and which items are too vague to start. Suggest concrete edits."

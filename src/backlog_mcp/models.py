@@ -49,18 +49,21 @@ class Origin(StrEnum):
     NONE = "none"
 
 
+class ProjectRootOut(BaseModel):
+    computer: str = Field(description="Computer this binding belongs to.")
+    root: str = Field(description="Root directory; empty when the project has no files here.")
+
+
 class ProjectOut(BaseModel):
     """A project with its task counts."""
 
     id: int
     slug: str
     name: str
-    computer: str = Field(description="Computer the root directory is on.")
-    root: str = Field(description="Root directory, as a path on `computer`.")
+    roots: list[ProjectRootOut] = Field(default_factory=list)
     here: bool = Field(
         description=(
-            "False when the project is on another computer: its files are not reachable "
-            "from this one."
+            "True when this computer has a non-empty filesystem binding for the project."
         )
     )
     description: str = ""
@@ -74,7 +77,6 @@ class ProjectOut(BaseModel):
 class TaskOut(BaseModel):
     id: int
     project: str = Field(description="Slug of the owning project.")
-    computer: str = Field(description="Computer the owning project is on.")
     title: str
     body: str = ""
     status: Status
@@ -91,7 +93,6 @@ class TaskListItem(BaseModel):
 
     id: int
     project: str = Field(description="Slug of the owning project.")
-    computer: str = Field(description="Computer the owning project is on.")
     title: str
     status: Status
     priority: Priority
@@ -109,7 +110,6 @@ class NoteOut(BaseModel):
 
     id: int
     project: str = Field(description="Slug of the owning project.")
-    computer: str = Field(description="Computer the owning project is on.")
     title: str
     body: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -124,7 +124,6 @@ class NoteListItem(BaseModel):
 
     id: int
     project: str = Field(description="Slug of the owning project.")
-    computer: str = Field(description="Computer the owning project is on.")
     title: str
     tags: list[str] = Field(default_factory=list)
     shared: bool = Field(default=False, description="Visible from every project.")
@@ -236,6 +235,7 @@ __all__ = [
     "Origin",
     "Priority",
     "ProjectOut",
+    "ProjectRootOut",
     "Projects",
     "Scope",
     "Stats",

@@ -95,7 +95,7 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
             assert scope["project"]["slug"] == "app"
             assert scope["project"]["here"] is True
             task = payload(await client.call_tool("task_add", {"title": "From the laptop"}))
-            assert task["computer"] == "laptop"
+            assert task["project"] == "app"
         async with Client(str(endpoint.with_query(computer="laptop")), pick(None)) as client:
             await client.initialize()
             #: No project chosen is a state, not an error: `project_use` may clear a pin here.
@@ -192,7 +192,9 @@ async def test_http_binding_uses_application_backlog(backlog: Backlog) -> None:
             await client.initialize()
             result = await client.read_resource("backlog://project")
             assert isinstance(result.contents[0], TextResourceContents)
-            assert json.loads(result.contents[0].text)["project"]["root"] == str(backlog.cwd)
+            assert json.loads(result.contents[0].text)["project"]["roots"] == [
+                {"computer": "here", "root": str(backlog.cwd)}
+            ]
     finally:
         ACTIVE.reset(token)
 

@@ -137,7 +137,8 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )""",
         """INSERT INTO project_roots (project_id, computer, root)
             SELECT id, computer, root FROM projects""",
-        "CREATE UNIQUE INDEX project_roots_unique_path ON project_roots (computer, root) WHERE root != ''",
+        "CREATE UNIQUE INDEX project_roots_unique_path "
+        "ON project_roots (computer, root) WHERE root != ''",
         "DROP TABLE projects",
         "ALTER TABLE projects_v4 RENAME TO projects",
     ),
@@ -406,7 +407,9 @@ class Store:
         found = await self.attach_roots([to_project(row) for row in rows])
         return max(
             found,
-            key=lambda item: max(len(root.root) for root in item.roots if root.computer == computer),
+            key=lambda item: max(
+                len(root.root) for root in item.roots if root.computer == computer
+            ),
         ) if found else None
 
     async def projects(
@@ -418,7 +421,10 @@ class Store:
         if not archived:
             clauses.append("p.archived = 0")
         if computer is not None:
-            clauses.append("EXISTS (SELECT 1 FROM project_roots r WHERE r.project_id = p.id AND r.computer = ?)")
+            clauses.append(
+                "EXISTS (SELECT 1 FROM project_roots r "
+                "WHERE r.project_id = p.id AND r.computer = ?)"
+            )
             parameters.append(computer)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
@@ -441,7 +447,8 @@ class Store:
         connection = await self.open()
         now = time.time()
         cursor = await connection.execute(
-            "INSERT INTO projects (slug, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO projects (slug, name, description, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?)",
             (slug, name, description, now, now),
         )
         await connection.execute(
@@ -457,7 +464,8 @@ class Store:
         """Bind a project to one location; non-empty paths belong to only one project."""
         connection = await self.open()
         existing = await self.row(
-            "SELECT project_id FROM project_roots WHERE project_id = ? AND computer = ? AND root = ?",
+            "SELECT project_id FROM project_roots "
+            "WHERE project_id = ? AND computer = ? AND root = ?",
             (project_id, computer, str(root)),
         )
         if existing is not None:

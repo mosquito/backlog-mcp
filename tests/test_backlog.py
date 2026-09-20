@@ -43,7 +43,7 @@ async def test_the_directory_decides_and_the_project_is_made_once(tmp_path: Path
 
     project, origin = await backlog.current()
     assert origin is Origin.CREATED
-    assert project.root == str(root)
+    assert project.roots[0].root == str(root)
     assert backlog.state.last_project("here") == project.slug
 
     again, origin = await backlog.current()
@@ -129,15 +129,34 @@ async def test_save_registers_the_directory_a_root_or_updates_a_name(tmp_path: P
     backlog = instance(tmp_path, root)
 
     here = await backlog.save()
-    assert here.root == str(root)
+    assert here.roots[0].root == str(root)
     assert (await backlog.save()).id == here.id
 
     added = await backlog.save(root="../other", name="Other", description="Second board")
-    assert added.root == str(other)
+    assert added.roots[0].root == str(other)
     assert added.description == "Second board"
 
     renamed = await backlog.save(reference=here.slug, name="Renamed", archived=True)
     assert renamed.id == here.id
     assert renamed.name == "Renamed"
     assert renamed.archived is True
+    await backlog.store.close()
+
+
+async def test_save_binds_an_existing_project_on_another_computer(tmp_path: Path) -> None:
+    root = tmp_path / "work"
+    root.mkdir()
+    backlog = instance(tmp_path, root)
+    project = await backlog.save(name="Work")
+
+    remote = backlog.view(computer="laptop")
+    bound = await remote.save(reference=project.slug, root="/srv/work")
+    contextual = await remote.save(reference=project.slug, root="")
+
+    assert bound.id == project.id == contextual.id
+    assert {(item.computer, item.root) for item in contextual.roots} == {
+        ("here", str(root)),
+        ("laptop", ""),
+        ("laptop", "/srv/work"),
+    }
     await backlog.store.close()
