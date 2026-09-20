@@ -1,4 +1,4 @@
-"""The state file: the name of this computer, and the project pinned on each computer."""
+"""The state file: the name of this computer."""
 
 from __future__ import annotations
 
@@ -15,13 +15,15 @@ log = logging.getLogger(__name__)
 
 VERSION = 2
 
+#: Keys of older versions. They selected a project; nothing in the file selects one now.
+LEGACY_KEYS = ("pins", "last")
+
 
 class State:
     """A small JSON file, written whole and replaced atomically.
 
-    It holds the name of this computer and the pins, not a cache: the database stays the only
-    source of truth about projects. Pins are kept per computer, because one HTTP server answers
-    for several of them.
+    It holds the name of this computer, not a cache: the database stays the only source of
+    truth about projects, and nothing in the file chooses one.
     """
 
     def __init__(self, path: Path | str) -> None:
@@ -42,6 +44,8 @@ class State:
 
     def write(self, values: dict[str, Any]) -> None:
         """Replace the file in one step, so a reader never sees half a document."""
+        for key in LEGACY_KEYS:
+            values.pop(key, None)
         values["version"] = VERSION
         values["updated_at"] = time.time()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,17 +61,6 @@ class State:
         values.update(changes)
         self.write(values)
         return values
-
-    def table(self, key: str) -> dict[str, str]:
-        """A mapping of computer name to project slug, with anything malformed dropped."""
-        value = self.read().get(key)
-        if not isinstance(value, dict):
-            return {}
-        return {
-            name: slug
-            for name, slug in value.items()
-            if isinstance(name, str) and isinstance(slug, str) and slug
-        }
 
     @property
     def computer(self) -> str | None:
@@ -89,32 +82,5 @@ class State:
         self.update(computer=name)
         return name
 
-    def pinned(self, computer: str) -> str | None:
-        """The slug a user chose with `project_use` on that computer, if any."""
-        return self.table("pins").get(computer)
 
-    def pin(self, computer: str, slug: str | None) -> None:
-        pins = self.table("pins")
-        if slug:
-            pins[computer] = slug
-        else:
-            pins.pop(computer, None)
-        self.update(pins=pins)
-
-    def unpin(self, slug: str) -> None:
-        """Drop the pin of every computer that points at that project, once it is deleted."""
-        pins = self.table("pins")
-        kept = {name: pinned for name, pinned in pins.items() if pinned != slug}
-        if kept != pins:
-            self.update(pins=kept)
-
-    def last_project(self, computer: str) -> str | None:
-        return self.table("last").get(computer)
-
-    def remember(self, computer: str, slug: str) -> None:
-        """Record the project last worked on. Diagnostic only; it never changes resolution."""
-        if self.last_project(computer) != slug:
-            self.update(last={**self.table("last"), computer: slug})
-
-
-__all__ = ["VERSION", "State"]
+__all__ = ["LEGACY_KEYS", "VERSION", "State"]

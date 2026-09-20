@@ -70,9 +70,9 @@ class Backlog:
     """The store, the state file and one working directory, as the tools see them.
 
     Every handler asks this object which project it is working on. Resolution order:
-    the project named on the command line, then the project pinned on this computer, then the
-    deepest registered project of this computer containing the working directory, then a
-    project created for it.
+    the project named on the command line or in the URL, then the deepest registered project of
+    this computer containing the working directory, then a project created for it. Nothing else
+    chooses: no pin and no remembered choice, so two clients never redirect each other.
     """
 
     def __init__(
@@ -131,16 +131,14 @@ class Backlog:
 
     async def current(self) -> tuple[Project, Origin]:
         """The project the tools work on, and why that one. Raises when there is none."""
-        project, origin = await self.decide()
-        self.state.remember(self.computer, project.slug)
-        return project, origin
+        return await self.decide()
 
     async def decide(self) -> tuple[Project, Origin]:
         project, origin = await self.choose()
         if project is None:
             raise UnknownProject(
-                f"no project chosen on computer {self.computer!r}: add project=<slug> to the "
-                "URL, or pin one with project_use"
+                f"no project chosen on computer {self.computer!r}: pass project=<slug> to the "
+                "tool, or add project=<slug> to the URL"
             )
         return project, origin
 
@@ -152,12 +150,6 @@ class Backlog:
         """
         if self.named:
             return await self.lookup(self.named), Origin.ARGUMENT
-        if pinned := self.state.pinned(self.computer):
-            found = await self.store.project_by_slug(pinned)
-            if found is not None:
-                return found, Origin.PINNED
-            log.warning("pinned project %r no longer exists, clearing the pin", pinned)
-            self.state.pin(self.computer, None)
         if self.remote:
             return None, Origin.NONE
         found = await self.store.project_for_path(self.cwd, computer=self.computer)
@@ -167,10 +159,7 @@ class Backlog:
 
     async def scope(self) -> tuple[Project | None, Origin]:
         """Like `current`, with no project as a state to report, not an error."""
-        project, origin = await self.choose()
-        if project is not None:
-            self.state.remember(self.computer, project.slug)
-        return project, origin
+        return await self.choose()
 
     async def lookup(self, reference: str) -> Project:
         """A project by slug, or by any path inside it on this computer. Raises `UnknownProject`."""
@@ -310,7 +299,7 @@ class Backlog:
         return updated
 
     async def delete(self, project: Project) -> ProjectContents:
-        """Delete a project for good: its roots, tasks, notes, and the pins that point at it.
+        """Delete a project for good: its roots, tasks and notes.
 
         The project fixed for this process by `--project` or the URL stays, because every later
         call would fail to find it.
@@ -321,7 +310,6 @@ class Backlog:
             )
         contents = await self.store.project_contents(project.id)
         await self.store.delete_project(project.id)
-        self.state.unpin(project.slug)
         log.info(
             "deleted project %s with %d tasks and %d notes",
             project.slug,

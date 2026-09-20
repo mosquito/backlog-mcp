@@ -1,5 +1,6 @@
 """Several computers in one backlog: what each one sees, and what it is told about the others."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -35,18 +36,17 @@ def test_the_host_name_is_remembered_once(tmp_path: Path, monkeypatch: pytest.Mo
     assert state.computer == "first-host"
 
 
-def test_pins_are_kept_per_computer(tmp_path: Path) -> None:
-    state = State(tmp_path / "state.json")
-    state.pin("desk", "work")
-    state.pin("laptop", "app")
-    assert (state.pinned("desk"), state.pinned("laptop")) == ("work", "app")
-    state.pin("desk", None)
-    assert state.pinned("desk") is None
-    assert state.pinned("laptop") == "app"
-    state.remember("desk", "work")
-    state.remember("laptop", "app")
-    assert (state.last_project("desk"), state.last_project("laptop")) == ("work", "app")
-    assert state.pinned("nowhere") is None
+def test_legacy_pins_leave_the_state_on_the_next_write(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {"version": 2, "computer": "desk", "pins": {"desk": "work"}, "last": {"desk": "work"}}
+        )
+    )
+    state = State(path)
+    assert state.computer_name() == "desk"
+    state.update(computer="desk")
+    assert set(state.read()) == {"version", "computer", "updated_at"}
 
 
 async def test_one_project_has_roots_on_several_computers(tmp_path: Path) -> None:
@@ -118,10 +118,6 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
     fixed = backlog.view(computer="laptop", project="app")
     chosen, origin = await fixed.current()
     assert (chosen.id, origin) == (app.id, Origin.ARGUMENT)
-    backlog.state.pin("laptop", "app")
-    pinned, origin = await backlog.view(computer="laptop").current()
-    assert (pinned.id, origin) == (app.id, Origin.PINNED)
-    assert backlog.state.pinned("desk") is None
 
     #: A slug reaches any computer, a path only this one.
     assert (await backlog.lookup("twin")).roots[0].computer == "laptop"

@@ -64,13 +64,14 @@ active task as `doing` when starting, update details as progress happens, and ma
 preference, convention, constraint, or decision, save or update it promptly in a note so future \
 sessions remember it. Do not wait to be asked.
 
-Scope. Every tool works on one project, the current one, unless the call names another. The \
-current project is the one this server was started on, else the project pinned by \
-`project_use`, else the project whose root contains the working directory, else a project \
-registered for that directory on the spot. `project_current` reports which project is current \
-and which of those reasons chose it. A computer reached over HTTP with nothing named and nothing \
-pinned has no current project: `project_current` then says `origin: none`, and the tools that \
-need a project ask for one.
+Scope. Every tool works on one project, the current one, unless the call names another with \
+`project`. The current project is the one fixed for this connection (`--project` on stdio, \
+`?project=<slug>` in the URL), else the project whose root contains the working directory, else \
+a project registered for that directory on the spot. Nothing else chooses a project: there is \
+no pin and no remembered choice, so two clients never redirect each other. `project_current` \
+reports which project is current and which of those reasons chose it. A computer reached over \
+HTTP with nothing named has no current project: `project_current` then says `origin: none`, and \
+every tool that needs a project takes `project=<slug>`.
 
 Computers. One logical project can have several `(computer, root)` bindings. `project_current` \
 reports the computer this session works from and every computer with a binding; a project lists \
@@ -410,12 +411,6 @@ class SaveProject(BaseModel):
     )
 
 
-class UseProject(BaseModel):
-    project: str | None = Field(
-        default=None, description="Project to pin. Omit to drop the pin and follow the directory."
-    )
-
-
 class DeleteProject(BaseModel):
     project: str = Field(description="Project slug, or any path inside it.")
     confirm: bool = Field(
@@ -573,7 +568,9 @@ class StatsOf(BaseModel):
 
 @registry.tool(title="Current project", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def project_current(args: Nothing, backlog: Backlog) -> Scope:
-    """Report the current active project, computer, and storage paths. Call at session start."""
+    """Report the current project, how it was chosen, the computer, and the storage paths.
+
+    Diagnostics only: it changes nothing. Call at session start."""
     return await scope_of(backlog)
 
 
@@ -603,19 +600,6 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
     )
     await changed()
     return project_out(project, computer=backlog.computer)
-
-
-@registry.tool(title="Pin a project", annotations=Hint.IDEMPOTENT)
-async def project_use(args: UseProject, backlog: Backlog) -> Scope:
-    """Pin current project across sessions so tools target this board. Omit `project` to clear pin.
-
-    A project fixed at server startup takes precedence."""
-    if args.project:
-        project = await backlog.lookup(args.project)
-        backlog.state.pin(backlog.computer, project.slug)
-    else:
-        backlog.state.pin(backlog.computer, None)
-    return await scope_of(backlog)
 
 
 @registry.tool(title="Delete a project", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)

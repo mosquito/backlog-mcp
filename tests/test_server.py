@@ -11,7 +11,6 @@ from aiohttp_tiny_mcp.testing import connect
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 from backlog_mcp.server import registry
-from backlog_mcp.state import State
 
 
 async def call(client: BaseClient, tool_name: str, **arguments: Any) -> dict[str, Any]:
@@ -43,7 +42,6 @@ async def test_catalogue(client: BaseClient) -> None:
         "project_current",
         "project_list",
         "project_save",
-        "project_use",
         "project_delete",
         "task_add",
         "task_list",
@@ -70,7 +68,7 @@ async def test_catalogue(client: BaseClient) -> None:
     }
 
 
-async def test_scope_pin_and_unpin(client: BaseClient, backlog: Backlog) -> None:
+async def test_scope_follows_the_directory(client: BaseClient, backlog: Backlog) -> None:
     current = await call(client, "project_current")
     assert current["origin"] == "created"
     assert current["project"]["roots"] == [{"computer": "here", "root": str(backlog.cwd)}]
@@ -79,26 +77,22 @@ async def test_scope_pin_and_unpin(client: BaseClient, backlog: Backlog) -> None
     assert (await call(client, "project_current"))["origin"] == "directory"
 
     other = await call(client, "project_save", root="../other", name="Other Project")
-    pinned = await call(client, "project_use", project=other["slug"])
-    assert pinned["origin"] == "pinned"
-    assert pinned["project"]["id"] == other["id"]
-    assert State(backlog.state.path).pinned(backlog.computer) == other["slug"]
-    task = await call(client, "task_add", title="Pinned task")
+    #: Another registered project changes nothing: the directory still decides.
+    assert (await call(client, "project_current"))["project"]["id"] == current["project"]["id"]
+    task = await call(client, "task_add", title="Elsewhere", project=other["slug"])
     assert task["project"] == other["slug"]
-
-    unpinned = await call(client, "project_use")
-    assert unpinned["origin"] == "directory"
-    assert unpinned["project"]["id"] == current["project"]["id"]
-    assert State(backlog.state.path).pinned(backlog.computer) is None
+    task = await call(client, "task_add", title="Here")
+    assert task["project"] == current["project"]["slug"]
 
 
-async def test_explicit_project_overrides_pin(client: BaseClient, backlog: Backlog) -> None:
+async def test_the_fixed_project_beats_the_directory(client: BaseClient, backlog: Backlog) -> None:
     current = await call(client, "project_current")
     other = await call(client, "project_save", root="../other")
-    backlog.named = current["project"]["slug"]
-    pinned = await call(client, "project_use", project=other["slug"])
-    assert pinned["origin"] == "argument"
-    assert pinned["project"]["id"] == current["project"]["id"]
+    backlog.named = other["slug"]
+    fixed = await call(client, "project_current")
+    assert fixed["origin"] == "argument"
+    assert fixed["project"]["id"] == other["id"]
+    assert fixed["project"]["id"] != current["project"]["id"]
 
 
 async def test_project_update_archive_and_counts(client: BaseClient) -> None:
@@ -376,7 +370,6 @@ async def test_scoped_completions(client: BaseClient) -> None:
         ("note_append", {"id": 999, "text": "Missing"}, "no note #999"),
         ("note_delete", {"id": 999}, "no note #999"),
         ("task_add", {"title": "Wrong project", "project": "missing"}, "no project"),
-        ("project_use", {"project": "missing"}, "no project"),
     ],
 )
 async def test_missing_objects_return_errors(
@@ -585,7 +578,6 @@ async def test_project_delete_reports_before_it_deletes(
     assert "confirm=true" in preview["detail"]
     assert (await call(client, "project_list"))["count"] == 2
 
-    await call(client, "project_use", project=other["slug"])
     deleted = await call(client, "project_delete", project=other["slug"], confirm=True)
     assert deleted["deleted"] is True
     assert (deleted["slug"], deleted["tasks"], deleted["notes"]) == (other["slug"], 1, 2)
@@ -594,7 +586,7 @@ async def test_project_delete_reports_before_it_deletes(
     assert await backlog.store.note(shared["id"]) is None
     assert await backlog.store.note(private["id"]) is None
     assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
-    #: The pin pointed at the deleted project, so the directory decides again.
+    #: The directory still decides.
     assert (await call(client, "project_current"))["origin"] == "directory"
     #: The directory is free again: registering it makes a new project.
     again = await call(client, "project_save", root="../other")

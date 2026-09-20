@@ -123,8 +123,6 @@ ancestor holding `.git`, `.hg`, `.svn` or `.jj`, else the directory itself.
 ```bash
 backlog current            # which project, and why that one
 backlog projects           # every registered project
-backlog use other-project  # pin it, whatever the directory says
-backlog use --clear        # follow the directory again
 backlog move 1 other-project
 ```
 
@@ -168,9 +166,9 @@ https://backlog.example.com/mcp?computer=laptop&project=app
 `computer` names the computer the client runs on, and `project` fixes its current project, since
 the server cannot see the client's working directory. A client that cannot send an
 `Authorization` header passes the credentials in the URL instead, as `auth=<base64 of
-user:password>`; the header wins when both are present. Without `project`, the project pinned with
-`project_use` on that computer counts; with neither, `project_current` reports `origin: none`
-and the tools that need a current project ask for one. `project_save` with an explicit `root`
+user:password>`; the header wins when both are present. Without `project`, `project_current`
+reports `origin: none` and every tool that needs a project takes `project=<slug>`: nothing is
+pinned or remembered, so one client never redirects another. `project_save` with an explicit `root`
 checks that the directory exists on this computer; for another computer it takes the path as
 given. Every client shares the credentials and may name any computer: the server tells the
 computers apart, it does not keep them from each other.
@@ -227,8 +225,8 @@ on; without them every request is served, so bind to `127.0.0.1`. The endpoint r
 scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
 validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
 
-The agent gets 18 tools (`project_current`, `project_use`, `project_list`, `project_save`,
-`project_delete`, `task_add`, `task_get`, `task_list`, `task_update`, `task_move`, `task_delete`, `note_save`,
+The agent gets 17 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
+`task_add`, `task_get`, `task_list`, `task_update`, `task_move`, `task_delete`, `note_save`,
 `note_append`, `note_get`, `note_list`, `note_delete`, `search`, `stats`), the same
 boards, and the same database. `search` is the one search: it answers with the tasks and
 the notes that match, so a new kind of record later is one more list in the result, not a new
@@ -293,7 +291,7 @@ backlog skills triage   # the instructions in full
 | What | Path | Override |
 | --- | --- | --- |
 | Projects, tasks and notes | `$XDG_DATA_HOME/backlog-mcp/backlog.sqlite3` | `--database`, `BACKLOG_MCP_DATABASE` |
-| The computer name and the pins | `$XDG_STATE_HOME/backlog-mcp/state.json` | `--state`, `BACKLOG_MCP_STATE` |
+| The computer name | `$XDG_STATE_HOME/backlog-mcp/state.json` | `--state`, `BACKLOG_MCP_STATE` |
 | Defaults | `/etc/backlog-mcp/config.toml`, `$XDG_CONFIG_HOME/backlog-mcp/config.toml`, `./.backlog-mcp.toml` | `--config` |
 
 Every global option, and every option of `backlog mcp`, can come from the command line, from

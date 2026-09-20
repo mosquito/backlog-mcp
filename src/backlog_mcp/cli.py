@@ -375,24 +375,6 @@ class Current(Command):
         return 0
 
 
-class Use(Command):
-    """Pin a project, so the working directory stops deciding. Drop the pin with `--clear`."""
-
-    target: str = argclass.Argument(
-        "target", nargs="?", default=None, help="Project slug, or a path inside it"
-    )
-    clear: bool = argclass.Argument(default=False, help="Forget the pin and follow the directory")
-
-    async def __call__(self) -> int:
-        computer = self.backlog.computer
-        if self.clear:
-            self.backlog.state.pin(computer, None)
-        elif self.target:
-            self.backlog.state.pin(computer, (await self.backlog.lookup(self.target)).slug)
-        console.print(scope_panel(await scope_of(self.backlog)))
-        return 0
-
-
 def computer_options() -> tuple[str, bool]:
     """The two arguments that widen a listing to another computer, or to all of them.
 
@@ -1187,7 +1169,8 @@ class CLI(argclass.Parser):
         type=Path,
         default=None,
         help=(
-            "JSON file holding the pinned project (default: $XDG_STATE_HOME/backlog-mcp/state.json)"
+            "JSON file holding the name of this computer "
+            "(default: $XDG_STATE_HOME/backlog-mcp/state.json)"
         ),
     )
     root: Path = argclass.Argument(
@@ -1241,17 +1224,9 @@ class CLI(argclass.Parser):
     current = Current(
         help="Show which project the commands work on",
         description=(
-            "Print the current project and why it is current: named by --project, pinned by "
-            "`backlog use`, found from the working directory, or registered for it just now. "
-            "Also prints the database and the state file in use."
-        ),
-    )
-    use = Use(
-        help="Pin a project, or drop the pin",
-        description=(
-            "Pin a project so the working directory stops deciding which board is current. "
-            "The pin lives in the state file and outlives the process. `backlog use --clear` "
-            "drops it and the directory decides again."
+            "Print the current project and why it is current: named by --project, found from "
+            "the working directory, or registered for it just now. Also prints the database and "
+            "the state file in use."
         ),
     )
     projects = Projects(

@@ -155,7 +155,7 @@ def test_an_empty_library_says_so(
     assert run("skills") == (1, "no skills\n")
 
 
-def test_projects_pin_and_scope(run: Runner, tmp_path: Path) -> None:
+def test_projects_and_scope(run: Runner, tmp_path: Path) -> None:
     other = tmp_path / "other"
     other.mkdir()
     run("add", "Local work")
@@ -163,17 +163,13 @@ def test_projects_pin_and_scope(run: Runner, tmp_path: Path) -> None:
     assert code == 2
     assert "no project" in output
 
-    assert run("use", str(other))[0] == 2
+    #: No `use` command: only --project and the directory choose.
+    with pytest.raises(SystemExit):
+        run("use", "workspace")
     code, output = run("current")
     assert "workspace" in output
     assert "directory" in output
-
-    code, output = run("projects")
-    assert "workspace" in output
-    code, output = run("use", "workspace")
-    assert "pinned" in output
-    assert run("current")[1].count("pinned") == 1
-    assert "directory" in run("use", "--clear")[1]
+    assert "workspace" in run("projects")[1]
 
 
 def test_move_between_projects_and_count(run: Runner, tmp_path: Path) -> None:

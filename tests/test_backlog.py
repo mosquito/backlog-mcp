@@ -44,7 +44,6 @@ async def test_the_directory_decides_and_the_project_is_made_once(tmp_path: Path
     project, origin = await backlog.current()
     assert origin is Origin.CREATED
     assert project.roots[0].root == str(root)
-    assert backlog.state.last_project("here") == project.slug
 
     again, origin = await backlog.current()
     assert origin is Origin.DIRECTORY
@@ -66,7 +65,8 @@ async def test_a_second_directory_gets_its_own_slug(tmp_path: Path) -> None:
     await backlog.store.close()
 
 
-async def test_a_pin_beats_the_directory_and_a_dead_pin_is_dropped(tmp_path: Path) -> None:
+async def test_nothing_but_the_directory_chooses(tmp_path: Path) -> None:
+    """Another registered project does not take over, and the state file holds no choice."""
     here = tmp_path / "here"
     there = tmp_path / "there"
     here.mkdir()
@@ -74,17 +74,11 @@ async def test_a_pin_beats_the_directory_and_a_dead_pin_is_dropped(tmp_path: Pat
     backlog = instance(tmp_path, here)
 
     local, _ = await backlog.current()
-    other = await backlog.create(there)
-    backlog.state.pin("here", other.slug)
-    pinned, origin = await backlog.current()
-    assert origin is Origin.PINNED
-    assert pinned.id == other.id
-
-    backlog.state.pin("here", "gone")
-    fallback, origin = await backlog.current()
+    await backlog.create(there)
+    chosen, origin = await backlog.current()
     assert origin is Origin.DIRECTORY
-    assert fallback.id == local.id
-    assert backlog.state.pinned("here") is None
+    assert chosen.id == local.id
+    assert not set(backlog.state.read()) & {"pins", "last"}
     await backlog.store.close()
 
 
@@ -95,7 +89,7 @@ async def test_the_named_project_beats_everything(tmp_path: Path) -> None:
     there.mkdir()
     backlog = instance(tmp_path, here)
     other = await backlog.create(there, name="Other")
-    backlog.state.pin("here", (await backlog.create(here)).slug)
+    await backlog.create(here)
 
     backlog.named = other.slug
     chosen, origin = await backlog.current()

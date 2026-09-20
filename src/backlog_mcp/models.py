@@ -42,10 +42,9 @@ class Origin(StrEnum):
     """How the current project was chosen."""
 
     ARGUMENT = "argument"
-    PINNED = "pinned"
     DIRECTORY = "directory"
     CREATED = "created"
-    #: A computer with no project chosen: nothing named, nothing pinned, no directory here.
+    #: A computer with no project chosen: nothing named, no directory here.
     NONE = "none"
 
 

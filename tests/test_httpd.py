@@ -98,15 +98,13 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
             assert task["project"] == "app"
         async with Client(str(endpoint.with_query(computer="laptop")), pick(None)) as client:
             await client.initialize()
-            #: No project chosen is a state, not an error: `project_use` may clear a pin here.
+            #: No project chosen is a state, not an error.
             scope = payload(await client.call_tool("project_current", {}))
             assert (scope["project"], scope["origin"], scope["computer"]) == (
                 None,
                 "none",
                 "laptop",
             )
-            cleared = payload(await client.call_tool("project_use", {}))
-            assert cleared["origin"] == "none"
             result = await client.call_tool("task_add", {"title": "Nowhere"})
             assert isinstance(result, CallToolResult) and result.is_error
             assert isinstance(result.content[0], TextContent)

@@ -42,7 +42,7 @@ def database_path() -> Path:
 
 
 def state_path() -> Path:
-    """Where the pinned project is remembered."""
+    """Where the name of this computer is remembered."""
     return state_home() / APP / "state.json"
 
 
