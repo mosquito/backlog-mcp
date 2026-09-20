@@ -1,5 +1,6 @@
 """The command line: one process per call, through `main`."""
 
+import asyncio
 import json
 import os
 import tomllib
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from backlog_mcp import cli, render
+from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Priority, Status
 from backlog_mcp.store import Note, Task
 from backlog_mcp.version import VERSION
@@ -678,3 +680,30 @@ def test_install_changes_only_selected_client(
     assert run("install", f"--{client}")[0] == 0
     assert (directory / ".claude" / "settings.json").exists() is (client == "claude")
     assert (directory / ".codex" / "config.toml").exists() is (client == "codex")
+
+
+async def test_watch_prints_each_event(
+    backlog: Backlog, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`backlog watch` runs its own loop in a thread; the server and the writer stay here."""
+    from aiohttp.test_utils import TestServer
+    from aiohttp_tiny_mcp.client import Client
+    from aiohttp_tiny_mcp.testing import pick
+
+    from backlog_mcp.httpd import ENDPOINT_PATH, application
+
+    async with TestServer(application(backlog, console=False)) as server:
+        url = str(server.make_url(ENDPOINT_PATH))
+        flags = ["--database", str(tmp_path / "unused.sqlite3"), "--state", str(tmp_path / "s")]
+        watching = asyncio.create_task(
+            asyncio.to_thread(cli.main, [*flags, "-r", str(tmp_path), "watch", url, "-n", "1"])
+        )
+        async with Client(url, pick("2026-07-28")) as writer:
+            await writer.initialize()
+            title = "Watched"
+            while not watching.done():
+                await writer.call_tool("task_add", {"title": title})
+                await asyncio.sleep(0.1)
+        assert await watching == 0
+    output = capsys.readouterr().out
+    assert "task #" in output and "added" in output and "'Watched'" in output

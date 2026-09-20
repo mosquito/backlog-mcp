@@ -16,7 +16,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from .models import NoteOut, Priority, ProjectOut, Scope, Stats, Status, TaskOut
+from .models import Action, Event, NoteOut, Priority, ProjectOut, Scope, Stats, Status, TaskOut
 from .skills import Skill
 
 STATUS_STYLE = {
@@ -378,6 +378,35 @@ def scope_panel(scope: Scope) -> Panel:
     )
 
 
+ACTION_STYLES = {
+    Action.ADDED: "green",
+    Action.UPDATED: "cyan",
+    Action.MOVED: "yellow",
+    Action.DELETED: "red",
+}
+STATUS_STYLES = {
+    Status.DONE: "green",
+    Status.DOING: "cyan",
+    Status.BLOCKED: "red",
+    Status.CANCELLED: "dim",
+    Status.DELETED: "dim",
+}
+
+
+def event_line(event: Event, *, at: datetime | None = None) -> Text:
+    """One event of the backlog as `backlog watch` prints it, stamped with the local time."""
+    when = (at or datetime.now()).strftime("%H:%M:%S")
+    line = Text(f"{when} ", style="dim")
+    line.append(f"{event.kind.value} #{event.id} ", style="bold")
+    line.append(event.action.value, style=ACTION_STYLES.get(event.action, ""))
+    if event.status is not None:
+        line.append(f" {event.status.value}", style=STATUS_STYLES.get(event.status, ""))
+    line.append(f" {event.title!r} ")
+    line.append(f"[{event.project}] ", style="magenta")
+    line.append(f"from {event.computer}", style="dim")
+    return line
+
+
 def note(message: str) -> None:
     console.print(Text(message, style="green"))
 
@@ -392,6 +421,7 @@ def fail(message: str) -> None:
 
 __all__ = [
     "age",
+    "event_line",
     "excerpt",
     "titled",
     "fields",

@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from aiohttp_tiny_mcp import Exchange, Hint, NeedInput, Registry, elicit
+from aiohttp_tiny_mcp import Exchange, Extension, Hint, NeedInput, Registry, elicit
 from aiohttp_tiny_mcp.hub import NOTIFICATIONS, topic
 from aiohttp_tiny_mcp.models import CompleteParams, TextResourceContents
 from pydantic import BaseModel, Field
@@ -146,7 +146,10 @@ Writes. `task_add`, `task_update`, `task_move`, `task_delete`, `note_save`, `not
 `note_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
 one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
 notification says what the write did: kind, action, id, project, title, status, priority and \
-the writer's computer. `task_delete` marks a task's status as \
+the writer's computer. The extension `backlog-mcp/events` sends the same event to every \
+listener as `notifications/backlog/task`, `notifications/backlog/note` (multicast by project \
+slug) and `notifications/backlog/project`; a 2026-07-28 client asks for them in \
+`subscriptions/listen`, older streams get them all. `task_delete` marks a task's status as \
 `deleted` without removing the record. `note_delete` and `project_delete` are destructive and \
 irreversible: call them only when the user asked for exactly that, never on your own initiative. \
 `note_delete` deletes at once within the current project and asks the user to confirm when the \
@@ -180,6 +183,19 @@ async def active(ex: Exchange) -> Backlog:
 
 registry.provide(Backlog, active)
 registry.extension(embeddings.extension)
+
+#: The extension that carries the change notifications; see `changed`.
+EVENTS = "backlog-mcp/events"
+TASK_CHANGED = "notifications/backlog/task"
+NOTE_CHANGED = "notifications/backlog/note"
+PROJECT_CHANGED = "notifications/backlog/project"
+#: Task and note events are multicast by project slug; a project event goes to every listener.
+events = Extension(
+    EVENTS,
+    notifications={TASK_CHANGED: "project", NOTE_CHANGED: "project", PROJECT_CHANGED: None},
+)
+registry.extension(events)
+METHODS = {Kind.TASK: TASK_CHANGED, Kind.NOTE: NOTE_CHANGED, Kind.PROJECT: PROJECT_CHANGED}
 
 
 def use(backlog: Backlog) -> None:
@@ -360,19 +376,25 @@ async def stale(uris: list[str], event: Event) -> None:
 
 
 async def changed(event: Event) -> None:
-    """A task or a project write: the boards, and the touched task, went stale."""
-    uris = ["backlog://tasks", "backlog://projects", "backlog://project"]
-    if event.kind is Kind.TASK:
-        uris.append(f"backlog://tasks/{event.id}")
-    await stale(uris, event)
+    """One write: the resources it touched went stale, and every listener hears the event.
 
-
-async def noted(event: Event) -> None:
-    """A note write, or a project delete: the note listing, and the touched note, went stale."""
-    uris = ["backlog://notes"]
-    if event.kind is Kind.NOTE:
-        uris.append(f"backlog://notes/{event.id}")
+    Subscribers by URI get `resources/updated` with the event in `_meta`; listeners of the
+    `backlog-mcp/events` extension get the event as `notifications/backlog/<kind>`, task and
+    note events only for the projects they named.
+    """
+    match event.kind:
+        case Kind.TASK:
+            uris = ["backlog://tasks", "backlog://projects", "backlog://project"]
+            uris.append(f"backlog://tasks/{event.id}")
+        case Kind.NOTE:
+            uris = ["backlog://notes", f"backlog://notes/{event.id}"]
+        case Kind.PROJECT:
+            uris = ["backlog://tasks", "backlog://projects", "backlog://project"]
+            if event.action is Action.DELETED:
+                #: The notes of the project went with it.
+                uris.append("backlog://notes")
     await stale(uris, event)
+    await registry.broadcast(METHODS[event.kind], event.model_dump(mode="json", exclude_none=True))
 
 
 def task_event(task: Task, action: Action, *, computer: str) -> Event:
@@ -694,9 +716,7 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
         found.detail = "cancelled"
         return found
     await backlog.delete(project)
-    gone = project_event(project, Action.DELETED, computer=backlog.computer)
-    await changed(gone)
-    await noted(gone)
+    await changed(project_event(project, Action.DELETED, computer=backlog.computer))
     found.deleted = True
     return found
 
@@ -899,7 +919,7 @@ async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
                 tags=args.tags or (),
                 shared=bool(args.shared),
             )
-            await noted(note_event(saved, Action.ADDED, computer=backlog.computer))
+            await changed(note_event(saved, Action.ADDED, computer=backlog.computer))
             return note_out(saved)
         args.id = existing.id
     updated = await backlog.store.update_note(
@@ -907,7 +927,7 @@ async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
     )
     if updated is None:
         raise LookupError(f"no note #{args.id}")
-    await noted(note_event(updated, Action.UPDATED, computer=backlog.computer))
+    await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
     return note_out(updated)
 
 
@@ -920,7 +940,7 @@ async def note_append(args: AppendNote, backlog: Backlog) -> NoteOut:
     updated = await backlog.store.append_note(found.id, args.text)
     if updated is None:
         raise LookupError(f"no note #{found.id}")
-    await noted(note_event(updated, Action.UPDATED, computer=backlog.computer))
+    await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
     return note_out(updated)
 
 
@@ -985,7 +1005,7 @@ async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
     if refusal := await confirm_cross_project_delete(found, ex, backlog):
         return refusal
     deleted = await backlog.store.delete_note(args.id)
-    await noted(note_event(found, Action.DELETED, computer=backlog.computer))
+    await changed(note_event(found, Action.DELETED, computer=backlog.computer))
     return Deleted(id=args.id, title=found.title, deleted=deleted)
 
 

@@ -295,6 +295,28 @@ backlog skills          # name, description, how many files
 backlog skills triage   # the instructions in full
 ```
 
+### Live updates
+
+Every write announces itself. A client that subscribes to a resource by URI gets
+`notifications/resources/updated` with the event in `_meta["backlog/event"]`, as above. A client
+that wants the events without subscribing to resources asks for the notifications of the
+`backlog-mcp/events` extension: `notifications/backlog/task` and `notifications/backlog/note`,
+multicast by project slug, and `notifications/backlog/project`, sent to every listener. On
+2026-07-28 the client names them in `subscriptions/listen`, with `{"method": ..., "topics":
+["<slug>"]}` to keep one project; a `GET` stream of an older revision gets every event of every
+project. The params of each notification are the event: `kind`, `action`, `id`, `project`,
+`title`, for tasks `status` and `priority`, and `computer`.
+
+```
+backlog watch https://host/mcp?computer=laptop -u user --password secret
+backlog --project backlog-mcp watch http://127.0.0.1:3009/mcp
+```
+
+`backlog watch` prints one line per event until interrupted, `-n 5` stops after five. Agents
+do not see these notifications: Claude Code and Codex do not forward them into the
+conversation, so an agent still calls `task_list` or `search`. The notifications serve this
+command, the console, dashboards and bots.
+
 ## Where the data lives
 
 | What | Path | Override |

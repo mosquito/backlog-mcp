@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from aiohttp.test_utils import TestServer
+from aiohttp_tiny_mcp import MethodFilter
 from aiohttp_tiny_mcp.client import Client
 from aiohttp_tiny_mcp.client_base import BaseClient
 from aiohttp_tiny_mcp.models import CallToolResult, TextContent
@@ -14,7 +15,13 @@ from aiohttp_tiny_mcp.testing import connect, pick
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import ENDPOINT_PATH, application
 from backlog_mcp.models import EVENT_KEY
-from backlog_mcp.server import registry
+from backlog_mcp.server import (
+    EVENTS,
+    NOTE_CHANGED,
+    PROJECT_CHANGED,
+    TASK_CHANGED,
+    registry,
+)
 
 UPDATED = "notifications/resources/updated"
 
@@ -143,3 +150,125 @@ async def test_a_legacy_get_stream_carries_the_event(backlog: Backlog) -> None:
     assert frame is not None
     assert summary(frame) == ("backlog://tasks", "task", "updated", task["id"])
     assert frame["params"]["_meta"][EVENT_KEY]["status"] == "done"
+
+
+async def test_the_extension_declares_its_notifications(backlog: Backlog) -> None:
+    async with connect(registry, adapter="2026-07-28", initialize=False) as client:
+        discovery = await client.initialize()
+    assert discovery["capabilities"]["extensions"][EVENTS]["notifications"] == {
+        TASK_CHANGED: "project",
+        NOTE_CHANGED: "project",
+        PROJECT_CHANGED: None,
+    }
+
+
+async def wait_accepted(*clients: BaseClient) -> None:
+    while not all(client.accepted for client in clients):
+        await asyncio.sleep(0.01)
+
+
+async def test_every_listener_hears_a_broadcast(backlog: Backlog) -> None:
+    async with (
+        connect(registry, adapter="2026-07-28") as one,
+        connect(registry, adapter="2026-07-28") as two,
+        connect(registry, adapter="2026-07-28") as writer,
+    ):
+        heard_one: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        heard_two: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        collecting = [
+            collect(one.listen(methods=[TASK_CHANGED, NOTE_CHANGED, PROJECT_CHANGED]), heard_one),
+            collect(two.listen(methods=[TASK_CHANGED]), heard_two),
+        ]
+        try:
+            await wait_accepted(one, two)
+            assert one.accepted == {"methods": [TASK_CHANGED, NOTE_CHANGED, PROJECT_CHANGED]}
+            task = await call(writer, "task_add", title="Ship it", status="doing")
+            note = await call(writer, "note_save", title="Rule", body="Always")
+            frames_one = [await asyncio.wait_for(heard_one.get(), 5) for _ in range(2)]
+            frame_two = await asyncio.wait_for(heard_two.get(), 5)
+        finally:
+            for task_ in collecting:
+                task_.cancel()
+            await asyncio.gather(*collecting, return_exceptions=True)
+    assert [frame["method"] for frame in frames_one] == [TASK_CHANGED, NOTE_CHANGED]
+    assert frame_two["method"] == TASK_CHANGED
+    event = {key: value for key, value in frame_two["params"].items() if key != "_meta"}
+    assert event == {
+        "kind": "task",
+        "action": "added",
+        "id": task["id"],
+        "project": task["project"],
+        "title": "Ship it",
+        "status": "doing",
+        "priority": "normal",
+        "computer": "here",
+    }
+    assert frames_one[1]["params"]["id"] == note["id"]
+    assert frames_one[1]["params"]["kind"] == "note"
+    #: Nobody asked for notes on the second listener.
+    assert heard_two.empty()
+
+
+async def test_a_listener_picks_its_project(backlog: Backlog) -> None:
+    async with (
+        connect(registry, adapter="2026-07-28") as one,
+        connect(registry, adapter="2026-07-28") as every,
+        connect(registry, adapter="2026-07-28") as writer,
+    ):
+        other = await call(writer, "project_save", root="../other")
+        heard_one: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        heard_every: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        collecting = [
+            collect(
+                one.listen(methods=[MethodFilter(method=TASK_CHANGED, topics=[other["slug"]])]),
+                heard_one,
+            ),
+            collect(every.listen(methods=[TASK_CHANGED]), heard_every),
+        ]
+        try:
+            await wait_accepted(one, every)
+            assert one.accepted == {
+                "methods": [{"method": TASK_CHANGED, "topics": [other["slug"]]}]
+            }
+            here = await call(writer, "task_add", title="Here")
+            there = await call(writer, "task_add", title="There", project=other["slug"])
+            seen_every = [
+                (await asyncio.wait_for(heard_every.get(), 5))["params"]["id"] for _ in range(2)
+            ]
+            seen_one = (await asyncio.wait_for(heard_one.get(), 5))["params"]
+        finally:
+            for task_ in collecting:
+                task_.cancel()
+            await asyncio.gather(*collecting, return_exceptions=True)
+    assert seen_every == [here["id"], there["id"]]
+    assert (seen_one["id"], seen_one["project"]) == (there["id"], other["slug"])
+    assert heard_one.empty()
+
+
+async def test_a_legacy_stream_hears_every_broadcast_unasked(backlog: Backlog) -> None:
+    app = application(backlog, console=False)
+    async with TestServer(app) as server:
+        url = str(server.make_url(ENDPOINT_PATH))
+        async with (
+            Client(url, pick("2025-03-26")) as listener,
+            Client(url, pick("2025-03-26")) as writer,
+        ):
+            await listener.initialize()
+            await writer.initialize()
+            frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            collecting = collect(listener.listen(), frames)
+            try:
+                frame = None
+                for _ in range(100):
+                    await call(writer, "task_add", title="Ship it")
+                    try:
+                        frame = await asyncio.wait_for(frames.get(), 0.1)
+                        break
+                    except TimeoutError:
+                        continue
+            finally:
+                collecting.cancel()
+                await asyncio.gather(collecting, return_exceptions=True)
+    assert frame is not None
+    assert frame["method"] == TASK_CHANGED
+    assert frame["params"]["title"] == "Ship it"

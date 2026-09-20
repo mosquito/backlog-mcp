@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,9 +22,10 @@ from rich.prompt import Confirm
 
 from . import embeddings, httpd, paths, skills
 from .backlog import Backlog, Reach, UnknownProject
-from .models import OPEN_STATUSES, Priority, Status
+from .models import OPEN_STATUSES, Event, Priority, Status
 from .render import (
     console,
+    event_line,
     fail,
     note,
     note_panel,
@@ -39,6 +40,9 @@ from .render import (
     warn,
 )
 from .server import (
+    NOTE_CHANGED,
+    PROJECT_CHANGED,
+    TASK_CHANGED,
     VERSION,
     append_history,
     bound,
@@ -999,6 +1003,58 @@ class Skills(Command):
         return 0
 
 
+class Watch(Command):
+    """Print each change of a backlog server as it happens."""
+
+    opens = False
+
+    url: str = argclass.Argument(
+        "url",
+        help="The MCP endpoint of a running server, e.g. https://host/mcp?computer=laptop",
+    )
+    user: str = argclass.Argument("-u", "--user", default="", help="Basic auth user")
+    password: str = argclass.Secret("--password", default="", help="Basic auth password")
+    count: int = argclass.Argument(
+        "-n",
+        "--count",
+        default=0,
+        help="Stop after this many events; 0 watches until interrupted",
+    )
+
+    async def __call__(self) -> int:
+        from aiohttp import BasicAuth, ClientSession
+        from aiohttp_tiny_mcp import Client, MethodFilter
+        from aiohttp_tiny_mcp.protocol.selection import AdapterSet
+
+        project = self.reference()
+        #: Task and note events are multicast by project; project events are not.
+        methods: list[str | MethodFilter] = [
+            MethodFilter(method=method, topics=[project]) if project else method
+            for method in (TASK_CHANGED, NOTE_CHANGED)
+        ]
+        methods.append(PROJECT_CHANGED)
+        auth = BasicAuth(self.user, str(self.password)) if self.user else None
+        adapter = AdapterSet.default().by_version["2026-07-28"]
+        seen = 0
+        async with (
+            ClientSession(auth=auth) as session,
+            Client(self.url, adapter, session=session) as client,
+        ):
+            await client.initialize()
+            #: The client types its listener as an iterator; it is a generator to close.
+            listening = cast(AsyncGenerator[dict[str, Any]], client.listen(methods=methods))
+            async with contextlib.aclosing(listening) as changes:
+                async for frame in changes:
+                    event = Event.model_validate(frame.get("params") or {})
+                    if project and event.project != project:
+                        continue
+                    console.print(event_line(event), highlight=False)
+                    seen += 1
+                    if self.count and seen >= self.count:
+                        break
+        return 0
+
+
 class Install(Command):
     """Register this server with the MCP clients on this machine."""
 
@@ -1340,6 +1396,15 @@ class CLI(argclass.Parser):
             "Print the written skills served over MCP: their names, what each one is for, and "
             "how many files it carries. Name a skill to read its instructions in full. Skills "
             "are text: a client reads them, then calls the tools."
+        ),
+    )
+    watch = Watch(
+        help="Print the changes of a backlog server as they happen",
+        description=(
+            "Listen to a running server over HTTP and print one line per change: tasks, notes "
+            "and projects added, updated, moved or deleted, by any client. --project keeps one "
+            "board. The server sends these as MCP notifications of the backlog-mcp/events "
+            "extension; agents do not see them, this command and dashboards do."
         ),
     )
     install = Install(
