@@ -11,7 +11,7 @@ from pathlib import Path
 from .computer import check
 from .models import Origin
 from .state import State
-from .store import Project, Store
+from .store import Project, ProjectContents, Store
 
 log = logging.getLogger(__name__)
 
@@ -215,9 +215,7 @@ class Backlog:
             selected = await self.resolve(project)
             name = check(computer) if computer else None
             if name and not any(root.computer == name for root in selected.roots):
-                raise UnknownProject(
-                    f"project {selected.slug!r} has no binding on {name!r}"
-                )
+                raise UnknownProject(f"project {selected.slug!r} has no binding on {name!r}")
             return Reach(project=selected, computer=name)
         if computer:
             name = check(computer)
@@ -310,6 +308,27 @@ class Backlog:
         )
         assert updated is not None, "the project just updated is gone"
         return updated
+
+    async def delete(self, project: Project) -> ProjectContents:
+        """Delete a project for good: its roots, tasks, notes, and the pins that point at it.
+
+        The project fixed for this process by `--project` or the URL stays, because every later
+        call would fail to find it.
+        """
+        if self.named and (await self.lookup(self.named)).id == project.id:
+            raise ValueError(
+                f"project {project.slug!r} is fixed for this client; delete it from another one"
+            )
+        contents = await self.store.project_contents(project.id)
+        await self.store.delete_project(project.id)
+        self.state.unpin(project.slug)
+        log.info(
+            "deleted project %s with %d tasks and %d notes",
+            project.slug,
+            contents.tasks,
+            contents.notes,
+        )
+        return contents
 
 
 __all__ = ["MARKERS", "Backlog", "Reach", "UnknownProject", "checkout_root", "slugify"]

@@ -11,6 +11,7 @@ from backlog_mcp.store import (
     MIGRATIONS,
     NOTE_LIMIT,
     Project,
+    ProjectContents,
     ProjectRoot,
     Store,
     clean_tags,
@@ -302,3 +303,30 @@ async def test_a_note_body_stops_at_the_limit(store: Store) -> None:
     assert await store.append_note(short.id, "bcd") is not None
     with pytest.raises(ValueError, match="at most 1024"):
         await store.append_note(short.id, "e")
+
+
+async def test_project_delete_takes_everything_on_the_board(store: Store) -> None:
+    gone = await store.add_project(slug="gone", name="gone", root="/tmp/gone", computer="desk")
+    await store.add_root(gone.id, computer="laptop", root="/home/me/gone")
+    kept = await store.add_project(slug="kept", name="kept", root="/tmp/kept", computer="desk")
+    doomed = await store.add_task(project_id=gone.id, title="Doomed")
+    hidden = await store.add_note(project_id=gone.id, title="Hidden", body="doomed")
+    shared = await store.add_note(project_id=gone.id, title="Shared", body="doomed", shared=True)
+    stays = await store.add_task(project_id=kept.id, title="Stays")
+    assert await store.project_contents(gone.id) == ProjectContents(1, 2, 1)
+
+    assert await store.delete_project(gone.id) is True
+    assert await store.delete_project(gone.id) is False
+    assert await store.project(gone.id) is None
+    assert await store.project_contents(gone.id) == ProjectContents(0, 0, 0)
+    assert await store.task(doomed.id) is None
+    assert await store.note(hidden.id) is None
+    assert await store.note(shared.id) is None
+    assert await store.search("Doomed") == []
+    assert await store.search_notes("doomed") == []
+    assert await store.project_by_root("/home/me/gone", computer="laptop") is None
+    assert await store.computers() == ["desk"]
+    assert await store.task(stays.id) is not None
+    #: The directories are free again.
+    again = await store.add_project(slug="gone-2", name="gone", root="/tmp/gone", computer="desk")
+    assert again.id != gone.id

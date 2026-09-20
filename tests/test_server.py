@@ -44,6 +44,7 @@ async def test_catalogue(client: BaseClient) -> None:
         "project_list",
         "project_save",
         "project_use",
+        "project_delete",
         "task_add",
         "task_list",
         "task_get",
@@ -565,6 +566,47 @@ async def test_note_delete_asks_only_across_projects(
             assert (await call(client, "search", query="candidate", all_projects=True))[
                 "count"
             ] == 0
+
+
+async def test_project_delete_reports_before_it_deletes(
+    client: BaseClient, backlog: Backlog
+) -> None:
+    await call(client, "project_current")
+    other = await call(client, "project_save", root="../other")
+    task = await call(client, "task_add", title="Doomed", project=other["slug"])
+    shared = await call(
+        client, "note_save", title="Kept in mind", project=other["slug"], shared=True
+    )
+    private = await call(client, "note_save", title="Private", project=other["slug"])
+
+    preview = await call(client, "project_delete", project=other["slug"])
+    assert preview["deleted"] is False
+    assert (preview["tasks"], preview["notes"], preview["shared_notes"]) == (1, 2, 1)
+    assert "confirm=true" in preview["detail"]
+    assert (await call(client, "project_list"))["count"] == 2
+
+    await call(client, "project_use", project=other["slug"])
+    deleted = await call(client, "project_delete", project=other["slug"], confirm=True)
+    assert deleted["deleted"] is True
+    assert (deleted["slug"], deleted["tasks"], deleted["notes"]) == (other["slug"], 1, 2)
+    assert (await call(client, "project_list"))["count"] == 1
+    assert await backlog.store.task(task["id"]) is None
+    assert await backlog.store.note(shared["id"]) is None
+    assert await backlog.store.note(private["id"]) is None
+    assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
+    #: The pin pointed at the deleted project, so the directory decides again.
+    assert (await call(client, "project_current"))["origin"] == "directory"
+    #: The directory is free again: registering it makes a new project.
+    again = await call(client, "project_save", root="../other")
+    assert again["id"] != other["id"]
+
+
+async def test_project_delete_keeps_the_fixed_project(backlog: Backlog) -> None:
+    project = await backlog.save(root=".")
+    fixed = backlog.view(project=project.slug)
+    with pytest.raises(ValueError, match="fixed for this client"):
+        await fixed.delete(project)
+    assert await backlog.store.project(project.id) is not None
 
 
 async def test_note_delete_without_elicitation(client: BaseClient, backlog: Backlog) -> None:

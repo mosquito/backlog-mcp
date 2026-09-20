@@ -214,6 +214,15 @@ class ProjectRoot:
     root: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectContents:
+    """What a project holds, counted before it is deleted."""
+
+    tasks: int
+    notes: int
+    shared_notes: int
+
+
 @dataclass(slots=True)
 class Task:
     id: int
@@ -405,12 +414,16 @@ class Store:
             (computer, *candidates),
         )
         found = await self.attach_roots([to_project(row) for row in rows])
-        return max(
-            found,
-            key=lambda item: max(
-                len(root.root) for root in item.roots if root.computer == computer
-            ),
-        ) if found else None
+        return (
+            max(
+                found,
+                key=lambda item: max(
+                    len(root.root) for root in item.roots if root.computer == computer
+                ),
+            )
+            if found
+            else None
+        )
 
     async def projects(
         self, *, archived: bool = False, computer: str | None = None
@@ -483,6 +496,30 @@ class Store:
         project = await self.project(project_id)
         assert project is not None, "the project just updated is gone"
         return project
+
+    async def project_contents(self, project_id: int) -> ProjectContents:
+        """Count the tasks and the notes of a project, deleted tasks included."""
+        row = await self.row(
+            "SELECT (SELECT COUNT(*) FROM tasks WHERE project_id = ?) AS tasks, "
+            "(SELECT COUNT(*) FROM notes WHERE project_id = ?) AS notes, "
+            "(SELECT COUNT(*) FROM notes WHERE project_id = ? AND shared = 1) AS shared_notes",
+            (project_id, project_id, project_id),
+        )
+        assert row is not None, "an aggregate query always returns one row"
+        return ProjectContents(row["tasks"], row["notes"], row["shared_notes"])
+
+    async def delete_project(self, project_id: int) -> bool:
+        """Delete a project with its roots, tasks and notes. Nothing of it stays.
+
+        The rows go one table at a time, so the FTS triggers see every task and note.
+        """
+        connection = await self.open()
+        await connection.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+        await connection.execute("DELETE FROM notes WHERE project_id = ?", (project_id,))
+        await connection.execute("DELETE FROM project_roots WHERE project_id = ?", (project_id,))
+        cursor = await connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        await connection.commit()
+        return bool(cursor.rowcount)
 
     async def update_project(
         self,
@@ -952,6 +989,7 @@ __all__ = [
     "NOTE_LIMIT",
     "Note",
     "Project",
+    "ProjectContents",
     "Store",
     "Task",
     "clean_tags",

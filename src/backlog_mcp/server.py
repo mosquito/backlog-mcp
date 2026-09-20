@@ -25,6 +25,7 @@ from .models import (
     NoteOut,
     Notes,
     Priority,
+    ProjectDeleted,
     ProjectOut,
     ProjectRootOut,
     Projects,
@@ -136,10 +137,12 @@ duplicate IDs. Status filters apply to tasks; tag filters apply to both. Embeddi
 locally; no text is sent to an external service.
 
 Writes. `task_add`, `task_update`, `task_move`, `task_delete`, `note_save`, `note_append`, \
-`note_delete` and `project_save` are the only tools that change anything; each one tells \
-subscribed clients which resources went stale. `task_delete` marks a task's status as `deleted` \
-without removing the record. `note_delete` deletes immediately within the current project and asks \
-for confirmation (or `confirm=true`) when the note belongs to another project.
+`note_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
+one tells subscribed clients which resources went stale. `task_delete` marks a task's status as \
+`deleted` without removing the record. `note_delete` deletes immediately within the current \
+project and asks for confirmation (or `confirm=true`) when the note belongs to another project. \
+`project_delete` removes a project with every task and note it holds, only with `confirm=true`; \
+without it the tool reports the counts. Archive with `project_save` when the history should stay.
 
 Skills. This server carries written skills: `triage`, for keeping a board true, and `planning`, \
 for cutting a request into tasks. A client that speaks the skills extension gets them from \
@@ -413,6 +416,14 @@ class UseProject(BaseModel):
     )
 
 
+class DeleteProject(BaseModel):
+    project: str = Field(description="Project slug, or any path inside it.")
+    confirm: bool = Field(
+        default=False,
+        description="Delete for good. Without it the tool only reports what the project holds.",
+    )
+
+
 class AddTask(BaseModel):
     title: str = Field(description="Clear title stating what outcome is to be achieved.")
     body: str = Field(
@@ -605,6 +616,38 @@ async def project_use(args: UseProject, backlog: Backlog) -> Scope:
     else:
         backlog.state.pin(backlog.computer, None)
     return await scope_of(backlog)
+
+
+@registry.tool(title="Delete a project", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
+async def project_delete(args: DeleteProject, backlog: Backlog) -> ProjectDeleted:
+    """Delete a project with every task and note on its board, and free its directories.
+
+    Without `confirm=true` nothing changes: the result counts what the project holds. Prefer
+    `project_save(archived=true)` to keep the history. Delete only a board nobody needs, such as
+    one whose tasks moved elsewhere with `task_move`."""
+    project = await backlog.lookup(args.project)
+    contents = await backlog.store.project_contents(project.id)
+    found = ProjectDeleted(
+        id=project.id,
+        slug=project.slug,
+        name=project.name,
+        tasks=contents.tasks,
+        notes=contents.notes,
+        shared_notes=contents.shared_notes,
+        deleted=False,
+    )
+    if not args.confirm:
+        found.detail = (
+            f"pass confirm=true to delete {project.slug!r} with {contents.tasks} task(s) and "
+            f"{contents.notes} note(s), {contents.shared_notes} of them shared; "
+            "this cannot be undone"
+        )
+        return found
+    await backlog.delete(project)
+    await changed()
+    await noted()
+    found.deleted = True
+    return found
 
 
 @registry.tool(title="Add a task")

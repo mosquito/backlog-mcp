@@ -62,9 +62,7 @@ class ProjectOut(BaseModel):
     name: str
     roots: list[ProjectRootOut] = Field(default_factory=list)
     here: bool = Field(
-        description=(
-            "True when this computer has a non-empty filesystem binding for the project."
-        )
+        description=("True when this computer has a non-empty filesystem binding for the project.")
     )
     description: str = ""
     archived: bool = False
@@ -223,6 +221,19 @@ class Deleted(BaseModel):
     detail: str = ""
 
 
+class ProjectDeleted(BaseModel):
+    """What `project_delete` found on the board, and whether the project is gone."""
+
+    id: int
+    slug: str
+    name: str
+    tasks: int = Field(description="Tasks the project held, deleted ones included.")
+    notes: int = Field(description="Notes the project held, shared ones included.")
+    shared_notes: int = Field(description="Notes among them that every project could see.")
+    deleted: bool
+    detail: str = ""
+
+
 __all__ = [
     "CLOSED_STATUSES",
     "OPEN_STATUSES",
@@ -234,6 +245,7 @@ __all__ = [
     "Notes",
     "Origin",
     "Priority",
+    "ProjectDeleted",
     "ProjectOut",
     "ProjectRootOut",
     "Projects",

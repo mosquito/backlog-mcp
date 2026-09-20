@@ -101,6 +101,13 @@ class State:
             pins.pop(computer, None)
         self.update(pins=pins)
 
+    def unpin(self, slug: str) -> None:
+        """Drop the pin of every computer that points at that project, once it is deleted."""
+        pins = self.table("pins")
+        kept = {name: pinned for name, pinned in pins.items() if pinned != slug}
+        if kept != pins:
+            self.update(pins=kept)
+
     def last_project(self, computer: str) -> str | None:
         return self.table("last").get(computer)
 
