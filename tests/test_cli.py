@@ -524,6 +524,31 @@ def test_note_delete_does_not_prompt(run: Runner, flags: list[str]) -> None:
     assert run("note", "delete", "1", *flags) == (1, "no note #1\n")
 
 
+def test_project_delete_asks_unless_yes(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    run("-r", str(other), "add", "Doomed")
+    run("-r", str(other), "note", "add", "Doomed note", "--shared")
+    monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: False)
+    assert run("projects", "delete", "other") == (1, "nothing deleted\n")
+    assert "other" in run("projects")[1]
+    #: The project fixed by --project stays, because every later call would look for it.
+    code, output = run("-p", "other", "projects", "delete", "other", "--yes")
+    assert code == 1
+    assert "fixed for this client" in output
+    assert run("projects", "delete", "other", "--yes") == (
+        0,
+        "deleted project 'other': 1 task(s), 1 note(s)\n",
+    )
+    assert "other" not in run("projects")[1]
+    assert "0 task match(es)" in run("search", "Doomed", "--all-projects")[1]
+    code, output = run("projects", "delete", "other", "--yes")
+    assert code == 2
+    assert "no project 'other'" in output
+
+
 def test_note_edit_uses_the_form(run: Runner, monkeypatch: pytest.MonkeyPatch) -> None:
     run("note", "add", "Old", "-b", "old body")
     written = "Title: New\nTags: infra, docs\nShared: yes\n\n# Hosts\n\nNew body.\n"

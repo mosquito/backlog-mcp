@@ -345,7 +345,8 @@ def scope_panel(scope: Scope) -> Panel:
                 ("chosen by", Text(scope.origin.value, style="dim")),
                 (
                     "roots",
-                    Text(", ".join(f"{root.computer}:{root.root or '—'}" for root in project.roots)
+                    Text(
+                        ", ".join(f"{root.computer}:{root.root or '—'}" for root in project.roots)
                     ),
                 ),
                 ("tasks", Text(f"{project.open_tasks} open of {project.total_tasks}")),

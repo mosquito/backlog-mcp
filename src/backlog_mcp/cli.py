@@ -264,10 +264,8 @@ class Command(argclass.Parser):
         return bound()
 
     def reference(self) -> str | None:
-        """The project this command works on: its own `--project`, else the global one."""
-        #: The attribute is `scope`, not `project`: argparse would else drop the global value.
-        own: str | None = getattr(self, "scope", None)
-        return own or self.options().project
+        """The project this command works on: the `--project` of the root parser."""
+        return self.options().project
 
     async def reach(self) -> Reach:
         """What a listing covers, from the project and computer options of this command."""
@@ -415,11 +413,47 @@ def computer_options() -> tuple[str, bool]:
     return at, all_computers
 
 
+class ProjectDelete(Command):
+    """Delete a project with every task and note on its board."""
+
+    target: str = argclass.Argument("target", help="Project slug, or a path inside it")
+    yes: bool = argclass.Argument("-y", "--yes", default=False, help="Delete without asking")
+
+    async def __call__(self) -> int:
+        project = await self.backlog.lookup(self.target)
+        contents = await self.backlog.store.project_contents(project.id)
+        if not self.yes and not Confirm.ask(
+            f"delete project {project.slug!r} with {contents.tasks} task(s) and "
+            f"{contents.notes} note(s), {contents.shared_notes} of them shared? "
+            "This cannot be undone",
+            default=False,
+        ):
+            warn("nothing deleted")
+            return 1
+        try:
+            await self.backlog.delete(project)
+        except ValueError as error:
+            fail(str(error))
+            return 1
+        note(
+            f"deleted project {project.slug!r}: {contents.tasks} task(s), {contents.notes} note(s)"
+        )
+        return 0
+
+
 class Projects(Command):
     """List the registered projects of this computer, or of another, or of all."""
 
     archived: bool = argclass.Argument(default=False, help="Include archived projects")
     at, all_computers = computer_options()
+    delete = ProjectDelete(
+        help="Delete a project for good",
+        description=(
+            "Delete a project with every task and note on its board, and free its directories "
+            "for a new registration. Asks first unless --yes is given. Prefer archiving through "
+            "the MCP tool project_save when the history should stay."
+        ),
+    )
 
     async def __call__(self) -> int:
         reach = await self.backlog.reach(
@@ -438,7 +472,6 @@ class Projects(Command):
 class List(Command):
     """List tasks, open ones first, of this project or of every project."""
 
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to list")
     all_projects: bool = argclass.Argument(
         "-a", "--all-projects", default=False, help="List tasks of every project on this computer"
     )
@@ -483,7 +516,6 @@ class Search(Command):
     """FTS and semantic search across tasks and notes, including shared notes."""
 
     query: list[str] = argclass.Argument("query", nargs="+", help="Words or meaning to search for")
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to search")
     all_projects: bool = argclass.Argument(
         "-a", "--all-projects", default=False, help="Search every project on this computer"
     )
@@ -558,7 +590,6 @@ class Add(Command):
     status: str = argclass.Argument("-s", "--status", default=Status.TODO.value, choices=STATUSES)
     priority: str = argclass.Argument(default=Priority.NORMAL.value, choices=PRIORITIES)
     tag: list[str] = repeated("-t", "--tag", help="Tag to attach. Repeat for more than one")
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to add to")
 
     async def __call__(self) -> int:
         project = await self.backlog.resolve(self.reference())
@@ -577,8 +608,6 @@ class Add(Command):
 
 class Create(Command):
     """Write a task in `$EDITOR`, from a filled-in form."""
-
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to add to")
 
     async def __call__(self) -> int:
         project = await self.backlog.resolve(self.reference())
@@ -731,7 +760,6 @@ class Delete(Command):
 class Stats(Command):
     """Open tasks, closed tasks, notes, and detailed task counts."""
 
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to count")
     all_projects: bool = argclass.Argument(
         "-a", "--all-projects", default=False, help="Count every project on this computer together"
     )
@@ -745,7 +773,6 @@ class Stats(Command):
 class NoteList(Command):
     """List the notes of this project and the shared ones, or of every project."""
 
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to list")
     all_projects: bool = argclass.Argument(
         "-a", "--all-projects", default=False, help="List notes of every project on this computer"
     )
@@ -801,7 +828,6 @@ class NoteAdd(Command):
     shared: bool = argclass.Argument(
         "--shared", default=False, help="Make the note visible from every project"
     )
-    scope: str = argclass.Argument("-p", "--project", default=None, help="Project to add to")
 
     async def __call__(self) -> int:
         project = await self.backlog.resolve(self.reference())
@@ -1233,7 +1259,8 @@ class CLI(argclass.Parser):
         description=(
             "Print the projects of this computer with their root directory and their open and "
             "total task counts; --computer shows another computer's, --all-computers all. "
-            "Archived projects are hidden until --archived asks for them."
+            "Archived projects are hidden until --archived asks for them. `backlog projects "
+            "delete <slug>` removes a project with everything on its board."
         ),
     )
     list = List(
