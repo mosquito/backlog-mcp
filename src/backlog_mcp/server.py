@@ -18,7 +18,10 @@ from .models import (
     OPEN_STATUSES,
     PRIORITIES,
     Deleted,
+    FullNotes,
+    FullTasks,
     NoteOut,
+    NoteListItem,
     Notes,
     Priority,
     ProjectOut,
@@ -27,6 +30,7 @@ from .models import (
     Stats,
     Status,
     TaskOut,
+    TaskListItem,
     Tasks,
 )
 from .store import NOTE_LIMIT, Note, Project, Task
@@ -182,6 +186,23 @@ def task_out(task: Task) -> TaskOut:
     )
 
 
+def task_list_item(task: Task) -> TaskListItem:
+    """The compact task shape used by listings."""
+    return TaskListItem(
+        id=task.id,
+        project=task.project,
+        computer=task.computer,
+        title=task.title,
+        status=task.status,
+        priority=task.priority,
+        tags=task.tags,
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+        closed_at=task.closed_at,
+        snippet=task.body[:150],
+    )
+
+
 def note_out(note: Note) -> NoteOut:
     return NoteOut(
         id=note.id,
@@ -194,6 +215,21 @@ def note_out(note: Note) -> NoteOut:
         created_at=note.created_at,
         updated_at=note.updated_at,
         snippet=note.snippet,
+    )
+
+
+def note_list_item(note: Note) -> NoteListItem:
+    """The compact note shape used by listings."""
+    return NoteListItem(
+        id=note.id,
+        project=note.project,
+        computer=note.computer,
+        title=note.title,
+        tags=note.tags,
+        shared=note.shared,
+        created_at=note.created_at,
+        updated_at=note.updated_at,
+        snippet=note.body[:150],
     )
 
 
@@ -357,6 +393,10 @@ class ListTasks(BaseModel):
     )
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
+    full: bool = Field(
+        default=False,
+        description="Include complete task bodies. Defaults to compact task metadata and snippets.",
+    )
 
 
 class TaskId(BaseModel):
@@ -433,6 +473,10 @@ class ListNotes(BaseModel):
     shared: bool | None = Field(default=None, description="Only shared notes, or only local.")
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
+    full: bool = Field(
+        default=False,
+        description="Include complete note bodies. Defaults to compact note metadata and snippets.",
+    )
 
 
 class StatsOf(BaseModel):
@@ -510,8 +554,8 @@ async def task_add(args: AddTask, backlog: Backlog) -> TaskOut:
 
 
 @registry.tool(title="List tasks", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_list(args: ListTasks, backlog: Backlog) -> Tasks:
-    """List tasks for an inventory or complete review; prefer `search` for finding work.
+async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
+    """List tasks to review current work, inspect open items, or pick the next task to work on.
 
     Defaults to open tasks. Use filters and pagination."""
     reach = await backlog.reach(
@@ -537,11 +581,12 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks:
         tag=args.tag,
         priority=args.priority,
     )
+    result = dict(count=total, project=reach.slug, computer=reach.scope_computer)
+    if args.full:
+        return FullTasks(items=[task_out(item) for item in found], **result)
     return Tasks(
-        items=[task_out(item) for item in found],
-        count=total,
-        project=reach.slug,
-        computer=reach.scope_computer,
+        items=[task_list_item(item) for item in found],
+        **result,
     )
 
 
@@ -683,17 +728,20 @@ async def note_append(args: AppendNote, backlog: Backlog) -> NoteOut:
 
 @registry.tool(title="Read a note", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def note_get(args: ReadNote, backlog: Backlog) -> NoteOut:
-    """Read saved user context or a past agreement when a search result needs more detail.
+    """Read saved user context, preferences, conventions, or past agreements.
 
+    ALWAYS check notes whenever you do not know what to do, what style or architecture to follow,
+    or what the user prefers. Check notes before asking questions or making assumptions.
     Ids work across projects. Titles resolve within the selected project and shared notes."""
     return note_out(await note_of(backlog, args.id, args.title, args.project))
 
 
 @registry.tool(title="List notes", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def note_list(args: ListNotes, backlog: Backlog) -> Notes:
-    """List project notes and shared notes for an inventory or complete review.
+async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
+    """List persistent notes containing user context, preferences, and agreements.
 
-    Prefer `search` for finding information. Use filters and pagination."""
+    Browse notes whenever you lack direction, are unsure how to proceed, or need rules.
+    For targeted topic search, prefer `search`. Use filters and pagination."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -711,12 +759,10 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes:
     total = await backlog.store.count_notes(
         project_id=reach.project_id, computer=reach.computer, tag=args.tag, shared=args.shared
     )
-    return Notes(
-        items=[note_out(item) for item in found],
-        count=total,
-        project=reach.slug,
-        computer=reach.scope_computer,
-    )
+    result = dict(count=total, project=reach.slug, computer=reach.scope_computer)
+    if args.full:
+        return FullNotes(items=[note_out(item) for item in found], **result)
+    return Notes(items=[note_list_item(item) for item in found], **result)
 
 
 @registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)

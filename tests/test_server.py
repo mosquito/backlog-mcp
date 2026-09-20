@@ -169,6 +169,18 @@ async def test_task_filters_pagination_and_global_scope(client: BaseClient) -> N
     assert [item["id"] for item in scoped["items"]] == [remote["id"]]
 
 
+async def test_task_list_is_compact_unless_full_requested(client: BaseClient) -> None:
+    task = await call(client, "task_add", title="Document lists", body="x" * 200)
+
+    compact = await call(client, "task_list")
+    item = compact["items"][0]
+    assert "body" not in item
+    assert item["snippet"] == "x" * 150
+
+    full = await call(client, "task_list", full=True)
+    assert full["items"][0]["body"] == task["body"]
+
+
 async def test_move_preserves_task_and_changes_project_counts(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Move me", body="Keep this", tags=["api"])
     other = await call(client, "project_save", root="../other")
@@ -442,6 +454,18 @@ async def test_shared_notes_cross_projects(client: BaseClient) -> None:
     assert "no note 'nowhere'" in result.content[0].text
     result = await client.call_tool("note_save", {"body": "no title"})
     assert isinstance(result, CallToolResult) and result.is_error
+
+
+async def test_note_list_is_compact_unless_full_requested(client: BaseClient) -> None:
+    note = await call(client, "note_save", title="List note", body="x" * 200)
+
+    compact = await call(client, "note_list")
+    item = compact["items"][0]
+    assert "body" not in item
+    assert item["snippet"] == "x" * 150
+
+    full = await call(client, "note_list", full=True)
+    assert full["items"][0]["body"] == note["body"]
 
 
 async def test_note_resources(client: BaseClient) -> None:

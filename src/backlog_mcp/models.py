@@ -85,6 +85,22 @@ class TaskOut(BaseModel):
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
 
+class TaskListItem(BaseModel):
+    """Compact task metadata for listings; retrieve the task for its full body."""
+
+    id: int
+    project: str = Field(description="Slug of the owning project.")
+    computer: str = Field(description="Computer the owning project is on.")
+    title: str
+    status: Status
+    priority: Priority
+    tags: list[str] = Field(default_factory=list)
+    created_at: float
+    updated_at: float
+    closed_at: float | None = None
+    snippet: str = Field(description="First 150 characters of the task body.")
+
+
 class NoteOut(BaseModel):
     """A piece of knowledge about a project: a titled markdown text, addressed by id."""
 
@@ -100,6 +116,20 @@ class NoteOut(BaseModel):
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
 
+class NoteListItem(BaseModel):
+    """Compact note metadata for listings; retrieve the note for its full body."""
+
+    id: int
+    project: str = Field(description="Slug of the owning project.")
+    computer: str = Field(description="Computer the owning project is on.")
+    title: str
+    tags: list[str] = Field(default_factory=list)
+    shared: bool = Field(default=False, description="Visible from every project.")
+    created_at: float
+    updated_at: float
+    snippet: str = Field(description="First 150 characters of the note body.")
+
+
 class Projects(BaseModel):
     items: list[ProjectOut]
     count: int
@@ -110,13 +140,31 @@ COVERED = "Computer of the project or computer covered, absent when every comput
 
 
 class Tasks(BaseModel):
-    items: list[TaskOut]
+    items: list[TaskListItem]
     count: int
     project: str | None = Field(default=None, description="Slug searched, absent when global.")
     computer: str | None = Field(default=None, description=COVERED)
 
 
 class Notes(BaseModel):
+    items: list[NoteListItem]
+    count: int
+    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    computer: str | None = Field(default=None, description=COVERED)
+
+
+class FullTasks(BaseModel):
+    """Task listing with complete task bodies."""
+
+    items: list[TaskOut]
+    count: int
+    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    computer: str | None = Field(default=None, description=COVERED)
+
+
+class FullNotes(BaseModel):
+    """Note listing with complete note bodies."""
+
     items: list[NoteOut]
     count: int
     project: str | None = Field(default=None, description="Slug searched, absent when global.")
