@@ -10,7 +10,7 @@ from aiohttp_tiny_mcp.testing import connect
 
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
-from backlog_mcp.server import registry
+from backlog_mcp.server import ACTIVE, registry
 
 
 async def call(client: BaseClient, tool_name: str, **arguments: Any) -> dict[str, Any]:
@@ -650,6 +650,44 @@ async def test_cross_project_delete_requires_capable_client(backlog: Backlog, en
             assert (await call(client, "note_get", id=saved["id"]))["title"] == "Elsewhere"
             confirmed = await call(client, "note_delete", id=saved["id"], confirm=True)
             assert confirmed["deleted"] is True
+
+
+async def test_note_delete_with_no_project_chosen_needs_confirmation(backlog: Backlog) -> None:
+    """A connection without a project deletes by id after a confirmation, never with an error."""
+    token = ACTIVE.set(backlog.view(computer="laptop"))
+    try:
+        async with connect(registry, adapter="2024-11-05") as client:
+            scope = await call(client, "project_current")
+            assert (scope["project"], scope["origin"]) == (None, "none")
+            app = await call(client, "project_save", root="/srv/app", name="App")
+            saved = await call(client, "note_save", title="Nowhere", project=app["slug"])
+            refused = await call(client, "note_delete", id=saved["id"])
+            assert refused["deleted"] is False
+            assert "cannot confirm" in refused["detail"]
+            assert await backlog.store.note(saved["id"]) is not None
+            confirmed = await call(client, "note_delete", id=saved["id"], confirm=True)
+            assert confirmed["deleted"] is True
+            assert await backlog.store.note(saved["id"]) is None
+    finally:
+        ACTIVE.reset(token)
+
+
+@pytest.mark.parametrize("answer", [{"ok": True}, {"ok": False}])
+async def test_note_delete_with_no_project_chosen_asks(
+    backlog: Backlog, answer: dict[str, bool]
+) -> None:
+    token = ACTIVE.set(backlog.view(computer="laptop"))
+    try:
+        async with connect(
+            registry, adapter="2025-11-25", answers={"No project is chosen": answer}
+        ) as client:
+            app = await call(client, "project_save", root="/srv/app", name="App")
+            saved = await call(client, "note_save", title="Nowhere", project=app["slug"])
+            deleted = await call(client, "note_delete", id=saved["id"])
+            assert deleted["deleted"] is answer["ok"]
+            assert (await backlog.store.note(saved["id"]) is None) is answer["ok"]
+    finally:
+        ACTIVE.reset(token)
 
 
 async def test_note_bodies_are_limited_to_1024_characters(client: BaseClient) -> None:

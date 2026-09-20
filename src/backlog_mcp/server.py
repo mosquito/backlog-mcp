@@ -523,7 +523,10 @@ class NoteId(BaseModel):
     id: int
     confirm: bool = Field(
         default=False,
-        description="Confirm deletion when the note belongs to another project.",
+        description=(
+            "Confirm deletion when the note belongs to another project, or when no project "
+            "is chosen."
+        ),
     )
 
 
@@ -764,9 +767,15 @@ async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
 async def confirm_cross_project_delete(
     record: Note, ex: Exchange, backlog: Backlog, confirm: bool = False
 ) -> Deleted | None:
-    """Ask only when the note belongs to another project."""
-    current, _ = await backlog.current()
-    if record.project_id == current.id or confirm:
+    """Ask when the note belongs to another project, or when no project is chosen.
+
+    `confirm` skips the question and the project lookup: a connection without a project
+    can still delete by id.
+    """
+    if confirm:
+        return None
+    current, _ = await backlog.scope()
+    if current is not None and record.project_id == current.id:
         return None
     key = f"delete:{record.project_id}:{record.id}"
     if (answer := ex.answers.get(key)) is not None:
@@ -784,11 +793,12 @@ async def confirm_cross_project_delete(
             ),
         )
     where = record.project
+    chosen = f"The current project is {current.slug!r}." if current else "No project is chosen."
     raise NeedInput(
         {
             key: elicit(
                 f"Delete note #{record.id} ({record.title!r}) from {where!r}? "
-                f"The current project is {current.slug!r}. This cannot be undone.",
+                f"{chosen} This cannot be undone.",
                 {"type": "object", "properties": {"ok": {"type": "boolean"}}},
             )
         }
@@ -906,9 +916,10 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
 
 @registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
 async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
-    """Delete a note permanently. Confirm only when it belongs to another project.
+    """Delete a note permanently. Confirm when it belongs to another project or none is chosen.
 
-    Pass `confirm=true` to delete a note from another project without prompting."""
+    Pass `confirm=true` to delete a note from another project, or from a connection with no
+    project chosen, without prompting."""
     found = await backlog.store.note(args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
