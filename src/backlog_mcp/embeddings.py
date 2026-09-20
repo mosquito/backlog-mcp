@@ -11,7 +11,7 @@ from functools import cache
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock, RLock
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Literal
 from weakref import WeakKeyDictionary
 from zipfile import BadZipFile
 
@@ -33,6 +33,8 @@ EXTENSION = "backlog-mcp/model2vec"
 MODEL_NAME = "static-similarity-mrl-multilingual-v1-256-int8"
 MODEL_PATH = Path(__file__).with_name("model")
 DIMENSIONS = 256
+DEFAULT_MIN_SCORE = 0.15
+FTS_MIN_SCORE = 0.25
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=16384)]
 
 
@@ -109,21 +111,26 @@ class Search(BaseModel):
     tag: str | None = None
     limit: int = Field(default=20, ge=1, le=200, description="Most tasks, and most notes.")
     min_score: float = Field(
-        default=0,
+        default=DEFAULT_MIN_SCORE,
         ge=-1,
         le=1,
         allow_inf_nan=False,
-        description="Minimum cosine similarity for semantic matches; FTS matches are retained.",
+        description=(
+            "Minimum cosine similarity for semantic matches; FTS matches are retained. "
+            "Semantic results need at least 0.25 when an FTS result exists."
+        ),
     )
 
 
 class TaskHit(TaskOut):
+    match: Literal["fts", "semantic"] = Field(description="How this record matched the query.")
     score: float | None = Field(
         default=None, description="Cosine similarity; null for FTS-only hits."
     )
 
 
 class NoteHit(NoteOut):
+    match: Literal["fts", "semantic"] = Field(description="How this record matched the query.")
     score: float | None = Field(
         default=None, description="Cosine similarity; null for FTS-only hits."
     )
@@ -303,13 +310,14 @@ def match_ids(
     args: Search,
     task_ids: set[int],
     note_ids: set[int],
+    min_score: float,
 ) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
     """Rank allowed IDs entirely in a worker thread."""
     task_index, note_index = indexes
     query = encoder.encode([args.query])[0]
     return (
-        task_index.search(query, task_ids, args.limit, args.min_score),
-        note_index.search(query, note_ids, args.limit, args.min_score),
+        task_index.search(query, task_ids, args.limit, min_score),
+        note_index.search(query, note_ids, args.limit, min_score),
     )
 
 
@@ -345,6 +353,9 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     task_snippets = {item.id: item.snippet for item in lexical_tasks}
     note_snippets = {item.id: item.snippet for item in lexical_notes}
     del lexical_tasks, lexical_notes
+    min_score = (
+        max(args.min_score, FTS_MIN_SCORE) if task_snippets or note_snippets else args.min_score
+    )
     vectors = await indexes(backlog)
     tasks = await backlog.store.tasks(
         project_id=project_id, computer=computer, status=args.status, tag=args.tag, limit=-1
@@ -370,6 +381,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         args,
         allowed_tasks,
         allowed_notes,
+        min_score,
     )
     task_hits: list[TaskHit] = []
     note_hits: list[NoteHit] = []
@@ -386,7 +398,13 @@ async def search(args: Search, backlog: Backlog) -> Matches:
             continue
         data = asdict(task)
         data["snippet"] = task_snippets.get(record_id)
-        task_hits.append(TaskHit(**data, score=task_scores.get(record_id)))
+        task_hits.append(
+            TaskHit(
+                **data,
+                match="fts" if record_id in task_snippets else "semantic",
+                score=task_scores.get(record_id),
+            )
+        )
     for record_id in ranked_notes:
         note = await backlog.store.note(record_id)
         if note is None or not (inside(note) or note.shared):
@@ -395,7 +413,13 @@ async def search(args: Search, backlog: Backlog) -> Matches:
             continue
         data = asdict(note)
         data["snippet"] = note_snippets.get(record_id)
-        note_hits.append(NoteHit(**data, score=note_scores.get(record_id)))
+        note_hits.append(
+            NoteHit(
+                **data,
+                match="fts" if record_id in note_snippets else "semantic",
+                score=note_scores.get(record_id),
+            )
+        )
     return Matches(
         tasks=task_hits,
         notes=note_hits,

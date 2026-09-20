@@ -130,27 +130,65 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
     await backlog.store.add_task(project_id=current.id, title="Bake a chocolate cake")
     await backlog.store.add_task(project_id=other.id, title="Reset the password")
     note = await backlog.store.add_note(
-        project_id=other.id, title="Reset the password", shared=True, tags=["auth"]
+        project_id=other.id, title="Сбросить пароль", shared=True, tags=["auth"]
     )
     await backlog.store.add_note(project_id=other.id, title="Private password", shared=False)
-    result = await embeddings.search(
-        embeddings.Search(query="Reset the password", limit=1), backlog
-    )
+    result = await embeddings.search(embeddings.Search(query="Сбросить пароль", limit=1), backlog)
     assert result.tasks[0].id == task.id
     assert result.tasks[0].title == task.title
     assert result.notes[0].id == note.id
     assert result.notes[0].shared
     assert result.count == 2
     filtered = await embeddings.search(
-        embeddings.Search(query="Reset the password", status=[Status.TODO], tag="auth"), backlog
+        embeddings.Search(query="Сбросить пароль", status=[Status.TODO], tag="auth"), backlog
     )
     assert filtered.tasks == []
     assert [item.id for item in filtered.notes] == [note.id]
     global_result = await embeddings.search(
         embeddings.Search(query="password", all_projects=True, min_score=-1), backlog
     )
-    assert len(global_result.tasks) == 3
+    assert len(global_result.tasks) == 2
     assert len(global_result.notes) == 2
+
+
+async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = await backlog.current()
+    lexical = await backlog.store.add_task(project_id=project.id, title="Needle in a haystack")
+    semantic = await backlog.store.add_task(project_id=project.id, title="Related work")
+    scores: list[float] = []
+
+    def matches(*args: Any) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+        scores.append(args[-1])
+        return [(lexical.id, 0.8), (semantic.id, 0.3)], []
+
+    monkeypatch.setattr(embeddings, "match_ids", matches)
+    result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
+
+    assert scores == [embeddings.FTS_MIN_SCORE]
+    assert [(item.id, item.match) for item in result.tasks] == [
+        (lexical.id, "fts"),
+        (semantic.id, "semantic"),
+    ]
+
+
+async def test_search_uses_default_semantic_floor_without_fts(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = await backlog.current()
+    task = await backlog.store.add_task(project_id=project.id, title="Related work")
+    scores: list[float] = []
+
+    def matches(*args: Any) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+        scores.append(args[-1])
+        return [(task.id, 0.3)], []
+
+    monkeypatch.setattr(embeddings, "match_ids", matches)
+    result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
+
+    assert scores == [embeddings.DEFAULT_MIN_SCORE]
+    assert result.tasks[0].match == "semantic"
 
 
 async def test_index_contains_only_ids_vectors_and_digest(

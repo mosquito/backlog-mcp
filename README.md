@@ -86,10 +86,12 @@ BM25 order. Additional semantic matches follow in cosine similarity order. Each 
 appears once per record kind. The limit applies separately to tasks and notes after merging.
 
 Project scope, task status and tag filters apply to both searches. Shared notes remain
-visible across projects. `min_score` (`--min-score` in the terminal) filters semantic
-matches only; it never removes FTS matches. MCP results include a cosine `score` for
-semantic candidates and `null` for FTS-only matches. FTS excerpts remain in `snippet`.
-Semantic matches can use different words or languages from the query.
+visible across projects. `min_score` (`--min-score` in the terminal) defaults to `0.15`
+and filters semantic matches only; it never removes FTS matches. When FTS finds anything,
+additional semantic matches need a score of at least `0.25`. MCP results include `match`
+(`fts` or `semantic`) and a cosine `score` for semantic candidates (`null` for FTS-only
+matches). FTS excerpts remain in `snippet`. Semantic matches can use different words or
+languages from the query.
 
 The bundled Model2Vec model is
 [`sentence-transformers/static-similarity-mrl-multilingual-v1`](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1),
