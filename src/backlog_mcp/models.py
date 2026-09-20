@@ -262,3 +262,35 @@ __all__ = [
     "TaskOut",
     "Tasks",
 ]
+
+
+EVENT_KEY = "backlog/event"
+
+
+class Kind(StrEnum):
+    TASK = "task"
+    NOTE = "note"
+    PROJECT = "project"
+
+
+class Action(StrEnum):
+    ADDED = "added"
+    UPDATED = "updated"
+    MOVED = "moved"
+    DELETED = "deleted"
+
+
+class Event(BaseModel):
+    """What a write did.
+
+    Travels in `_meta["backlog/event"]` of each `notifications/resources/updated`.
+    """
+
+    kind: Kind
+    action: Action
+    id: int
+    project: str = Field(description="Slug of the project the record belongs to after the write.")
+    title: str
+    status: Status | None = Field(default=None, description="Tasks only.")
+    priority: Priority | None = Field(default=None, description="Tasks only.")
+    computer: str = Field(description="Computer the writing client works from.")

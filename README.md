@@ -235,7 +235,11 @@ boards, and the same database. `search` is the one search: it answers with the t
 the notes that match, so a new kind of record later is one more list in the result, not a new
 tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`,
 `backlog://tasks/{id}`, `backlog://notes` and `backlog://notes/{id}` read the same data without a
-tool call, and a write publishes `notifications/resources/updated` for the ones it touched.
+tool call, and a write publishes `notifications/resources/updated` for the ones it touched. Each
+such notification carries `_meta["backlog/event"]`, what the write did: `kind` (task, note or
+project), `action` (added, updated, moved or deleted), `id`, `project`, `title`, for tasks `status`
+and `priority`, and the writer's `computer`. A subscriber learns what happened without reading
+the resource again.
 
 `task_delete` and `note_delete` delete immediately within the current project. Deleting
 a record owned by another project asks the user to confirm, including shared notes; a client

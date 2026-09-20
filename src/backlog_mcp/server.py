@@ -16,11 +16,15 @@ from . import embeddings, skills
 from .backlog import Backlog, Reach, UnknownProject
 from .models import (
     CLOSED_STATUSES,
+    EVENT_KEY,
     OPEN_STATUSES,
     PRIORITIES,
+    Action,
     Deleted,
+    Event,
     FullNotes,
     FullTasks,
+    Kind,
     NoteListItem,
     NoteOut,
     Notes,
@@ -140,7 +144,9 @@ locally; no text is sent to an external service.
 
 Writes. `task_add`, `task_update`, `task_move`, `task_delete`, `note_save`, `note_append`, \
 `note_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
-one tells subscribed clients which resources went stale. `task_delete` marks a task's status as \
+one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
+notification says what the write did: kind, action, id, project, title, status, priority and \
+the writer's computer. `task_delete` marks a task's status as \
 `deleted` without removing the record. `note_delete` and `project_delete` are destructive and \
 irreversible: call them only when the user asked for exactly that, never on your own initiative. \
 `note_delete` deletes at once within the current project and asks the user to confirm when the \
@@ -335,29 +341,73 @@ def statuses(wanted: list[Status] | None, *, default_open: bool = True) -> list[
     return list(OPEN_STATUSES) if default_open else None
 
 
-async def stale(uris: list[str]) -> None:
-    """Tell subscribed clients which resources a write invalidated."""
+async def stale(uris: list[str], event: Event) -> None:
+    """Tell subscribed clients which resources a write invalidated, and what the write did.
+
+    The event travels in `_meta` of each notification, so a subscriber does not have to read
+    the resource again to learn what happened.
+    """
+    meta = {EVENT_KEY: event.model_dump(mode="json", exclude_none=True)}
     for uri in uris:
         await registry.hub.publish(
             topic(NOTIFICATIONS),
             {
                 "jsonrpc": "2.0",
                 "method": "notifications/resources/updated",
-                "params": {"uri": uri},
+                "params": {"uri": uri, "_meta": meta},
             },
         )
 
 
-async def changed(*task_ids: int) -> None:
-    """A task or a project write: the boards and the touched tasks went stale."""
+async def changed(event: Event) -> None:
+    """A task or a project write: the boards, and the touched task, went stale."""
     uris = ["backlog://tasks", "backlog://projects", "backlog://project"]
-    uris.extend(f"backlog://tasks/{task_id}" for task_id in task_ids)
-    await stale(uris)
+    if event.kind is Kind.TASK:
+        uris.append(f"backlog://tasks/{event.id}")
+    await stale(uris, event)
 
 
-async def noted(*note_ids: int) -> None:
-    """A note write: the note listing and the touched notes went stale."""
-    await stale(["backlog://notes", *(f"backlog://notes/{note_id}" for note_id in note_ids)])
+async def noted(event: Event) -> None:
+    """A note write, or a project delete: the note listing, and the touched note, went stale."""
+    uris = ["backlog://notes"]
+    if event.kind is Kind.NOTE:
+        uris.append(f"backlog://notes/{event.id}")
+    await stale(uris, event)
+
+
+def task_event(task: Task, action: Action, *, computer: str) -> Event:
+    return Event(
+        kind=Kind.TASK,
+        action=action,
+        id=task.id,
+        project=task.project,
+        title=task.title,
+        status=task.status,
+        priority=task.priority,
+        computer=computer,
+    )
+
+
+def note_event(note: Note, action: Action, *, computer: str) -> Event:
+    return Event(
+        kind=Kind.NOTE,
+        action=action,
+        id=note.id,
+        project=note.project,
+        title=note.title,
+        computer=computer,
+    )
+
+
+def project_event(project: Project, action: Action, *, computer: str) -> Event:
+    return Event(
+        kind=Kind.PROJECT,
+        action=action,
+        id=project.id,
+        project=project.slug,
+        title=project.name,
+        computer=computer,
+    )
 
 
 async def note_of(
@@ -596,7 +646,7 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
         description=args.description,
         archived=args.archived,
     )
-    await changed()
+    await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
     return project_out(project, computer=backlog.computer)
 
 
@@ -644,8 +694,9 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
         found.detail = "cancelled"
         return found
     await backlog.delete(project)
-    await changed()
-    await noted()
+    gone = project_event(project, Action.DELETED, computer=backlog.computer)
+    await changed(gone)
+    await noted(gone)
     found.deleted = True
     return found
 
@@ -665,7 +716,7 @@ async def task_add(args: AddTask, backlog: Backlog) -> TaskOut:
         priority=args.priority,
         tags=args.tags,
     )
-    await changed(task.id)
+    await changed(task_event(task, Action.ADDED, computer=backlog.computer))
     return task_out(task)
 
 
@@ -754,7 +805,7 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
     )
     if task is None:
         raise LookupError(f"no task #{args.id}")
-    await changed(task.id)
+    await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     return task_out(task)
 
 
@@ -773,7 +824,7 @@ async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
         body=append_history(existing.body, f"Moved: {existing.project} → {project.slug}"),
     )
     assert task is not None
-    await changed(task.id)
+    await changed(task_event(task, Action.MOVED, computer=backlog.computer))
     return task_out(task)
 
 
@@ -821,8 +872,9 @@ async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
         raise LookupError(f"no task #{args.id}")
     if task.status != Status.DELETED:
         body = append_history(task.body, f"Status changed: {task.status.value} → deleted")
-        await backlog.store.update_task(task.id, status=Status.DELETED, body=body)
-        await changed(args.id)
+        gone = await backlog.store.update_task(task.id, status=Status.DELETED, body=body)
+        assert gone is not None
+        await changed(task_event(gone, Action.DELETED, computer=backlog.computer))
     return Deleted(id=args.id, title=task.title, deleted=True)
 
 
@@ -847,7 +899,7 @@ async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
                 tags=args.tags or (),
                 shared=bool(args.shared),
             )
-            await noted(saved.id)
+            await noted(note_event(saved, Action.ADDED, computer=backlog.computer))
             return note_out(saved)
         args.id = existing.id
     updated = await backlog.store.update_note(
@@ -855,7 +907,7 @@ async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
     )
     if updated is None:
         raise LookupError(f"no note #{args.id}")
-    await noted(updated.id)
+    await noted(note_event(updated, Action.UPDATED, computer=backlog.computer))
     return note_out(updated)
 
 
@@ -868,7 +920,7 @@ async def note_append(args: AppendNote, backlog: Backlog) -> NoteOut:
     updated = await backlog.store.append_note(found.id, args.text)
     if updated is None:
         raise LookupError(f"no note #{found.id}")
-    await noted(updated.id)
+    await noted(note_event(updated, Action.UPDATED, computer=backlog.computer))
     return note_out(updated)
 
 
@@ -933,7 +985,7 @@ async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
     if refusal := await confirm_cross_project_delete(found, ex, backlog):
         return refusal
     deleted = await backlog.store.delete_note(args.id)
-    await noted(args.id)
+    await noted(note_event(found, Action.DELETED, computer=backlog.computer))
     return Deleted(id=args.id, title=found.title, deleted=deleted)
 
 
