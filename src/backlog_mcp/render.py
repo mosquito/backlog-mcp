@@ -25,6 +25,7 @@ STATUS_STYLE = {
     Status.BLOCKED: "bold red",
     Status.DONE: "green",
     Status.CANCELLED: "dim strike",
+    Status.DELETED: "dim red strike",
 }
 
 PRIORITY_STYLE = {

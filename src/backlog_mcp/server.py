@@ -83,11 +83,12 @@ nothing; `project_save` is the tool that registers a directory, and `project_lis
 project with its open and total task counts.
 
 Tasks. Always work through tasks. A task has a title, an optional body, a status (todo, doing, \
-blocked, done or cancelled), a priority (urgent, high, normal or low) and tags. Keep the board \
-true to life: set status to `doing` when beginning work, and `done` or `cancelled` upon completion \
-(which stamps the closing time). A supplied `body`, or an actual status change, to `task_update` \
-appends a timestamped history entry. Listings show the open statuses (todo, doing, blocked), most \
-important first, until `status` asks for others or `order="recent"` sorts by last change instead.
+blocked, done, cancelled or deleted), a priority (urgent, high, normal or low) and tags. Keep \
+the board true to life: set status to `doing` when beginning work, and `done`, `cancelled` or \
+`deleted` upon completion (which stamps the closing time). A supplied `body`, or an actual \
+status change, to `task_update` appends a timestamped history entry. Listings show the open \
+statuses (todo, doing, blocked), most important first, until `status` asks for others or \
+`order="recent"` sorts by last change instead.
 
 When recording progress, pass only the new text to `task_update`; it appends the text, so do not \
 read the task body and send it back. If a task needs a rewritten scope rather than a progress \
@@ -136,8 +137,9 @@ locally; no text is sent to an external service.
 
 Writes. `task_add`, `task_update`, `task_move`, `task_delete`, `note_save`, `note_append`, \
 `note_delete` and `project_save` are the only tools that change anything; each one tells \
-subscribed clients which resources went stale. `task_delete` and `note_delete` delete immediately \
-within the current project and ask for confirmation when the record belongs to another project.
+subscribed clients which resources went stale. `task_delete` marks a task's status as `deleted` \
+without removing the record. `note_delete` deletes immediately within the current project and asks \
+for confirmation (or `confirm=true`) when the note belongs to another project.
 
 Skills. This server carries written skills: `triage`, for keeping a board true, and `planning`, \
 for cutting a request into tasks. A client that speaks the skills extension gets them from \
@@ -518,6 +520,10 @@ class AppendNote(BaseModel):
 
 class NoteId(BaseModel):
     id: int
+    confirm: bool = Field(
+        default=False,
+        description="Confirm deletion when the note belongs to another project.",
+    )
 
 
 class ReadNote(BaseModel):
@@ -654,12 +660,18 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
         tag=args.tag,
         priority=args.priority,
     )
-    result = {"count": total, "project": reach.slug, "computer": reach.scope_computer}
     if args.full:
-        return FullTasks(items=[task_out(item) for item in found], **result)
+        return FullTasks(
+            items=[task_out(item) for item in found],
+            count=total,
+            project=reach.slug,
+            computer=reach.scope_computer,
+        )
     return Tasks(
         items=[task_list_item(item) for item in found],
-        **result,
+        count=total,
+        project=reach.slug,
+        computer=reach.scope_computer,
     )
 
 
@@ -728,11 +740,11 @@ async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
 
 
 async def confirm_cross_project_delete(
-    record: Task | Note, ex: Exchange, backlog: Backlog
+    record: Note, ex: Exchange, backlog: Backlog, confirm: bool = False
 ) -> Deleted | None:
-    """Ask only when the record belongs to another project."""
+    """Ask only when the note belongs to another project."""
     current, _ = await backlog.current()
-    if record.project_id == current.id:
+    if record.project_id == current.id or confirm:
         return None
     key = f"delete:{record.project_id}:{record.id}"
     if (answer := ex.answers.get(key)) is not None:
@@ -744,9 +756,11 @@ async def confirm_cross_project_delete(
             id=record.id,
             title=record.title,
             deleted=False,
-            detail="this client cannot confirm deletion from another project",
+            detail=(
+                "this client cannot confirm deletion from another project; "
+                "pass confirm=true to proceed"
+            ),
         )
-    kind = "task" if isinstance(record, Task) else "note"
     where = (
         record.project
         if record.computer == current.computer
@@ -755,7 +769,7 @@ async def confirm_cross_project_delete(
     raise NeedInput(
         {
             key: elicit(
-                f"Delete {kind} #{record.id} ({record.title!r}) from {where!r}? "
+                f"Delete note #{record.id} ({record.title!r}) from {where!r}? "
                 f"The current project is {current.slug!r}. This cannot be undone.",
                 {"type": "object", "properties": {"ok": {"type": "boolean"}}},
             )
@@ -763,19 +777,19 @@ async def confirm_cross_project_delete(
     )
 
 
-@registry.tool(title="Delete a task", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
-async def task_delete(args: TaskId, ex: Exchange, backlog: Backlog) -> Deleted:
-    """Delete a task permanently. Prefer setting status to `cancelled` to retain history.
+@registry.tool(title="Delete a task", annotations=Hint.IDEMPOTENT)
+async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
+    """Delete a task. Marks its status as `deleted` without removing the record.
 
-    Confirm only when it belongs to another project."""
+    Keeps history intact and allows recovery. Works across projects without confirmation."""
     task = await backlog.store.task(args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
-    if refusal := await confirm_cross_project_delete(task, ex, backlog):
-        return refusal
-    deleted = await backlog.store.delete_task(args.id)
-    await changed(args.id)
-    return Deleted(id=args.id, title=task.title, deleted=deleted)
+    if task.status != Status.DELETED:
+        body = append_history(task.body, f"Status changed: {task.status.value} → deleted")
+        await backlog.store.update_task(task.id, status=Status.DELETED, body=body)
+        await changed(args.id)
+    return Deleted(id=args.id, title=task.title, deleted=True)
 
 
 @registry.tool(title="Save a note", annotations=Hint.IDEMPOTENT)
@@ -857,21 +871,30 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
     total = await backlog.store.count_notes(
         project_id=reach.project_id, computer=reach.computer, tag=args.tag, shared=args.shared
     )
-    result = {"count": total, "project": reach.slug, "computer": reach.scope_computer}
     if args.full:
-        return FullNotes(items=[note_out(item) for item in found], **result)
-    return Notes(items=[note_list_item(item) for item in found], **result)
+        return FullNotes(
+            items=[note_out(item) for item in found],
+            count=total,
+            project=reach.slug,
+            computer=reach.scope_computer,
+        )
+    return Notes(
+        items=[note_list_item(item) for item in found],
+        count=total,
+        project=reach.slug,
+        computer=reach.scope_computer,
+    )
 
 
 @registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
 async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
     """Delete a note permanently. Confirm only when it belongs to another project.
 
-    Use with caution: notes carry durable user preferences and agreements."""
+    Pass `confirm=true` to delete a note from another project without prompting."""
     found = await backlog.store.note(args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
-    if refusal := await confirm_cross_project_delete(found, ex, backlog):
+    if refusal := await confirm_cross_project_delete(found, ex, backlog, confirm=args.confirm):
         return refusal
     deleted = await backlog.store.delete_note(args.id)
     await noted(args.id)

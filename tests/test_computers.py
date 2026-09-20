@@ -192,9 +192,7 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
         "laptop",
         1,
     )
-    scoped_search = await call(
-        client, "search", query="laptop", project="app", computer="laptop"
-    )
+    scoped_search = await call(client, "search", query="laptop", project="app", computer="laptop")
     assert (scoped_search["project"], scoped_search["computer"]) == ("app", "laptop")
     assert [item["id"] for item in scoped_search["tasks"]] == [away["items"][0]["id"]]
     assert counted["this_computer"] == "here"

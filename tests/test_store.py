@@ -142,7 +142,9 @@ async def test_the_index_follows_updates_and_deletions(store: Store) -> None:
     assert await store.delete_task(task.id) is True
     assert await store.delete_task(task.id) is False
     assert await store.search("login") == []
-    assert await store.task(task.id) is None
+    deleted = await store.task(task.id)
+    assert deleted is not None
+    assert deleted.status == Status.DELETED
 
 
 async def test_counts_and_tags_group_per_project(store: Store) -> None:

@@ -270,7 +270,7 @@ def database_key(backlog: Backlog) -> str:
 
 
 async def snapshot(backlog: Backlog) -> tuple[list[Task], list[Note]]:
-    tasks = await backlog.store.tasks(limit=-1)
+    tasks = await backlog.store.tasks(status=[s for s in Status if s != Status.DELETED], limit=-1)
     notes = await backlog.store.notes(limit=-1)
     return tasks, notes
 
@@ -369,6 +369,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         for item in tasks
         if inside(item)
         and (not args.status or item.status in args.status)
+        and (item.status != Status.DELETED or (args.status and Status.DELETED in args.status))
         and (not tag or tag in item.tags)
     }
     allowed_notes = {
@@ -392,9 +393,16 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     ranked_notes = list(dict.fromkeys([*note_snippets, *note_scores]))[: args.limit]
     for record_id in ranked_tasks:
         task = await backlog.store.task(record_id)
-        if task is None or not inside(task):
-            continue
-        if (args.status and task.status not in args.status) or (tag and tag not in task.tags):
+        if (
+            task is None
+            or not inside(task)
+            or (args.status and task.status not in args.status)
+            or (
+                task.status == Status.DELETED
+                and (not args.status or Status.DELETED not in args.status)
+            )
+            or (tag and tag not in task.tags)
+        ):
             continue
         data = asdict(task)
         data["snippet"] = task_snippets.get(record_id)

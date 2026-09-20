@@ -543,7 +543,7 @@ class Show(Command):
 
     async def __call__(self) -> int:
         task = await self.backlog.store.task(self.id)
-        if task is None:
+        if task is None or task.status == Status.DELETED:
             fail(f"no task #{self.id}")
             return 1
         console.print(task_panel(task_out(task), computer=self.backlog.computer))
@@ -603,7 +603,7 @@ class Edit(Command):
 
     async def __call__(self) -> int:
         task = await self.backlog.store.task(self.id)
-        if task is None:
+        if task is None or task.status == Status.DELETED:
             fail(f"no task #{self.id}")
             return 1
         written = compose(form_of(task))
@@ -707,7 +707,7 @@ class Delete(Command):
 
     async def __call__(self) -> int:
         task = await self.backlog.store.task(self.id)
-        if task is None:
+        if task is None or task.status == Status.DELETED:
             fail(f"no task #{self.id}")
             return 1
         current = await self.backlog.resolve(self.reference())

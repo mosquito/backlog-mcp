@@ -85,5 +85,6 @@ Link notes from tasks by stable id, such as `note #3`. Never store passwords, to
 Say what changed: how many tasks you closed, what you added, and what is blocked and on what.
 Name tasks by id and title, so the user can follow up on one of them.
 
-Do not delete tasks during triage. `task_delete` destroys a task permanently and asks for
-confirmation only outside the current project. Closing a task keeps the history.
+Prefer closing tasks with status `done` or `cancelled` during triage. `task_delete` marks
+a task's status as `deleted` without removing the record. Closing or cancelling keeps the
+history easily visible.

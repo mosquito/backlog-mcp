@@ -9,6 +9,7 @@ from aiohttp_tiny_mcp.models import CallToolResult, TextContent, TextResourceCon
 from aiohttp_tiny_mcp.testing import connect
 
 from backlog_mcp.backlog import Backlog
+from backlog_mcp.models import Status
 from backlog_mcp.server import registry
 from backlog_mcp.state import State
 
@@ -407,15 +408,15 @@ async def test_delete_asks_only_across_projects(
 ) -> None:
     async with (
         asyncio.timeout(5),
-        connect(registry, adapter=adapter, answers={"Delete task": answer}) as client,
+        connect(registry, adapter=adapter, answers={"Delete note": answer}) as client,
     ):
         project = await call(client, "project_save", root="../other" if cross_project else ".")
-        saved = await call(client, "task_add", title="Delete candidate", project=project["slug"])
-        deleted = await call(client, "task_delete", id=saved["id"])
+        saved = await call(client, "note_save", title="Delete candidate", project=project["slug"])
+        deleted = await call(client, "note_delete", id=saved["id"])
         expected = not cross_project or answer == {"ok": True}
         assert deleted["deleted"] is expected
         assert deleted["title"] == "Delete candidate"
-        assert (await backlog.store.task(saved["id"]) is None) is expected
+        assert (await backlog.store.note(saved["id"]) is None) is expected
         if expected:
             assert (await call(client, "search", query="candidate", all_projects=True))[
                 "count"
@@ -426,7 +427,9 @@ async def test_delete_without_elicitation(client: BaseClient, backlog: Backlog) 
     saved = await call(client, "task_add", title="Delete me")
     result = await call(client, "task_delete", id=saved["id"])
     assert result["deleted"] is True
-    assert await backlog.store.task(saved["id"]) is None
+    task = await backlog.store.task(saved["id"])
+    assert task is not None
+    assert task.status == Status.DELETED
 
 
 async def test_notes_save_replace_rename_and_append(client: BaseClient) -> None:
@@ -600,12 +603,19 @@ async def test_cross_project_delete_requires_capable_client(backlog: Backlog, en
         if entity == "note":
             args["shared"] = True
         saved = await call(client, tool, **args)
-        result = await call(client, f"{entity}_delete", id=saved["id"])
-        assert result["deleted"] is False
-        assert "cannot confirm" in result["detail"]
-        assert (await call(client, f"{entity}_get", id=saved["id"]))["title"] == "Elsewhere"
-        await call(client, "project_use", project=other["slug"])
-        assert (await call(client, f"{entity}_delete", id=saved["id"]))["deleted"] is True
+        if entity == "task":
+            result = await call(client, "task_delete", id=saved["id"])
+            assert result["deleted"] is True
+            task = await backlog.store.task(saved["id"])
+            assert task is not None
+            assert task.status == Status.DELETED
+        else:
+            result = await call(client, "note_delete", id=saved["id"])
+            assert result["deleted"] is False
+            assert "cannot confirm" in result["detail"]
+            assert (await call(client, "note_get", id=saved["id"]))["title"] == "Elsewhere"
+            confirmed = await call(client, "note_delete", id=saved["id"], confirm=True)
+            assert confirmed["deleted"] is True
 
 
 async def test_note_bodies_are_limited_to_1024_characters(client: BaseClient) -> None:

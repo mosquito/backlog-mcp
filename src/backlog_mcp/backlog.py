@@ -53,9 +53,7 @@ class Reach:
 
     @property
     def scope_computer(self) -> str | None:
-        """The computer the listing covers: the project's, or the named one; None for all."""
-        if self.project:
-            return self.project.computer
+        """The named computer the listing covers, absent for a whole logical project."""
         return self.computer
 
     @property
@@ -215,11 +213,12 @@ class Backlog:
             return Reach()
         if project:
             selected = await self.resolve(project)
-            if computer and selected.computer != check(computer):
+            name = check(computer) if computer else None
+            if name and not any(root.computer == name for root in selected.roots):
                 raise UnknownProject(
-                    f"project {selected.slug!r} is on {selected.computer!r}, not {computer!r}"
+                    f"project {selected.slug!r} has no binding on {name!r}"
                 )
-            return Reach(project=selected)
+            return Reach(project=selected, computer=name)
         if computer:
             name = check(computer)
             known = await self.store.computers()
@@ -250,6 +249,12 @@ class Backlog:
         The directory must exist. A view of another computer cannot check that and takes the
         path as given.
         """
+        if str(root) == "":
+            label = name or "project"
+            slug = await self.free_slug(slugify(label))
+            return await self.store.add_project(
+                slug=slug, name=label, root="", computer=self.computer, description=description
+            )
         path = self.absolute(root)
         existing = await self.store.project_by_root(path, computer=self.computer)
         if existing is not None:
@@ -261,7 +266,7 @@ class Backlog:
         created = await self.store.add_project(
             slug=slug, name=label, root=path, computer=self.computer, description=description
         )
-        log.info("registered project %s at %s on %s", created.slug, created.root, self.computer)
+        log.info("registered project %s at %s on %s", created.slug, path, self.computer)
         return created
 
     async def save(
@@ -286,7 +291,17 @@ class Backlog:
                 project = found if found is not None else await self.create(checkout_root(path))
             case None | "", (str() | Path()) as directory:
                 project = await self.create(directory, name=name, description=description or "")
-            case str() as named, _:
+            case str() as named, (str() | Path()) as directory:
+                project = await self.lookup(named)
+                root_text = str(directory)
+                if root_text:
+                    path = self.absolute(directory)
+                    if not self.remote and not path.is_dir():
+                        raise ValueError(f"no such directory on {self.computer!r}: {path}")
+                    project = await self.store.add_root(project.id, computer=self.computer, root=path)
+                else:
+                    project = await self.store.add_root(project.id, computer=self.computer, root="")
+            case str() as named, None:
                 project = await self.lookup(named)
         updated = await self.store.update_project(
             project.id, name=name, description=description, archived=archived

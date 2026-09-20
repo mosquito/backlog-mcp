@@ -8,13 +8,14 @@ from pydantic import BaseModel, Field
 
 
 class Status(StrEnum):
-    """Where a task stands. Only `DONE` and `CANCELLED` close it."""
+    """Where a task stands. Only `DONE`, `CANCELLED` and `DELETED` close it."""
 
     TODO = "todo"
     DOING = "doing"
     BLOCKED = "blocked"
     DONE = "done"
     CANCELLED = "cancelled"
+    DELETED = "deleted"
 
 
 class Priority(StrEnum):
@@ -25,7 +26,7 @@ class Priority(StrEnum):
 
 
 OPEN_STATUSES: tuple[Status, ...] = (Status.TODO, Status.DOING, Status.BLOCKED)
-CLOSED_STATUSES: tuple[Status, ...] = (Status.DONE, Status.CANCELLED)
+CLOSED_STATUSES: tuple[Status, ...] = (Status.DONE, Status.CANCELLED, Status.DELETED)
 
 #: Priorities are stored as a rank so SQL can order by them.
 RANKS: dict[Priority, int] = {

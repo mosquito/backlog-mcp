@@ -6,14 +6,14 @@ import asyncio
 import re
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
 from .computer import hostname
-from .models import OPEN_STATUSES, PRIORITIES, RANKS, Priority, Status
+from .models import CLOSED_STATUSES, OPEN_STATUSES, PRIORITIES, RANKS, Priority, Status
 
 #: Applied in order; the file's `user_version` says how many already ran. `:computer` is the
 #: name of this computer, given to the projects registered before projects had one.
@@ -116,6 +116,31 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "DROP TABLE projects",
         "ALTER TABLE projects_v3 RENAME TO projects",
     ),
+    (
+        """CREATE TABLE projects_v4 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )""",
+        """INSERT INTO projects_v4
+            (id, slug, name, description, archived, created_at, updated_at)
+            SELECT id, slug, name, description, archived, created_at, updated_at FROM projects""",
+        """CREATE TABLE project_roots (
+            project_id INTEGER NOT NULL REFERENCES projects_v4(id) ON DELETE CASCADE,
+            computer TEXT NOT NULL,
+            root TEXT NOT NULL,
+            PRIMARY KEY (project_id, computer, root)
+        )""",
+        """INSERT INTO project_roots (project_id, computer, root)
+            SELECT id, computer, root FROM projects""",
+        "CREATE UNIQUE INDEX project_roots_unique_path ON project_roots (computer, root) WHERE root != ''",
+        "DROP TABLE projects",
+        "ALTER TABLE projects_v4 RENAME TO projects",
+    ),
 )
 
 OPEN_LIST = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
@@ -126,9 +151,9 @@ COUNTS = (
     f"AND t.status IN ({OPEN_LIST})) AS open_tasks"
 )
 
-TASK_COLUMNS = "t.*, p.slug AS project, p.computer AS computer"
+TASK_COLUMNS = "t.*, p.slug AS project"
 
-NOTE_COLUMNS = "n.*, p.slug AS project, p.computer AS computer"
+NOTE_COLUMNS = "n.*, p.slug AS project"
 
 PROJECTS_JOIN = "JOIN projects p ON p.id = t.project_id"
 
@@ -173,14 +198,19 @@ class Project:
     id: int
     slug: str
     name: str
-    computer: str
-    root: str
     description: str
     archived: bool
     created_at: float
     updated_at: float
     total_tasks: int = 0
     open_tasks: int = 0
+    roots: list[ProjectRoot] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectRoot:
+    computer: str
+    root: str
 
 
 @dataclass(slots=True)
@@ -188,7 +218,6 @@ class Task:
     id: int
     project_id: int
     project: str
-    computer: str
     title: str
     body: str
     status: Status
@@ -205,7 +234,6 @@ class Note:
     id: int
     project_id: int
     project: str
-    computer: str
     title: str
     body: str
     tags: list[str]
@@ -221,8 +249,6 @@ def to_project(row: aiosqlite.Row) -> Project:
         id=row["id"],
         slug=row["slug"],
         name=row["name"],
-        computer=row["computer"],
-        root=row["root"],
         description=row["description"],
         archived=bool(row["archived"]),
         created_at=row["created_at"],
@@ -238,7 +264,6 @@ def to_task(row: aiosqlite.Row) -> Task:
         id=row["id"],
         project_id=row["project_id"],
         project=row["project"],
-        computer=row["computer"],
         title=row["title"],
         body=row["body"],
         status=Status(row["status"]),
@@ -257,7 +282,6 @@ def to_note(row: aiosqlite.Row) -> Note:
         id=row["id"],
         project_id=row["project_id"],
         project=row["project"],
-        computer=row["computer"],
         title=row["title"],
         body=row["body"],
         tags=split_tags(row["tags"]),
@@ -332,32 +356,58 @@ class Store:
 
     # -- projects --------------------------------------------------------------------------
 
+    async def attach_roots(self, projects: list[Project]) -> list[Project]:
+        """Populate path bindings without duplicating project rows in callers' queries."""
+        if not projects:
+            return projects
+        ids = ", ".join("?" for _ in projects)
+        rows = await self.rows(
+            f"SELECT project_id, computer, root FROM project_roots "
+            f"WHERE project_id IN ({ids}) ORDER BY computer, root",
+            [project.id for project in projects],
+        )
+        by_id: dict[int, list[ProjectRoot]] = {project.id: [] for project in projects}
+        for row in rows:
+            by_id[row["project_id"]].append(ProjectRoot(row["computer"], row["root"]))
+        for project in projects:
+            project.roots = by_id[project.id]
+        return projects
+
+    async def roots(self, project_id: int) -> list[ProjectRoot]:
+        project = await self.project(project_id)
+        return project.roots if project else []
+
     async def project(self, project_id: int) -> Project | None:
         row = await self.row(f"SELECT p.*, {COUNTS} FROM projects p WHERE p.id = ?", (project_id,))
-        return to_project(row) if row else None
+        return (await self.attach_roots([to_project(row)]))[0] if row else None
 
     async def project_by_slug(self, slug: str) -> Project | None:
         row = await self.row(f"SELECT p.*, {COUNTS} FROM projects p WHERE p.slug = ?", (slug,))
-        return to_project(row) if row else None
+        return (await self.attach_roots([to_project(row)]))[0] if row else None
 
     async def project_by_root(self, root: Path | str, *, computer: str) -> Project | None:
         """The project registered for exactly this directory of that computer."""
         row = await self.row(
-            f"SELECT p.*, {COUNTS} FROM projects p WHERE p.computer = ? AND p.root = ?",
+            f"SELECT p.*, {COUNTS} FROM projects p JOIN project_roots r ON r.project_id = p.id "
+            "WHERE r.computer = ? AND r.root = ?",
             (computer, str(root)),
         )
-        return to_project(row) if row else None
+        return (await self.attach_roots([to_project(row)]))[0] if row else None
 
     async def project_for_path(self, path: Path, *, computer: str) -> Project | None:
         """The project of that computer whose root is the closest ancestor of `path`."""
         candidates = [str(path), *(str(parent) for parent in path.parents)]
         holes = ", ".join("?" for _ in candidates)
         rows = await self.rows(
-            f"SELECT p.*, {COUNTS} FROM projects p WHERE p.computer = ? AND p.root IN ({holes})",
+            f"SELECT p.*, {COUNTS} FROM projects p JOIN project_roots r ON r.project_id = p.id "
+            f"WHERE r.computer = ? AND r.root != '' AND r.root IN ({holes})",
             (computer, *candidates),
         )
-        found = [to_project(row) for row in rows]
-        return max(found, key=lambda item: len(item.root)) if found else None
+        found = await self.attach_roots([to_project(row) for row in rows])
+        return max(
+            found,
+            key=lambda item: max(len(root.root) for root in item.roots if root.computer == computer),
+        ) if found else None
 
     async def projects(
         self, *, archived: bool = False, computer: str | None = None
@@ -368,18 +418,18 @@ class Store:
         if not archived:
             clauses.append("p.archived = 0")
         if computer is not None:
-            clauses.append("p.computer = ?")
+            clauses.append("EXISTS (SELECT 1 FROM project_roots r WHERE r.project_id = p.id AND r.computer = ?)")
             parameters.append(computer)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
-            f"SELECT p.*, {COUNTS} FROM projects p {where} ORDER BY p.archived, p.computer, p.slug",
+            f"SELECT p.*, {COUNTS} FROM projects p {where} ORDER BY p.archived, p.slug",
             parameters,
         )
-        return [to_project(row) for row in rows]
+        return await self.attach_roots([to_project(row) for row in rows])
 
     async def computers(self) -> list[str]:
         """Every computer with a registered project, sorted."""
-        rows = await self.rows("SELECT DISTINCT computer FROM projects ORDER BY computer")
+        rows = await self.rows("SELECT DISTINCT computer FROM project_roots ORDER BY computer")
         return [row["computer"] for row in rows]
 
     async def slugs(self) -> list[str]:
@@ -391,15 +441,40 @@ class Store:
         connection = await self.open()
         now = time.time()
         cursor = await connection.execute(
-            "INSERT INTO projects "
-            "(slug, name, computer, root, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (slug, name, computer, str(root), description, now, now),
+            "INSERT INTO projects (slug, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (slug, name, description, now, now),
+        )
+        await connection.execute(
+            "INSERT INTO project_roots (project_id, computer, root) VALUES (?, ?, ?)",
+            (cursor.lastrowid, computer, str(root)),
         )
         await connection.commit()
         created = await self.project(cursor.lastrowid or 0)
         assert created is not None, "the project just written is not there"
         return created
+
+    async def add_root(self, project_id: int, *, computer: str, root: Path | str) -> Project:
+        """Bind a project to one location; non-empty paths belong to only one project."""
+        connection = await self.open()
+        existing = await self.row(
+            "SELECT project_id FROM project_roots WHERE project_id = ? AND computer = ? AND root = ?",
+            (project_id, computer, str(root)),
+        )
+        if existing is not None:
+            project = await self.project(project_id)
+            assert project is not None
+            return project
+        try:
+            await connection.execute(
+                "INSERT INTO project_roots (project_id, computer, root) VALUES (?, ?, ?)",
+                (project_id, computer, str(root)),
+            )
+            await connection.commit()
+        except aiosqlite.IntegrityError as error:
+            raise ValueError(f"path {root!s} on {computer!r} is already registered") from error
+        project = await self.project(project_id)
+        assert project is not None, "the project just updated is gone"
+        return project
 
     async def update_project(
         self,
@@ -452,7 +527,7 @@ class Store:
     ) -> Task:
         connection = await self.open()
         now = time.time()
-        closed = now if status in (Status.DONE, Status.CANCELLED) else None
+        closed = now if status in CLOSED_STATUSES else None
         cursor = await connection.execute(
             "INSERT INTO tasks "
             "(project_id, title, body, status, priority, tags, created_at, updated_at, closed_at) "
@@ -493,7 +568,7 @@ class Store:
         if status is not None:
             changes["status"] = status.value
             #: Closing stamps the time; reopening clears it.
-            closing = status in (Status.DONE, Status.CANCELLED)
+            closing = status in CLOSED_STATUSES
             changes["closed_at"] = time.time() if closing else None
         if priority is not None:
             changes["priority"] = RANKS[priority]
@@ -513,7 +588,12 @@ class Store:
 
     async def delete_task(self, task_id: int) -> bool:
         connection = await self.open()
-        cursor = await connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        now = time.time()
+        cursor = await connection.execute(
+            "UPDATE tasks SET status = ?, closed_at = ?, updated_at = ? "
+            "WHERE id = ? AND status != ?",
+            (Status.DELETED.value, now, now, task_id, Status.DELETED.value),
+        )
         await connection.commit()
         return bool(cursor.rowcount)
 
@@ -533,7 +613,10 @@ class Store:
             clauses.append("t.project_id = ?")
             parameters.append(project_id)
         if computer is not None:
-            clauses.append("p.computer = ?")
+            clauses.append(
+                "EXISTS (SELECT 1 FROM project_roots r "
+                "WHERE r.project_id = p.id AND r.computer = ?)"
+            )
             parameters.append(computer)
         if status:
             clauses.append(f"t.status IN ({', '.join('?' for _ in status)})")
@@ -608,6 +691,9 @@ class Store:
         clauses, parameters = self.filters(
             project_id=project_id, status=status, tag=tag, priority=None, computer=computer
         )
+        if status is None:
+            clauses.append("t.status != ?")
+            parameters.append(Status.DELETED.value)
         extra = f"AND {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
             f"SELECT {TASK_COLUMNS}, "
@@ -627,6 +713,8 @@ class Store:
         clauses, parameters = self.filters(
             project_id=project_id, status=None, tag=None, priority=None, computer=computer
         )
+        clauses.append("t.status != ?")
+        parameters.append(Status.DELETED.value)
         clauses.append("t.tags != ''")
         rows = await self.rows(
             f"SELECT t.tags FROM tasks t {PROJECTS_JOIN} WHERE {' AND '.join(clauses)}",
@@ -764,7 +852,10 @@ class Store:
             clauses.append("(n.project_id = ? OR n.shared = 1)")
             parameters.append(project_id)
         if computer is not None:
-            clauses.append("(p.computer = ? OR n.shared = 1)")
+            clauses.append(
+                "(EXISTS (SELECT 1 FROM project_roots r "
+                "WHERE r.project_id = p.id AND r.computer = ?) OR n.shared = 1)"
+            )
             parameters.append(computer)
         if shared is not None:
             clauses.append("n.shared = ?")
