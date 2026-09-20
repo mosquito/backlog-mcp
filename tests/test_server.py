@@ -181,12 +181,24 @@ async def test_task_filters_pagination_and_global_scope(client: BaseClient) -> N
 
 
 async def test_task_list_is_compact_unless_full_requested(client: BaseClient) -> None:
-    task = await call(client, "task_add", title="Document lists", body="x" * 200)
+    task = await call(
+        client,
+        "task_add",
+        title="Document lists",
+        body=(
+            "## Problem\n\nThis first paragraph has enough words to be shortened cleanly at its "
+            "boundary without cutting a word in half, while retaining a useful description of "
+            "the actual task for an agent reading a compact list.\n\nSecond paragraph."
+        ),
+    )
 
     compact = await call(client, "task_list")
     item = compact["items"][0]
     assert "body" not in item
-    assert item["snippet"] == "x" * 150
+    assert item["snippet"].startswith("This first paragraph")
+    assert item["snippet"].endswith("…")
+    assert len(item["snippet"]) <= 150
+    assert "Second paragraph" not in item["snippet"]
 
     full = await call(client, "task_list", full=True)
     assert full["items"][0]["body"] == task["body"]
@@ -197,11 +209,16 @@ async def test_move_preserves_task_and_changes_project_counts(client: BaseClient
     other = await call(client, "project_save", root="../other")
     moved = await call(client, "task_move", id=task["id"], project=other["slug"])
     assert moved["project"] == other["slug"]
-    for field in ("id", "title", "body", "status", "priority", "tags", "created_at"):
+    for field in ("id", "title", "status", "priority", "tags", "created_at"):
         assert moved[field] == task[field]
     assert (await call(client, "task_list"))["count"] == 0
     assert (await call(client, "task_list", project=other["slug"]))["count"] == 1
     assert (await call(client, "task_get", id=task["id"]))["project"] == other["slug"]
+    assert re.search(
+        rf"# UPDATE: \d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}Z\n"
+        rf"Moved: {re.escape(task['project'])} → {re.escape(other['slug'])}\n$",
+        moved["body"],
+    )
 
 
 async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient) -> None:
@@ -493,12 +510,24 @@ async def test_shared_notes_cross_projects(client: BaseClient) -> None:
 
 
 async def test_note_list_is_compact_unless_full_requested(client: BaseClient) -> None:
-    note = await call(client, "note_save", title="List note", body="x" * 200)
+    note = await call(
+        client,
+        "note_save",
+        title="List note",
+        body=(
+            "## Context\n\nThis note starts with enough prose to demonstrate a readable compact "
+            "snippet that ends cleanly between words instead of cutting a fragment in half for "
+            "the agent consuming it.\n\nIgnored second paragraph."
+        ),
+    )
 
     compact = await call(client, "note_list")
     item = compact["items"][0]
     assert "body" not in item
-    assert item["snippet"] == "x" * 150
+    assert item["snippet"].startswith("This note starts")
+    assert item["snippet"].endswith("…")
+    assert len(item["snippet"]) <= 150
+    assert "Ignored second paragraph" not in item["snippet"]
 
     full = await call(client, "note_list", full=True)
     assert full["items"][0]["body"] == note["body"]

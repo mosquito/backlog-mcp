@@ -40,6 +40,7 @@ from .render import (
 )
 from .server import (
     VERSION,
+    append_history,
     bound,
     note_out,
     project_out,
@@ -676,10 +677,19 @@ class Move(Command):
 
     async def __call__(self) -> int:
         project = await self.backlog.lookup(self.destination)
-        task = await self.backlog.store.update_task(self.id, project_id=project.id)
-        if task is None:
+        existing = await self.backlog.store.task(self.id)
+        if existing is None:
             fail(f"no task #{self.id}")
             return 1
+        if existing.project_id == project.id:
+            note(f"#{existing.id} already belongs to {project.slug}")
+            return 0
+        task = await self.backlog.store.update_task(
+            self.id,
+            project_id=project.id,
+            body=append_history(existing.body, f"Moved: {existing.project} → {project.slug}"),
+        )
+        assert task is not None
         note(f"#{task.id} now belongs to {project.slug}")
         return 0
 

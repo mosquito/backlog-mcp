@@ -21,8 +21,8 @@ from .models import (
     Deleted,
     FullNotes,
     FullTasks,
-    NoteOut,
     NoteListItem,
+    NoteOut,
     Notes,
     Priority,
     ProjectOut,
@@ -30,8 +30,8 @@ from .models import (
     Scope,
     Stats,
     Status,
-    TaskOut,
     TaskListItem,
+    TaskOut,
     Tasks,
 )
 from .store import NOTE_LIMIT, Note, Project, Task
@@ -654,7 +654,7 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
         tag=args.tag,
         priority=args.priority,
     )
-    result = dict(count=total, project=reach.slug, computer=reach.scope_computer)
+    result = {"count": total, "project": reach.slug, "computer": reach.scope_computer}
     if args.full:
         return FullTasks(items=[task_out(item) for item in found], **result)
     return Tasks(
@@ -692,12 +692,7 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
             parts.append(f"Status changed: {existing.status.value} → {args.status.value}")
         if body:
             parts.append(body)
-        if parts:
-            timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            entry = f"---\n# UPDATE: {timestamp}\n" + "\n\n".join(parts)
-            body = f"{existing.body.rstrip()}\n{entry}\n" if existing.body else f"{entry}\n"
-        else:
-            body = None
+        body = append_history(existing.body, *parts) if parts else None
 
     task = await backlog.store.update_task(
         args.id,
@@ -715,11 +710,19 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
 
 @registry.tool(title="Move a task", annotations=Hint.IDEMPOTENT)
 async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
-    """Move a task to another project board by slug or path. Preserves its id and other fields."""
+    """Move a task to another project board and record the move in its history."""
     project = await backlog.lookup(args.project)
-    task = await backlog.store.update_task(args.id, project_id=project.id)
-    if task is None:
+    existing = await backlog.store.task(args.id)
+    if existing is None:
         raise LookupError(f"no task #{args.id}")
+    if existing.project_id == project.id:
+        return task_out(existing)
+    task = await backlog.store.update_task(
+        args.id,
+        project_id=project.id,
+        body=append_history(existing.body, f"Moved: {existing.project} → {project.slug}"),
+    )
+    assert task is not None
     await changed(task.id)
     return task_out(task)
 
@@ -854,7 +857,7 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
     total = await backlog.store.count_notes(
         project_id=reach.project_id, computer=reach.computer, tag=args.tag, shared=args.shared
     )
-    result = dict(count=total, project=reach.slug, computer=reach.scope_computer)
+    result = {"count": total, "project": reach.slug, "computer": reach.scope_computer}
     if args.full:
         return FullNotes(items=[note_out(item) for item in found], **result)
     return Notes(items=[note_list_item(item) for item in found], **result)

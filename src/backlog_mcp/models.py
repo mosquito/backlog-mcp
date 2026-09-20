@@ -98,7 +98,9 @@ class TaskListItem(BaseModel):
     created_at: float
     updated_at: float
     closed_at: float | None = None
-    snippet: str = Field(description="First 150 characters of the task body.")
+    snippet: str = Field(
+        description="First meaningful body paragraph, shortened to 150 characters."
+    )
 
 
 class NoteOut(BaseModel):
@@ -127,7 +129,9 @@ class NoteListItem(BaseModel):
     shared: bool = Field(default=False, description="Visible from every project.")
     created_at: float
     updated_at: float
-    snippet: str = Field(description="First 150 characters of the note body.")
+    snippet: str = Field(
+        description="First meaningful body paragraph, shortened to 150 characters."
+    )
 
 
 class Projects(BaseModel):
