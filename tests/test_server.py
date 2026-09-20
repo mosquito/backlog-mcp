@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from typing import Any
 
 import pytest
@@ -134,7 +135,11 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
     assert task["closed_at"] is None
     closed = await call(client, "task_update", id=task["id"], status=closed_status)
     assert closed["closed_at"] is not None
-    assert closed["body"] == "Details"
+    assert re.fullmatch(
+        rf"Details\n\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}\n"
+        rf"Status changed: todo → {closed_status}",
+        closed["body"],
+    )
     assert closed["tags"] == ["api"]
     assert (await call(client, "task_list"))["count"] == 0
     assert (await call(client, "task_list", status=[closed_status]))["items"][0]["id"] == task["id"]
@@ -143,7 +148,13 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
         client, "task_update", id=task["id"], status="doing", body="", tags=[], priority="urgent"
     )
     assert reopened["closed_at"] is None
-    assert reopened["body"] == ""
+    assert re.fullmatch(
+        rf"Details\n\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}\n"
+        rf"Status changed: todo → {closed_status}\n\n---\n"
+        r"# UPDATE: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n"
+        rf"Status changed: {closed_status} → doing\n\n",
+        reopened["body"],
+    )
     assert reopened["tags"] == []
     assert reopened["priority"] == "urgent"
     assert await call(client, "task_get", id=task["id"]) == reopened
@@ -214,6 +225,29 @@ async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient
     await call(client, "task_update", id=task["id"], title="Login", body="", tags=[])
     assert (await call(client, "search", query="auth", min_score=1))["count"] == 0
     assert (await call(client, "search", query="login"))["count"] == 1
+
+
+async def test_task_body_updates_append_timestamped_history(client: BaseClient) -> None:
+    task = await call(client, "task_add", title="Track progress", body="Initial scope")
+
+    updated = await call(client, "task_update", id=task["id"], body="Implemented the first step")
+
+    assert re.fullmatch(
+        r"Initial scope\n\n---\n# UPDATE: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n"
+        r"Implemented the first step",
+        updated["body"],
+    )
+
+
+async def test_task_status_changes_append_timestamped_history(client: BaseClient) -> None:
+    task = await call(client, "task_add", title="Track status")
+
+    updated = await call(client, "task_update", id=task["id"], status="doing")
+
+    assert re.fullmatch(
+        r"---\n# UPDATE: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\nStatus changed: todo → doing",
+        updated["body"],
+    )
 
 
 async def test_statistics(client: BaseClient) -> None:

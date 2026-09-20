@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
+from datetime import datetime
 from typing import Any, Literal
 
 from aiohttp_tiny_mcp import Exchange, Hint, NeedInput, Registry, elicit
@@ -404,11 +405,17 @@ class TaskId(BaseModel):
 
 
 class UpdateTask(BaseModel):
-    id: int
-    title: str | None = None
-    body: str | None = None
-    status: Status | None = None
-    priority: Priority | None = None
+    id: int = Field(description="Task id to update.")
+    title: str | None = Field(default=None, description="Updated task title.")
+    body: str | None = Field(
+        default=None,
+        description="Appends a timestamped update to task details, blockers, or dependencies.",
+    )
+    status: Status | None = Field(
+        default=None,
+        description="Transition: `doing` when active, `done` when finished, `blocked` if stuck.",
+    )
+    priority: Priority | None = Field(default=None, description="Updated priority ranking.")
     tags: list[str] | None = Field(default=None, description="Replaces the whole tag list.")
 
 
@@ -601,13 +608,35 @@ async def task_get(args: TaskId, backlog: Backlog) -> TaskOut:
 
 @registry.tool(title="Update a task", annotations=Hint.IDEMPOTENT)
 async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
-    """Update only the supplied task fields.
+    """Update task fields and keep the board true to life.
 
-    Status `done` or `cancelled` sets the closing time; other statuses clear it."""
+    A supplied body or an actual status change appends a timestamped history entry. Send only the
+    new update text; do not read the existing body to reconstruct it. To rewrite a task's scope,
+    close it and create a successor task that refers to its id. Always track active work: mark a
+    task as `doing` when starting it, and `done` or `cancelled`
+    upon completion. Never do untracked work. Setting status to `done` or `cancelled` stamps the
+    closing time; other statuses clear it."""
+    body = args.body
+    if body is not None or args.status is not None:
+        existing = await backlog.store.task(args.id)
+        if existing is None:
+            raise LookupError(f"no task #{args.id}")
+        parts: list[str] = []
+        if args.status is not None and args.status != existing.status:
+            parts.append(f"Status changed: {existing.status.value} → {args.status.value}")
+        if body is not None:
+            parts.append(body)
+        if parts:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            entry = f"---\n# UPDATE: {timestamp}\n" + "\n\n".join(parts)
+            body = f"{existing.body}\n\n{entry}" if existing.body else entry
+        else:
+            body = None
+
     task = await backlog.store.update_task(
         args.id,
         title=args.title,
-        body=args.body,
+        body=body,
         status=args.status,
         priority=args.priority,
         tags=args.tags,
