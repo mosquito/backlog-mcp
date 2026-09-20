@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "aiohttp-tiny-mcp>=0.3.1",
+    "aiohttp-tiny-mcp>=0.3.5",
     "aiosqlite>=0.21.0",
     "argclass>=1.11.0",
     "model2vec>=0.9.0",

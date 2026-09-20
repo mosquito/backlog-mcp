@@ -75,15 +75,15 @@ wheels = [
 
 [[package]]
 name = "aiohttp-tiny-mcp"
-version = "0.3.4"
+version = "0.3.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/56/7e/866bcd618a986461ccea698b7fa9d48822d0607844c81668b4604cba55ab/aiohttp_tiny_mcp-0.3.4.tar.gz", hash = "sha256:681425a77de3ddd17e44e5a3ebbdbb01761ded9799ccaaa7f544676c3e97e7f9", size = 97557, upload-time = "2026-09-19T22:09:47.183Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/85/5beb35f9f342fd756e93b7df4fc1e73e6575884de53876a607cd20b345ef/aiohttp_tiny_mcp-0.3.5.tar.gz", hash = "sha256:4ebe8b9ce2ad517a22318c80590ee82526c6c659c493d8b7606df0387867de34", size = 98445, upload-time = "2026-09-20T09:42:26.296Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/21/bd03b29701ef35a238da3754bd6b4a25dd9f76eea9455d5e18bda6074034/aiohttp_tiny_mcp-0.3.4-py3-none-any.whl", hash = "sha256:7381e5f139ed7db2f265c8a176c6402af30098371253307c1b1ca9154539e82c", size = 118429, upload-time = "2026-09-19T22:09:45.511Z" },
+    { url = "https://files.pythonhosted.org/packages/db/2a/2323b7a9c83afdaf6ae7a81952551d7c2e3dded968136ea98d0977279ca4/aiohttp_tiny_mcp-0.3.5-py3-none-any.whl", hash = "sha256:39183d2abdf578f51936d3d73dfb5a561dfa13e122154abb3dea67efd6564f27", size = 119388, upload-time = "2026-09-20T09:42:24.897Z" },
 ]
 
 [[package]]
@@ -237,7 +237,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp-tiny-mcp", specifier = ">=0.3.1" },
+    { name = "aiohttp-tiny-mcp", specifier = ">=0.3.5" },
     { name = "aiosqlite", specifier = ">=0.21.0" },
     { name = "argclass", specifier = ">=1.11.0" },
     { name = "model2vec", specifier = ">=0.9.0" },
