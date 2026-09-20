@@ -211,6 +211,32 @@ def task_out(task: Task) -> TaskOut:
     )
 
 
+def compact_snippet(body: str, limit: int = 150) -> str:
+    """Return the first meaningful markdown paragraph, shortened at a word boundary."""
+    paragraph: list[str] = []
+    for line in body.splitlines():
+        text = line.strip()
+        if not text:
+            if paragraph:
+                break
+            continue
+        if not paragraph and text.startswith("#"):
+            continue
+        paragraph.append(text)
+    text = " ".join(paragraph)
+    if len(text) <= limit:
+        return text
+    shortened = text[: limit - 1].rsplit(maxsplit=1)[0]
+    return f"{shortened or text[: limit - 1]}…"
+
+
+def append_history(body: str, *parts: str) -> str:
+    """Append one timestamped task-history entry to a task body."""
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entry = f"---\n# UPDATE: {timestamp}\n" + "\n\n".join(parts)
+    return f"{body.rstrip()}\n{entry}\n" if body else f"{entry}\n"
+
+
 def task_list_item(task: Task) -> TaskListItem:
     """The compact task shape used by listings."""
     return TaskListItem(
@@ -224,7 +250,7 @@ def task_list_item(task: Task) -> TaskListItem:
         created_at=task.created_at,
         updated_at=task.updated_at,
         closed_at=task.closed_at,
-        snippet=task.body[:150],
+        snippet=compact_snippet(task.body),
     )
 
 
@@ -254,7 +280,7 @@ def note_list_item(note: Note) -> NoteListItem:
         shared=note.shared,
         created_at=note.created_at,
         updated_at=note.updated_at,
-        snippet=note.body[:150],
+        snippet=compact_snippet(note.body),
     )
 
 
@@ -656,7 +682,7 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
     task as `doing` when starting it, and `done` or `cancelled`
     upon completion. Never do untracked work. Setting status to `done` or `cancelled` stamps the
     closing time; other statuses clear it."""
-    body = args.body
+    body = args.body.strip() if args.body is not None else None
     if body is not None or args.status is not None:
         existing = await backlog.store.task(args.id)
         if existing is None:
@@ -664,12 +690,12 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
         parts: list[str] = []
         if args.status is not None and args.status != existing.status:
             parts.append(f"Status changed: {existing.status.value} → {args.status.value}")
-        if body is not None:
+        if body:
             parts.append(body)
         if parts:
             timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             entry = f"---\n# UPDATE: {timestamp}\n" + "\n\n".join(parts)
-            body = f"{existing.body}\n\n{entry}" if existing.body else entry
+            body = f"{existing.body.rstrip()}\n{entry}\n" if existing.body else f"{entry}\n"
         else:
             body = None
 
