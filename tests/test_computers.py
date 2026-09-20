@@ -130,6 +130,9 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
     assert (await backlog.reach()).project == local
     assert (await backlog.reach(all_projects=True)).computer == "desk"
     assert (await backlog.reach(computer="laptop")).computer == "laptop"
+    assert (await backlog.reach(project="app", computer="laptop")).project == app
+    with pytest.raises(UnknownProject, match="project 'app' is on 'laptop', not 'desk'"):
+        await backlog.reach(project="app", computer="desk")
     assert (await backlog.reach(all_computers=True)).computer is None
     assert (await backlog.reach(all_computers=True)).label == "every project on every computer"
     with pytest.raises(UnknownProject, match="known computers are desk, laptop"):
@@ -177,6 +180,23 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
 
     counted = await call(client, "stats", computer="laptop")
     assert (counted["computer"], counted["total"]) == ("laptop", 1)
+    scoped_task = await call(client, "task_list", project="app", computer="laptop")
+    assert (scoped_task["project"], scoped_task["computer"], scoped_task["count"]) == (
+        "app",
+        "laptop",
+        1,
+    )
+    scoped_stats = await call(client, "stats", project="app", computer="laptop")
+    assert (scoped_stats["project"], scoped_stats["computer"], scoped_stats["total"]) == (
+        "app",
+        "laptop",
+        1,
+    )
+    scoped_search = await call(
+        client, "search", query="laptop", project="app", computer="laptop"
+    )
+    assert (scoped_search["project"], scoped_search["computer"]) == ("app", "laptop")
+    assert [item["id"] for item in scoped_search["tasks"]] == [away["items"][0]["id"]]
     assert counted["this_computer"] == "here"
     assert (await call(client, "stats", all_computers=True))["total"] == 2
 

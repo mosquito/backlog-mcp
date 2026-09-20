@@ -205,7 +205,7 @@ class Backlog:
         computer: str | None = None,
         all_computers: bool = False,
     ) -> Reach:
-        """What a listing covers. The widest selector given wins.
+        """What a listing covers. A named project narrows a computer scope.
 
         `all_computers` covers everything, `computer` every project of that computer,
         `all_projects` every project of this computer, and `project` one project, else the
@@ -213,6 +213,13 @@ class Backlog:
         """
         if all_computers:
             return Reach()
+        if project:
+            selected = await self.resolve(project)
+            if computer and selected.computer != check(computer):
+                raise UnknownProject(
+                    f"project {selected.slug!r} is on {selected.computer!r}, not {computer!r}"
+                )
+            return Reach(project=selected)
         if computer:
             name = check(computer)
             known = await self.store.computers()
