@@ -1,0 +1,17 @@
+# Benchmark runs download and write binary artifacts; only sources and text results are tracked.
+*.safetensors
+*.npz
+*.npy
+*.bin
+*.pt
+*.onnx
+*.pkl
+*.parquet
+*.arrow
+*.zip
+*.tar
+*.gz
+__pycache__/
+.cache/
+models/
+downloads/
