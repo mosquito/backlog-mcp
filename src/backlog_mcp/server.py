@@ -140,10 +140,13 @@ locally; no text is sent to an external service.
 Writes. `task_add`, `task_update`, `task_move`, `task_delete`, `note_save`, `note_append`, \
 `note_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
 one tells subscribed clients which resources went stale. `task_delete` marks a task's status as \
-`deleted` without removing the record. `note_delete` deletes immediately within the current \
-project and asks for confirmation (or `confirm=true`) when the note belongs to another project. \
-`project_delete` removes a project with every task and note it holds, only with `confirm=true`; \
-without it the tool reports the counts. Archive with `project_save` when the history should stay.
+`deleted` without removing the record. `note_delete` and `project_delete` are destructive and \
+irreversible: call them only when the user asked for exactly that, never on your own initiative. \
+`note_delete` deletes at once within the current project and asks the user to confirm when the \
+note belongs to another project or no project is chosen. `project_delete` removes a project with \
+every task and note it holds and always asks the user to confirm. Nothing stands in for the \
+user's answer: a client that cannot ask is refused. Archive with `project_save` when the history \
+should stay.
 
 Skills. This server carries written skills: `triage`, for keeping a board true, and `planning`, \
 for cutting a request into tasks. A client that speaks the skills extension gets them from \
@@ -413,10 +416,6 @@ class SaveProject(BaseModel):
 
 class DeleteProject(BaseModel):
     project: str = Field(description="Project slug, or any path inside it.")
-    confirm: bool = Field(
-        default=False,
-        description="Delete for good. Without it the tool only reports what the project holds.",
-    )
 
 
 class AddTask(BaseModel):
@@ -521,13 +520,6 @@ class AppendNote(BaseModel):
 
 class NoteId(BaseModel):
     id: int
-    confirm: bool = Field(
-        default=False,
-        description=(
-            "Confirm deletion when the note belongs to another project, or when no project "
-            "is chosen."
-        ),
-    )
 
 
 class ReadNote(BaseModel):
@@ -606,12 +598,14 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
 
 
 @registry.tool(title="Delete a project", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
-async def project_delete(args: DeleteProject, backlog: Backlog) -> ProjectDeleted:
+async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) -> ProjectDeleted:
     """Delete a project with every task and note on its board, and free its directories.
 
-    Without `confirm=true` nothing changes: the result counts what the project holds. Prefer
-    `project_save(archived=true)` to keep the history. Delete only a board nobody needs, such as
-    one whose tasks moved elsewhere with `task_move`."""
+    DESTRUCTIVE and irreversible. Call it only when the user asked to delete this project in so
+    many words. Never call it on your own initiative, and never to tidy up: archive with
+    `project_save(archived=true)`, which keeps the history. The tool always asks the user to
+    confirm. A client that cannot ask is refused; the terminal command `backlog projects delete`
+    asks there instead."""
     project = await backlog.lookup(args.project)
     contents = await backlog.store.project_contents(project.id)
     found = ProjectDeleted(
@@ -623,12 +617,28 @@ async def project_delete(args: DeleteProject, backlog: Backlog) -> ProjectDelete
         shared_notes=contents.shared_notes,
         deleted=False,
     )
-    if not args.confirm:
-        found.detail = (
-            f"pass confirm=true to delete {project.slug!r} with {contents.tasks} task(s) and "
-            f"{contents.notes} note(s), {contents.shared_notes} of them shared; "
-            "this cannot be undone"
+    held = (
+        f"{project.slug!r} with {contents.tasks} task(s) and {contents.notes} note(s), "
+        f"{contents.shared_notes} of them shared"
+    )
+    key = f"delete-project:{project.id}"
+    answer = ex.answers.get(key)
+    if answer is None:
+        if not ex.can_ask:
+            raise PermissionError(
+                f"this client cannot ask the user, so it cannot delete project {held}; "
+                "use a client with elicitation, or `backlog projects delete`"
+            )
+        raise NeedInput(
+            {
+                key: elicit(
+                    f"Delete project {held}? This cannot be undone.",
+                    {"type": "object", "properties": {"ok": {"type": "boolean"}}},
+                )
+            }
         )
+    if not answer.get("ok"):
+        found.detail = "cancelled"
         return found
     await backlog.delete(project)
     await changed()
@@ -765,15 +775,13 @@ async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
 
 
 async def confirm_cross_project_delete(
-    record: Note, ex: Exchange, backlog: Backlog, confirm: bool = False
+    record: Note, ex: Exchange, backlog: Backlog
 ) -> Deleted | None:
     """Ask when the note belongs to another project, or when no project is chosen.
 
-    `confirm` skips the question and the project lookup: a connection without a project
-    can still delete by id.
+    A client that cannot ask is refused with `PermissionError`: nothing stands in for the
+    user's answer.
     """
-    if confirm:
-        return None
     current, _ = await backlog.scope()
     if current is not None and record.project_id == current.id:
         return None
@@ -782,17 +790,12 @@ async def confirm_cross_project_delete(
         if answer.get("ok"):
             return None
         return Deleted(id=record.id, title=record.title, deleted=False, detail="cancelled")
-    if not ex.can_ask:
-        return Deleted(
-            id=record.id,
-            title=record.title,
-            deleted=False,
-            detail=(
-                "this client cannot confirm deletion from another project; "
-                "pass confirm=true to proceed"
-            ),
-        )
     where = record.project
+    if not ex.can_ask:
+        raise PermissionError(
+            f"this client cannot ask the user, so it cannot delete note #{record.id} from "
+            f"{where!r}; use a client with elicitation, or `backlog note delete`"
+        )
     chosen = f"The current project is {current.slug!r}." if current else "No project is chosen."
     raise NeedInput(
         {
@@ -916,14 +919,15 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
 
 @registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
 async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
-    """Delete a note permanently. Confirm when it belongs to another project or none is chosen.
+    """Delete a note permanently. DESTRUCTIVE: call it only when the user asked for exactly that.
 
-    Pass `confirm=true` to delete a note from another project, or from a connection with no
-    project chosen, without prompting."""
+    Never delete a note on your own initiative. A note of the current project goes at once. A
+    note of another project, or any note when no project is chosen, goes only after the user
+    confirms; a client that cannot ask is refused."""
     found = await backlog.store.note(args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
-    if refusal := await confirm_cross_project_delete(found, ex, backlog, confirm=args.confirm):
+    if refusal := await confirm_cross_project_delete(found, ex, backlog):
         return refusal
     deleted = await backlog.store.delete_note(args.id)
     await noted(args.id)

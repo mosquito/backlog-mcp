@@ -235,12 +235,14 @@ tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`
 tool call, and a write publishes `notifications/resources/updated` for the ones it touched.
 
 `task_delete` and `note_delete` delete immediately within the current project. Deleting
-a record owned by another project requires confirmation, including shared notes. MCP clients
-without confirmation support cannot delete across projects. Terminal commands follow the same
-rule; `--yes` confirms deletion from another project. `project_delete` removes a project with
-every task and note on its board and frees its directories, only with `confirm=true`; without it
-the tool reports what the project holds. `backlog projects delete <slug>` does the same and asks
-first unless `--yes` is given. Archive with `project_save` when the history should stay.
+a record owned by another project asks the user to confirm, including shared notes; a client
+that cannot ask is refused. Terminal commands follow the same rule; `--yes` confirms deletion
+from another project. `project_delete` removes a project with every task and note on its board
+and frees its directories. It is destructive and irreversible, so the server tells agents to
+call it only when the user asked for exactly that, and it always asks the user to confirm.
+Nothing stands in for that answer: a client without elicitation is refused. `backlog projects
+delete <slug>` does the same and asks first unless `--yes` is given. Archive with
+`project_save` when the history should stay.
 
 The server's instructions and bundled skills tell agents to search for relevant project knowledge,
 read only what they need, and retain user-provided facts unavailable elsewhere, without secrets.

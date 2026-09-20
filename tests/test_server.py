@@ -561,36 +561,65 @@ async def test_note_delete_asks_only_across_projects(
             ] == 0
 
 
-async def test_project_delete_reports_before_it_deletes(
-    client: BaseClient, backlog: Backlog
+@pytest.mark.parametrize("adapter", ["2025-11-25", "2026-07-28"])
+@pytest.mark.parametrize("answer", [{"ok": True}, {"ok": False}, None])
+async def test_project_delete_asks_the_user(
+    backlog: Backlog, adapter: str, answer: dict[str, bool] | None
 ) -> None:
-    await call(client, "project_current")
-    other = await call(client, "project_save", root="../other")
-    task = await call(client, "task_add", title="Doomed", project=other["slug"])
-    shared = await call(
-        client, "note_save", title="Kept in mind", project=other["slug"], shared=True
-    )
-    private = await call(client, "note_save", title="Private", project=other["slug"])
+    async with (
+        asyncio.timeout(5),
+        connect(registry, adapter=adapter, answers={"Delete project": answer}) as client,
+    ):
+        await call(client, "project_current")
+        other = await call(client, "project_save", root="../other")
+        task = await call(client, "task_add", title="Doomed", project=other["slug"])
+        result = await call(client, "project_delete", project=other["slug"])
+        expected = answer == {"ok": True}
+        assert result["deleted"] is expected
+        assert (result["slug"], result["tasks"], result["notes"]) == (other["slug"], 1, 0)
+        assert result["detail"] == ("" if expected else "cancelled")
+        assert (await backlog.store.task(task["id"]) is None) is expected
+        assert (await call(client, "project_list"))["count"] == (1 if expected else 2)
 
-    preview = await call(client, "project_delete", project=other["slug"])
-    assert preview["deleted"] is False
-    assert (preview["tasks"], preview["notes"], preview["shared_notes"]) == (1, 2, 1)
-    assert "confirm=true" in preview["detail"]
-    assert (await call(client, "project_list"))["count"] == 2
 
-    deleted = await call(client, "project_delete", project=other["slug"], confirm=True)
-    assert deleted["deleted"] is True
-    assert (deleted["slug"], deleted["tasks"], deleted["notes"]) == (other["slug"], 1, 2)
-    assert (await call(client, "project_list"))["count"] == 1
-    assert await backlog.store.task(task["id"]) is None
-    assert await backlog.store.note(shared["id"]) is None
-    assert await backlog.store.note(private["id"]) is None
-    assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
-    #: The directory still decides.
-    assert (await call(client, "project_current"))["origin"] == "directory"
-    #: The directory is free again: registering it makes a new project.
-    again = await call(client, "project_save", root="../other")
-    assert again["id"] != other["id"]
+async def test_project_delete_refuses_a_client_that_cannot_ask(backlog: Backlog) -> None:
+    async with connect(registry, adapter="2025-11-25") as client:
+        await call(client, "project_current")
+        other = await call(client, "project_save", root="../other")
+        await call(client, "task_add", title="Doomed", project=other["slug"])
+        result = await client.call_tool("project_delete", {"project": other["slug"]})
+        assert isinstance(result, CallToolResult) and result.is_error
+        assert "cannot ask" in str(result.content)
+        assert (await call(client, "project_list"))["count"] == 2
+
+
+async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
+    async with (
+        asyncio.timeout(5),
+        connect(registry, adapter="2025-11-25", answers={"Delete project": {"ok": True}}) as client,
+    ):
+        await call(client, "project_current")
+        other = await call(client, "project_save", root="../other")
+        task = await call(client, "task_add", title="Doomed", project=other["slug"])
+        shared = await call(
+            client, "note_save", title="Kept in mind", project=other["slug"], shared=True
+        )
+        private = await call(client, "note_save", title="Private", project=other["slug"])
+        assert (await call(client, "project_list"))["count"] == 2
+
+        deleted = await call(client, "project_delete", project=other["slug"])
+        assert deleted["deleted"] is True
+        assert (deleted["slug"], deleted["tasks"], deleted["notes"]) == (other["slug"], 1, 2)
+        assert (await call(client, "project_list"))["count"] == 1
+        assert await backlog.store.task(task["id"]) is None
+        assert await backlog.store.note(shared["id"]) is None
+        assert await backlog.store.note(private["id"]) is None
+        assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
+        #: The directory still decides.
+        assert (await call(client, "project_current"))["origin"] == "directory"
+        #: The directory is free again: registering it makes a new project.
+        again = await call(client, "project_save", root="../other")
+        assert again["id"] != other["id"]
 
 
 async def test_project_delete_keeps_the_fixed_project(backlog: Backlog) -> None:
@@ -644,16 +673,14 @@ async def test_cross_project_delete_requires_capable_client(backlog: Backlog, en
             assert task is not None
             assert task.status == Status.DELETED
         else:
-            result = await call(client, "note_delete", id=saved["id"])
-            assert result["deleted"] is False
-            assert "cannot confirm" in result["detail"]
+            result = await client.call_tool("note_delete", {"id": saved["id"]})
+            assert isinstance(result, CallToolResult) and result.is_error
+            assert "cannot ask" in str(result.content)
             assert (await call(client, "note_get", id=saved["id"]))["title"] == "Elsewhere"
-            confirmed = await call(client, "note_delete", id=saved["id"], confirm=True)
-            assert confirmed["deleted"] is True
 
 
-async def test_note_delete_with_no_project_chosen_needs_confirmation(backlog: Backlog) -> None:
-    """A connection without a project deletes by id after a confirmation, never with an error."""
+async def test_note_delete_with_no_project_chosen_needs_a_question(backlog: Backlog) -> None:
+    """A connection without a project deletes by id only after the user confirms."""
     token = ACTIVE.set(backlog.view(computer="laptop"))
     try:
         async with connect(registry, adapter="2024-11-05") as client:
@@ -661,13 +688,10 @@ async def test_note_delete_with_no_project_chosen_needs_confirmation(backlog: Ba
             assert (scope["project"], scope["origin"]) == (None, "none")
             app = await call(client, "project_save", root="/srv/app", name="App")
             saved = await call(client, "note_save", title="Nowhere", project=app["slug"])
-            refused = await call(client, "note_delete", id=saved["id"])
-            assert refused["deleted"] is False
-            assert "cannot confirm" in refused["detail"]
+            refused = await client.call_tool("note_delete", {"id": saved["id"]})
+            assert isinstance(refused, CallToolResult) and refused.is_error
+            assert "cannot ask" in str(refused.content)
             assert await backlog.store.note(saved["id"]) is not None
-            confirmed = await call(client, "note_delete", id=saved["id"], confirm=True)
-            assert confirmed["deleted"] is True
-            assert await backlog.store.note(saved["id"]) is None
     finally:
         ACTIVE.reset(token)
 
