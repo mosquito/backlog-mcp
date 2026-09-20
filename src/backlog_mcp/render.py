@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 
 from rich.box import ROUNDED
 from rich.console import Console, Group, RenderableType
@@ -33,6 +35,9 @@ PRIORITY_STYLE = {
 }
 
 UNITS = ((86400.0, "d"), (3600.0, "h"), (60.0, "m"))
+UPDATE_TIMESTAMP = re.compile(
+    r"(?m)^(# UPDATE: )(\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}(?:Z)?)$"
+)
 
 
 def terminal(*, stderr: bool = False) -> Console:
@@ -62,6 +67,22 @@ def since(moment: float) -> str:
     """How long ago, as a phrase."""
     passed = age(moment)
     return "just now" if passed == "now" else f"{passed} ago"
+
+
+def local_update_times(body: str) -> str:
+    """Render UTC update headings in the terminal's local timezone.
+
+    Older entries omitted their zone but were written in UTC, so treat them as UTC too.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        raw = match.group(2).replace("Z", "+00:00")
+        moment = datetime.fromisoformat(raw)
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=UTC)
+        return f"{match.group(1)}{moment.astimezone().isoformat(timespec='seconds')}"
+
+    return UPDATE_TIMESTAMP.sub(replace, body)
 
 
 def titled(title: str) -> Table:
@@ -240,7 +261,7 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
         rows.append(("changed", Text(since(task.updated_at), style="dim")))
     if task.closed_at:
         rows.append(("closed", Text(since(task.closed_at), style="dim")))
-    body = task.body.strip()
+    body = local_update_times(task.body.strip())
     parts: list[RenderableType] = [fields(rows), Rule(style="dim")]
     parts.append(Text(body) if body else Text("no description", style="dim italic"))
     return Panel(

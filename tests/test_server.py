@@ -136,7 +136,7 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
     closed = await call(client, "task_update", id=task["id"], status=closed_status)
     assert closed["closed_at"] is not None
     assert re.fullmatch(
-        rf"Details\n\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}\n"
+        rf"Details\n\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}Z\n"
         rf"Status changed: todo → {closed_status}",
         closed["body"],
     )
@@ -149,9 +149,9 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
     )
     assert reopened["closed_at"] is None
     assert re.fullmatch(
-        rf"Details\n\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}} \d{{2}}:\d{{2}}:\d{{2}}\n"
+        rf"Details\n\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}Z\n"
         rf"Status changed: todo → {closed_status}\n\n---\n"
-        r"# UPDATE: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n"
+        r"# UPDATE: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n"
         rf"Status changed: {closed_status} → doing\n\n",
         reopened["body"],
     )
@@ -233,7 +233,7 @@ async def test_task_body_updates_append_timestamped_history(client: BaseClient) 
     updated = await call(client, "task_update", id=task["id"], body="Implemented the first step")
 
     assert re.fullmatch(
-        r"Initial scope\n\n---\n# UPDATE: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n"
+        r"Initial scope\n\n---\n# UPDATE: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n"
         r"Implemented the first step",
         updated["body"],
     )
@@ -245,7 +245,7 @@ async def test_task_status_changes_append_timestamped_history(client: BaseClient
     updated = await call(client, "task_update", id=task["id"], status="doing")
 
     assert re.fullmatch(
-        r"---\n# UPDATE: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\nStatus changed: todo → doing",
+        r"---\n# UPDATE: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\nStatus changed: todo → doing",
         updated["body"],
     )
 

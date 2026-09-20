@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from aiohttp_tiny_mcp import Exchange, Hint, NeedInput, Registry, elicit
@@ -667,7 +667,7 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
         if body is not None:
             parts.append(body)
         if parts:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             entry = f"---\n# UPDATE: {timestamp}\n" + "\n\n".join(parts)
             body = f"{existing.body}\n\n{entry}" if existing.body else entry
         else:
