@@ -30,9 +30,9 @@ if TYPE_CHECKING:
     from model2vec import StaticModel
 
 EXTENSION = "backlog-mcp/model2vec"
-MODEL_NAME = "static-similarity-mrl-multilingual-v1-256-int8"
+MODEL_NAME = "static-similarity-mrl-multilingual-v1-512-int8"
 MODEL_PATH = Path(__file__).with_name("model")
-DIMENSIONS = 256
+DIMENSIONS = 512
 DEFAULT_MIN_SCORE = 0.15
 FTS_MIN_SCORE = 0.25
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=16384)]
@@ -66,7 +66,7 @@ class Encoder:
                     raise ModelUnavailable("The bundled Model2Vec model cannot be loaded") from None
                 if self.model.dim != DIMENSIONS:
                     self.model = None
-                    raise ModelUnavailable("The bundled model must have 256 dimensions")
+                    raise ModelUnavailable(f"The bundled model must have {DIMENSIONS} dimensions")
             values = np.asarray(
                 self.model.encode(texts, max_length=None, use_multiprocessing=False),
                 dtype=np.float32,
@@ -157,7 +157,7 @@ async def encode(texts: list[str]) -> NDArray[np.float32]:
 
 @extension.method("model2vec/encode")
 async def encode_texts(args: EncodeTexts) -> Encoded:
-    """Create normalized 256-dimensional embeddings locally, in input order."""
+    """Create normalized 512-dimensional embeddings locally, in input order."""
     vectors = await encode(args.texts)
     return Encoded(embeddings=vectors.tolist())
 

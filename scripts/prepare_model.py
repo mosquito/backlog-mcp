@@ -1,4 +1,9 @@
-"""Download the pinned multilingual model and save its 256-dimensional int8 variant."""
+"""Download the pinned multilingual model and save its 512-dimensional int8 variant.
+
+The 512-dimension truncation scores the same as the full 1024-dimension model on the
+multilingual search microbenchmark in `benchmarks/embeddings`; 256 dimensions lose 2.3 points
+of MRR@10. See backlog tasks #91 and #99.
+"""
 
 import json
 from hashlib import sha256
@@ -12,6 +17,7 @@ from model2vec import StaticModel
 SOURCE = "sentence-transformers/static-similarity-mrl-multilingual-v1"
 REVISION = "b68f4122911bcffcd6e1f695f2d99cd6788972d8"
 DESTINATION = Path(__file__).resolve().parents[1] / "src/backlog_mcp/model"
+DIMENSIONS = 512
 
 
 def main() -> None:
@@ -22,9 +28,11 @@ def main() -> None:
         token=False,
     )
     model = StaticModel.from_pretrained(
-        downloaded, dimensionality=256, quantize_to="int8", normalize=True
+        downloaded, dimensionality=DIMENSIONS, quantize_to="int8", normalize=True
     )
-    model.save_pretrained(DESTINATION, model_name="static-similarity-mrl-multilingual-v1-256-int8")
+    model.save_pretrained(
+        DESTINATION, model_name=f"static-similarity-mrl-multilingual-v1-{DIMENSIONS}-int8"
+    )
     copyfile(Path(downloaded) / "README.md", DESTINATION / "UPSTREAM.md")
     manifest = {
         "source": SOURCE,
@@ -34,7 +42,7 @@ def main() -> None:
         "numpy_version": version("numpy"),
         "quantization": "int8",
         "dimensions": model.dim,
-        "reduction": "Matryoshka truncation from 1024 to 256 dimensions",
+        "reduction": f"Matryoshka truncation from 1024 to {DIMENSIONS} dimensions",
         "license": "Apache-2.0",
         "files": {
             name: sha256((DESTINATION / name).read_bytes()).hexdigest()
@@ -46,9 +54,9 @@ def main() -> None:
         "---\nlicense: apache-2.0\nlibrary_name: model2vec\n---\n\n"
         "# Bundled multilingual embeddings\n\n"
         f"Source: [{SOURCE}](https://huggingface.co/{SOURCE}).\n\n"
-        "Converted with Model2Vec: Matryoshka truncation to 256 dimensions, int8 quantization, "
-        "and normalized output. See `provenance.json` for the pinned revision and checksums, "
-        "and `UPSTREAM.md` for the original model card.\n\n"
+        f"Converted with Model2Vec: Matryoshka truncation to {DIMENSIONS} dimensions, "
+        "int8 quantization, and normalized output. See `provenance.json` for the pinned "
+        "revision and checksums, and `UPSTREAM.md` for the original model card.\n\n"
         "This model is trained for sentence similarity. Backlog search ranks title, body, "
         "and tags by cosine similarity; it is not a retrieval-specific model.\n"
     )

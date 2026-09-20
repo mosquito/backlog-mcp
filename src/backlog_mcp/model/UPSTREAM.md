@@ -205,9 +205,9 @@ from sentence_transformers import SentenceTransformer
 model = SentenceTransformer("tomaarsen/static-similarity-mrl-multilingual-v1")
 # Run inference
 sentences = [
-    "It is known for its dry red chili powder .",
-    "It is popular for dry red chili powder .",
-    "These monsters will move in large groups .",
+    'It is known for its dry red chili powder .',
+    'It is popular for dry red chili powder .',
+    'These monsters will move in large groups .',
 ]
 embeddings = model.encode(sentences)
 print(embeddings.shape)
@@ -225,10 +225,11 @@ Notably, a lower dimensionality allows for much faster downstream tasks, such as
 ```python
 from sentence_transformers import SentenceTransformer
 
-model = SentenceTransformer(
-    "sentence-transformers/static-similarity-mrl-multilingual-v1", truncate_dim=256
-)
-embeddings = model.encode(["I used to hate him.", "Раньше я ненавидел его."])
+model = SentenceTransformer("sentence-transformers/static-similarity-mrl-multilingual-v1", truncate_dim=256)
+embeddings = model.encode([
+    "I used to hate him.",
+    "Раньше я ненавидел его."
+])
 print(embeddings.shape)
 # => (2, 256)
 ```

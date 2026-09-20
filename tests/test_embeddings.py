@@ -47,14 +47,14 @@ async def embedding_client(
 
 async def test_extension_encodes_multilingual_text(embedding_client: BaseClient) -> None:
     discovery = await embedding_client.initialize()
-    assert discovery["capabilities"]["extensions"][embeddings.EXTENSION]["dimensions"] == 256
+    assert discovery["capabilities"]["extensions"][embeddings.EXTENSION]["dimensions"] == 512
     result = await embedding_client.request_method(
         "model2vec/encode",
         {"texts": ["Reset the password", "Сбросить пароль", "Bake a chocolate cake"]},
     )
     vectors = np.asarray(result["embeddings"])
     assert result["model"] == embeddings.MODEL_NAME
-    assert vectors.shape == (3, 256)
+    assert vectors.shape == (3, 512)
     np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1, atol=1e-6)
     assert vectors[0] @ vectors[1] > vectors[0] @ vectors[2]
 
@@ -71,7 +71,7 @@ def test_bundled_model_is_quantized_and_loads_offline(monkeypatch: pytest.Monkey
     vectors = encoder.encode(["Hello", ""])
     assert encoder.model is not None
     assert encoder.model.embedding.dtype == np.int8
-    assert vectors.shape == (2, 256)
+    assert vectors.shape == (2, 512)
     assert np.isfinite(vectors).all()
     assert not vectors[1].any()
     manifest = json.loads((embeddings.MODEL_PATH / "provenance.json").read_text())
@@ -207,7 +207,7 @@ async def test_index_contains_only_ids_vectors_and_digest(
             "note_vectors",
         }
         assert saved["task_ids"].tolist() == [task.id]
-        assert saved["task_vectors"].shape == (1, 256)
+        assert saved["task_vectors"].shape == (1, 512)
     original_encode = embeddings.encoder.encode
     calls: list[list[str]] = []
 
@@ -282,7 +282,7 @@ root = embeddings.cache_root()
 assert root.is_dir() and root.parent == Path(tempfile.gettempdir())
 a, b = embeddings.cached_indexes('shared-db', [(1, 'Reset password')], [(1, 'Password policy')])
 assert a.ids == [1] and b.ids == [1]
-assert a.vectors.shape == b.vectors.shape == (1, 256)
+assert a.vectors.shape == b.vectors.shape == (1, 512)
 assert len(list(root.glob('*.npz'))) == 1 and not list(root.glob('*.lock'))
 print(root)
 """

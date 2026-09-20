@@ -5,11 +5,11 @@
   "model2vec_version": "0.9.0",
   "numpy_version": "2.5.3",
   "quantization": "int8",
-  "dimensions": 256,
-  "reduction": "Matryoshka truncation from 1024 to 256 dimensions",
+  "dimensions": 512,
+  "reduction": "Matryoshka truncation from 1024 to 512 dimensions",
   "license": "Apache-2.0",
   "files": {
-    "model.safetensors": "abe855ab297ab140d9908d42c5349708d1ed63df572a71cf27ed00201c52a42e",
+    "model.safetensors": "3c7e25896b83d1161c8df5a3c652aac41828313af0db90e1ae4586d1e508bf23",
     "tokenizer.json": "eb5277f01feea0221d7171f1164206077295ecff2d748ee9403bceccef9634b9",
     "config.json": "c6c34d5d3a3036010cb6c249186fc13ebd25262d02c8ec560882d6979c18d3cf"
   }

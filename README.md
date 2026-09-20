@@ -95,7 +95,7 @@ languages from the query.
 
 The bundled Model2Vec model is
 [`sentence-transformers/static-similarity-mrl-multilingual-v1`](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1),
-truncated to 256 dimensions with MRL and quantized to int8. It is already a static model;
+truncated to 512 dimensions with MRL and quantized to int8. It is already a static model;
 no transformer distillation is required. Inference uses `asyncio.to_thread()` and runs
 offline. The source model was trained for similarity, so retrieval quality can vary.
 
