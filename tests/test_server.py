@@ -11,6 +11,7 @@ from aiohttp_tiny_mcp.testing import connect
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 from backlog_mcp.server import ACTIVE, registry
+from backlog_mcp.version import VERSION
 
 
 async def call(client: BaseClient, tool_name: str, **arguments: Any) -> dict[str, Any]:
@@ -59,6 +60,10 @@ async def test_catalogue(client: BaseClient) -> None:
     }
     assert "title" in tools["task_add"].input_schema["required"]
     assert "backlog" not in tools["task_add"].input_schema["properties"]
+    scope = await call(client, "project_current")
+    assert scope["version"] == VERSION
+    #: The test suite runs from the checkout, so the commit is known.
+    assert isinstance(scope["commit"], str) and len(scope["commit"]) == 7
     assert {prompt.name for prompt in await client.list_prompts()} == {"standup", "groom"}
     assert {item.uri for item in await client.list_resources()} >= {
         "backlog://project",

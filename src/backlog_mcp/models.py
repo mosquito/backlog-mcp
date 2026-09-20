@@ -198,6 +198,14 @@ class Scope(BaseModel):
     cwd: str
     database: str
     state: str
+    version: str = Field(description="Version of the backlog-mcp package that answers.")
+    commit: str | None = Field(
+        default=None,
+        description=(
+            "Short git commit of the checkout the package runs from; null for an installed "
+            "package without one."
+        ),
+    )
 
 
 class Stats(BaseModel):

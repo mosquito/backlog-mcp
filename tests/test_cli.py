@@ -11,6 +11,7 @@ import pytest
 from backlog_mcp import cli, render
 from backlog_mcp.models import Priority, Status
 from backlog_mcp.store import Note, Task
+from backlog_mcp.version import VERSION
 
 
 class Runner:
@@ -169,6 +170,7 @@ def test_projects_and_scope(run: Runner, tmp_path: Path) -> None:
     code, output = run("current")
     assert "workspace" in output
     assert "directory" in output
+    assert VERSION in output
     assert "workspace" in run("projects")[1]
 
 

@@ -168,7 +168,10 @@ the server cannot see the client's working directory. A client that cannot send 
 `Authorization` header passes the credentials in the URL instead, as `auth=<base64 of
 user:password>`; the header wins when both are present. Without `project`, `project_current`
 reports `origin: none` and every tool that needs a project takes `project=<slug>`: nothing is
-pinned or remembered, so one client never redirects another. `project_save` with an explicit `root`
+pinned or remembered, so one client never redirects another. `project_current` also reports
+`version` and `commit`, the package version that answers and the git commit of its checkout
+(null for an installed package), so a stale deploy shows from the client. `backlog current`
+prints the same. `project_save` with an explicit `root`
 checks that the directory exists on this computer; for another computer it takes the path as
 given. Every client shares the credentials and may name any computer: the server tells the
 computers apart, it does not keep them from each other.

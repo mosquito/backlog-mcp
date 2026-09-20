@@ -332,6 +332,11 @@ def stats_view(stats: Stats) -> Table:
     return table
 
 
+def running(scope: Scope) -> str:
+    """The package version, with the commit when the server runs from a checkout."""
+    return f"{scope.version} ({scope.commit})" if scope.commit else scope.version
+
+
 def scope_panel(scope: Scope) -> Panel:
     """Where the commands work, and why there."""
     project = scope.project
@@ -360,6 +365,7 @@ def scope_panel(scope: Scope) -> Panel:
         [
             ("database", Text(scope.database, style="dim")),
             ("state", Text(scope.state, style="dim")),
+            ("version", Text(running(scope), style="dim")),
         ]
     )
     return Panel(

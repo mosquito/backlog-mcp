@@ -37,10 +37,9 @@ from .models import (
     Tasks,
 )
 from .store import NOTE_LIMIT, Note, Project, Task
+from .version import COMMIT, VERSION
 
 log = logging.getLogger(__name__)
-
-VERSION = "0.1.0"
 
 INSTRUCTIONS = """
 A task backlog and persistent project knowledge store. It holds three kinds of thing: a project, \
@@ -71,7 +70,9 @@ a project registered for that directory on the spot. Nothing else chooses a proj
 no pin and no remembered choice, so two clients never redirect each other. `project_current` \
 reports which project is current and which of those reasons chose it. A computer reached over \
 HTTP with nothing named has no current project: `project_current` then says `origin: none`, and \
-every tool that needs a project takes `project=<slug>`.
+every tool that needs a project takes `project=<slug>`. `project_current` also reports `version` \
+and `commit`: the package version that answers and the git commit of its checkout, so a stale \
+deploy is visible from the client.
 
 Computers. One logical project can have several `(computer, root)` bindings. `project_current` \
 reports the computer this session works from and every computer with a binding; a project lists \
@@ -299,6 +300,8 @@ async def scope_of(backlog: Backlog) -> Scope:
         cwd=str(backlog.cwd),
         database=str(backlog.store.path),
         state=str(backlog.state.path),
+        version=VERSION,
+        commit=COMMIT,
     )
 
 
