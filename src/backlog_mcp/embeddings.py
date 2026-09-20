@@ -93,7 +93,12 @@ class Encoded(ResultModel):
 
 
 class Search(BaseModel):
-    query: Text = Field(description="Words or meaning to find in titles, bodies and tags.")
+    query: Text = Field(
+        description=(
+            "Words or meaning to find in titles, bodies and tags. "
+            "ALWAYS search when starting work, facing uncertainty, or checking past agreements."
+        )
+    )
     project: str | None = Field(default=None, description="Defaults to the current project.")
     all_projects: bool = Field(default=False, description="Every project of this computer.")
     computer: str | None = Field(

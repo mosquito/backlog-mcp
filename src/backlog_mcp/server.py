@@ -41,9 +41,26 @@ log = logging.getLogger(__name__)
 VERSION = "0.1.0"
 
 INSTRUCTIONS = """
-A task backlog. It holds three kinds of thing: a project, which is one board covering one \
-directory tree, a task, which is one item on that board, and a note, which is one piece of \
-lasting context from the user that persists across sessions.
+A task backlog and persistent project knowledge store. It holds three kinds of thing: a project, \
+which is one board covering one directory tree, a task, which is one item on that board, and a \
+note, which is one piece of lasting context from the user that persists across sessions.
+
+Core agent principles:
+1. ALWAYS search first (`search`). At the start of a session, before investigating a problem, \
+before choosing an approach or writing code, and before asking the user for project facts or \
+clarifications, ALWAYS search the backlog. Search reveals existing tasks, prior decisions, \
+architectural context, and user constraints. Search again whenever a new question arises.
+2. ALWAYS consult notes when uncertain (`note_get`, `note_list`, `search`). If you do not know \
+what to do, how to proceed, or what rules to follow, ALWAYS check saved notes before guessing \
+or asking questions. Notes record canonical user preferences, engineering conventions, \
+architectural invariants, and past agreements.
+3. ALWAYS work through tasks (`task_add`, `task_update`, `task_list`). Never perform silent or \
+untracked work. Break user requests into discrete, verifiable tasks on the board. Mark the \
+active task as `doing` when starting, update details as progress happens, and mark `done` or \
+`cancelled` upon completion. Inspect open tasks with `task_list` to know what to do next.
+4. Proactively capture lasting context (`note_save`, `note_append`). Whenever the user states a \
+preference, convention, constraint, or decision, save or update it promptly in a note so future \
+sessions remember it. Do not wait to be asked.
 
 Scope. Every tool works on one project, the current one, unless the call names another. The \
 current project is the one this server was started on, else the project pinned by \
@@ -65,19 +82,26 @@ the project, such as `.` or `~/dev/thing`. A name that matches nothing is an err
 nothing; `project_save` is the tool that registers a directory, and `project_list` shows every \
 project with its open and total task counts.
 
-Tasks. A task has a title, an optional body, a status (todo, doing, blocked, done or cancelled), \
-a priority (urgent, high, normal or low) and tags. Listings show the open statuses (todo, doing, \
-blocked), most important first, until `status` asks for others or `order="recent"` sorts by last \
-change instead. Setting the status to done or cancelled stamps the closing time.
+Tasks. Always work through tasks. A task has a title, an optional body, a status (todo, doing, \
+blocked, done or cancelled), a priority (urgent, high, normal or low) and tags. Keep the board \
+true to life: set status to `doing` when beginning work, and `done` or `cancelled` upon completion \
+(which stamps the closing time). A supplied `body`, or an actual status change, to `task_update` \
+appends a timestamped history entry. Listings show the open statuses (todo, doing, blocked), most \
+important first, until `status` asks for others or `order="recent"` sorts by last change instead.
+
+When recording progress, pass only the new text to `task_update`; it appends the text, so do not \
+read the task body and send it back. If a task needs a rewritten scope rather than a progress \
+update, close the old task and create a new one that refers to its id.
 
 Notes. Code changes; notes remain. Keep lasting user context unavailable elsewhere: \
 preferences, working agreements, people and responsibilities, business constraints, and reasons \
-for decisions. Notes concern the context around the work, not the project's implementation. \
-Do not save snapshots of code, architecture, configuration, bugs, or documentation. They become \
-stale as the project changes. A useful note should still help after the code is rewritten. \
-Project scope organizes notes; it does not define their subject.
+for decisions. Check notes whenever you are unsure what to do or need guidance. Notes concern the \
+context around the work, not the project's implementation. Do not save snapshots of code, \
+architecture, configuration, bugs, or documentation. They become stale as the project changes. \
+A useful note should still help after the code is rewritten. Project scope organizes notes; it \
+does not define their subject.
 
-Use `search` as a regular information source alongside web search. Check saved notes to recall \
+Use `search` as the primary retrieval tool alongside web search. Check saved notes to recall \
 past agreements, preferences, and constraints before making decisions or asking the user again. \
 Use code, documentation, and the web for current technical facts. Retrieve relevant notes by \
 search instead of reading them all. Recheck an old agreement when the user provides new context.
@@ -95,14 +119,14 @@ computer arguments. Shared notes are visible from every project and every comput
 note ids are unique across projects and computers, so `task_get`, `task_update`, `task_move`, \
 `task_delete`, `note_get`, `note_append` and `note_delete` take an id and no project.
 
-Search. `search` is the default retrieval tool for project knowledge and previous work. Search at \
-session start, before investigating a problem or choosing an approach, before asking the \
-user for project facts, and before creating a task or note. Search again when a new question \
-arises during work. Use a short natural-language question or specific terms; try another \
-phrasing if the results are weak. Inspect the returned matches and fetch individual records \
-with `note_get` or `task_get` only when more detail is needed. Check facts that may have changed. \
-Avoid full listings and reading every task or note to find information. Reserve `task_list` \
-and `note_list` for an explicitly requested inventory or a review that requires every record; \
+Search. `search` is the default retrieval tool for project knowledge, previous work, and user \
+preferences. Search at session start, before investigating a problem or choosing an approach, \
+before asking the user for project facts, and before creating a task or note. Search again \
+whenever any uncertainty or question arises during work. Use a short natural-language question \
+or specific terms; try another phrasing if the results are weak. Inspect returned matches and \
+fetch individual records with `note_get` or `task_get` only when more detail is needed. Check \
+facts that may have changed. Avoid full listings and reading every task or note. Reserve \
+`task_list` and `note_list` for an explicitly requested inventory or a complete review; \
 use filters and pagination then. Use `stats` when only counts are needed.
 
 `search` combines full-text prefix matching and multilingual semantic search over titles, \
@@ -367,11 +391,20 @@ class UseProject(BaseModel):
 
 
 class AddTask(BaseModel):
-    title: str
-    body: str = ""
-    status: Status = Status.TODO
-    priority: Priority = Priority.NORMAL
-    tags: list[str] = Field(default_factory=list)
+    title: str = Field(description="Clear title stating what outcome is to be achieved.")
+    body: str = Field(
+        default="",
+        description="Reason, constraints, acceptance criteria, and dependent task ids.",
+    )
+    status: Status = Field(
+        default=Status.TODO,
+        description="Initial status (todo, doing, blocked, done, cancelled).",
+    )
+    priority: Priority = Field(
+        default=Priority.NORMAL,
+        description="Priority ranking (urgent, high, normal, low).",
+    )
+    tags: list[str] = Field(default_factory=list, description="Tags for grouping and filtering.")
     project: str | None = Field(default=None, description="Defaults to the current project.")
 
 
@@ -427,19 +460,19 @@ class MoveTask(BaseModel):
 class SaveNote(BaseModel):
     title: str | None = Field(
         default=None,
-        description="Title for one lasting fact from the user. Optional with `id`.",
+        description="Title for one lasting fact, preference, or convention. Optional with `id`.",
     )
     body: str | None = Field(
         default=None,
         max_length=NOTE_LIMIT,
         description=(
-            "Lasting user context unavailable elsewhere; no implementation snapshots. "
+            "Lasting user context or constraint unavailable elsewhere; no code snapshots. "
             "Replaces the whole body. "
             f"At most {NOTE_LIMIT} characters."
         ),
     )
     tags: list[str] | None = Field(default=None, description="Replaces the whole tag list.")
-    shared: bool | None = Field(default=None, description="Make the note visible everywhere.")
+    shared: bool | None = Field(default=None, description="Make note visible across all projects.")
     id: int | None = Field(default=None, description="Change this note, whatever its title.")
     project: str | None = Field(default=None, description="Defaults to the current project.")
 
@@ -448,7 +481,7 @@ class AppendNote(BaseModel):
     text: str = Field(
         max_length=NOTE_LIMIT,
         description=(
-            "One related fact from the user, unavailable elsewhere. "
+            "One related fact, preference, or constraint from the user. "
             f"The whole note must stay within {NOTE_LIMIT} characters."
         ),
     )
@@ -462,7 +495,10 @@ class NoteId(BaseModel):
 
 
 class ReadNote(BaseModel):
-    id: int | None = Field(default=None, description="The note to read.")
+    id: int | None = Field(
+        default=None,
+        description="Note to read. Check notes whenever uncertain about preferences or rules.",
+    )
     title: str | None = Field(default=None, description="Its title instead, in `project`.")
     project: str | None = Field(default=None, description="Defaults to the current project.")
 
@@ -499,13 +535,13 @@ class StatsOf(BaseModel):
 
 @registry.tool(title="Current project", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def project_current(args: Nothing, backlog: Backlog) -> Scope:
-    """Report the current project, how it was selected, and storage paths."""
+    """Report the current active project, computer, and storage paths. Call at session start."""
     return await scope_of(backlog)
 
 
 @registry.tool(title="List projects", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def project_list(args: ListProjects, backlog: Backlog) -> Projects:
-    """List the projects of this computer with open and total task counts.
+    """List registered projects with open and total task counts.
 
     `computer` lists another computer's projects, `all_computers` every project there is."""
     reach = await backlog.reach(
@@ -533,7 +569,7 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
 
 @registry.tool(title="Pin a project", annotations=Hint.IDEMPOTENT)
 async def project_use(args: UseProject, backlog: Backlog) -> Scope:
-    """Pin the current project across sessions. Omit `project` to clear the pin.
+    """Pin current project across sessions so tools target this board. Omit `project` to clear pin.
 
     A project fixed at server startup takes precedence."""
     if args.project:
@@ -546,7 +582,10 @@ async def project_use(args: UseProject, backlog: Backlog) -> Scope:
 
 @registry.tool(title="Add a task")
 async def task_add(args: AddTask, backlog: Backlog) -> TaskOut:
-    """Create a task in the selected project and return its id. Search for existing work first."""
+    """Always work through tasks: create a task to track work on the board before doing it.
+
+    Deconstruct user requests into discrete, verifiable tasks. Search for existing work first
+    to avoid duplicates. Returns the created task with its id."""
     project = await backlog.resolve(args.project)
     task = await backlog.store.add_task(
         project_id=project.id,
@@ -564,7 +603,8 @@ async def task_add(args: AddTask, backlog: Backlog) -> TaskOut:
 async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
     """List tasks to review current work, inspect open items, or pick the next task to work on.
 
-    Defaults to open tasks. Use filters and pagination."""
+    Always work through tasks. Defaults to open tasks (todo, doing, blocked) ordered by priority.
+    For finding specific topics, prefer `search`. Use filters and pagination."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -599,7 +639,7 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
 
 @registry.tool(title="Read a task", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def task_get(args: TaskId, backlog: Backlog) -> TaskOut:
-    """Read one task by its globally unique id. Use after `search` when more detail is needed."""
+    """Read full task details, requirements, blockers, and dependencies before working on it."""
     task = await backlog.store.task(args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
@@ -649,7 +689,7 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
 
 @registry.tool(title="Move a task", annotations=Hint.IDEMPOTENT)
 async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
-    """Move a task to another project by slug or path. Preserve its id and other fields."""
+    """Move a task to another project board by slug or path. Preserves its id and other fields."""
     project = await backlog.lookup(args.project)
     task = await backlog.store.update_task(args.id, project_id=project.id)
     if task is None:
@@ -696,9 +736,9 @@ async def confirm_cross_project_delete(
 
 @registry.tool(title="Delete a task", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
 async def task_delete(args: TaskId, ex: Exchange, backlog: Backlog) -> Deleted:
-    """Delete a task permanently. Confirm only when it belongs to another project.
+    """Delete a task permanently. Prefer setting status to `cancelled` to retain history.
 
-    Set status to `cancelled` instead to retain its history."""
+    Confirm only when it belongs to another project."""
     task = await backlog.store.task(args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
@@ -711,12 +751,12 @@ async def task_delete(args: TaskId, ex: Exchange, backlog: Backlog) -> Deleted:
 
 @registry.tool(title="Save a note", annotations=Hint.IDEMPOTENT)
 async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
-    """Save lasting user context unavailable elsewhere: preferences, agreements, or constraints.
+    """Save lasting user context: preferences, agreements, architectural invariants, or constraints.
 
-    Save useful new knowledge promptly; do not wait to be asked. Search first to avoid duplicates.
-    Code changes; notes remain. Exclude implementation details and documentation summaries.
-    Update by id or project-local title; otherwise create a note. Only supplied fields change.
-    A supplied body replaces the whole body. Use id to update another project's shared note."""
+    Proactively save useful new knowledge as soon as the user supplies it; do not wait.
+    Check notes first if unsure what to do. Code changes; notes remain. Exclude temporary
+    implementation details and doc summaries. Update by id or title; otherwise create a note.
+    Only supplied fields change. Body replaces whole body. Use id to update shared notes."""
     if args.id is None:
         if not args.title:
             raise ValueError("a new note needs a title")
@@ -744,9 +784,9 @@ async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
 
 @registry.tool(title="Append to a note")
 async def note_append(args: AppendNote, backlog: Backlog) -> NoteOut:
-    """Append a short, related fact about lasting user context unavailable elsewhere.
+    """Append a related fact, preference, or constraint to lasting user context.
 
-    Find the note with `search` first. Use `note_save` to correct existing content."""
+    Find the note with `search` first. Use `note_save` to correct or replace existing content."""
     found = await note_of(backlog, args.id, args.title, args.project)
     updated = await backlog.store.append_note(found.id, args.text)
     if updated is None:
@@ -798,7 +838,7 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
 async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
     """Delete a note permanently. Confirm only when it belongs to another project.
 
-    References to the deleted note remain unchanged."""
+    Use with caution: notes carry durable user preferences and agreements."""
     found = await backlog.store.note(args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
@@ -811,17 +851,21 @@ async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
 
 @registry.tool(title="Search the backlog", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def search(args: embeddings.Search, backlog: Backlog) -> embeddings.Matches:
-    """Find tasks, past agreements, and user context. Use regularly alongside web search.
+    """Primary discovery tool. ALWAYS search first before investigating or deciding.
 
-    Prefer targeted search over full listings. Read individual matches only when needed.
-    Combines FTS prefixes and multilingual semantic search, with FTS matches first.
-    Defaults to the current project plus shared notes."""
+    Use frequently: at session start, before choosing an approach, before asking questions, and
+    whenever you are uncertain what to do or what conventions apply. Combines full-text prefix
+    matching and multilingual semantic search (FTS matches first).
+    Prefer targeted search over full listings. Read individual matches with `note_get` or `task_get`
+    only when detail is needed."""
     return await embeddings.search(args, backlog)
 
 
 @registry.tool(title="Backlog statistics", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def stats(args: StatsOf, backlog: Backlog) -> Stats:
-    """Count open tasks, closed tasks, and notes, with status and priority breakdowns and tags."""
+    """Count open tasks, closed tasks, and notes, with status and priority breakdowns and tags.
+
+    Use for a high-level board overview before planning or after triage."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,

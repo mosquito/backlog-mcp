@@ -1,6 +1,6 @@
 ---
 name: planning
-description: Turn a request into tasks on the backlog: search for relevant knowledge first, one outcome per task, ordered, with user-provided constraints retained when unavailable elsewhere.
+description: Turn a request into tasks on the backlog: search for relevant knowledge first, always consult notes when uncertain, always work through tasks, one outcome per task, ordered, with user-provided constraints retained when unavailable elsewhere.
 ---
 
 # Plan work on the backlog
@@ -14,15 +14,17 @@ Call `project_current` to see which project the tools work on. If the work belon
 directory tree, pass `project` to each call, or register that directory with `project_save`.
 A project name is a slug, such as `backlog-mcp`, or any path inside the project.
 
-## 2. Search for relevant context
+## 2. Search for relevant context and consult notes
 
 Code changes; notes remain. Keep lasting user context unavailable elsewhere: preferences,
 working agreements, people and responsibilities, business constraints, and reasons for decisions.
 Exclude snapshots of implementation, architecture, configuration, bugs, and documentation.
 A useful note should still help after the code is rewritten. Project scope only organizes notes.
 
-Use `search` regularly alongside web search to recall past agreements and user preferences.
-Check notes before making decisions or asking the user again. Use code, documentation, and the
+Use `search` as the primary retrieval tool alongside web search to recall past agreements and
+user preferences. ALWAYS consult notes (`note_get`, `note_list`, `search`) whenever you do not
+know what to do, what conventions or architecture to follow, or what the user prefers. Check notes
+before making decisions, assuming answers, or asking the user again. Use code, documentation, and the
 web for current technical facts. Search for relevant notes instead of reading them all.
 Update outdated context when the user corrects it.
 
@@ -39,14 +41,14 @@ board review. Update an existing task when it already covers part of the work.
 
 ## 4. Cut the work into tasks
 
-One task is one outcome that one person can finish in a sitting and someone else can verify.
-See `references/splitting.md` for where to cut and what to do with the parts that are only
-research.
+Always work through tasks: never perform silent or untracked work. One task is one outcome that
+one person can finish in a sitting and someone else can verify. See `references/splitting.md`
+for where to cut and what to do with the parts that are only research.
 
 Order the tasks so that each one leaves the code working. A plan whose third step is "make it
 compile again" is cut in the wrong place.
 
-## 5. File them
+## 5. File and track them
 
 Call `task_add` once per task, with a body that carries the reason and the constraints, and
 tags shared with the rest of the plan so the plan can be found again later. Set the priority
@@ -55,6 +57,13 @@ nothing about order.
 
 Mention earlier task ids in the body of a task that depends on them. The backlog stores no
 dependency links, so the body is where a dependency lives.
+
+When executing work, update task status with `task_update`: set to `doing` when starting work,
+and `done` or `cancelled` upon completion.
+
+`task_update` appends supplied body text as timestamped history. Send only the new update text;
+do not read and resend the task body. If the task must be rewritten, close it and create a new
+task that references the old task id instead of replacing its body.
 
 ## 6. Retain knowledge supplied by the user
 

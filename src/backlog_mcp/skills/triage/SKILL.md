@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Triage a backlog: search for relevant notes and tasks, file new work as tasks, keep status and priority true, close what is done, and retain user-provided knowledge unavailable elsewhere.
+description: Triage a backlog: search first for relevant notes and tasks, always consult notes when uncertain what to do, always work through tasks, keep status and priority true, close what is done, and retain user-provided knowledge unavailable elsewhere.
 ---
 
 # Triage a backlog
@@ -16,15 +16,17 @@ Call `stats` next, for the counts by status and priority and the tags in use.
 A large `todo` count with an empty `doing` count means nobody is working. Several `doing`
 tasks at once mean the board tracks intentions, not work.
 
-## 2. Search for what is already known
+## 2. Search for what is already known and consult notes
 
 Code changes; notes remain. Keep lasting user context unavailable elsewhere: preferences,
 working agreements, people and responsibilities, business constraints, and reasons for decisions.
 Exclude snapshots of implementation, architecture, configuration, bugs, and documentation.
 A useful note should still help after the code is rewritten. Project scope only organizes notes.
 
-Use `search` regularly alongside web search to recall past agreements and user preferences.
-Check notes before making decisions or asking the user again. Use code, documentation, and the
+Use `search` as the primary retrieval tool alongside web search to recall past agreements and
+user preferences. ALWAYS consult notes (`note_get`, `note_list`, `search`) whenever you do not
+know what to do, what conventions or architecture to follow, or what the user prefers. Check notes
+before making decisions, assuming answers, or asking the user again. Use code, documentation, and the
 web for current technical facts. Search for relevant notes instead of reading them all.
 Update outdated context when the user corrects it.
 
@@ -35,9 +37,9 @@ a task or note. Search again whenever a new question arises. Inspect returned ma
 Avoid listing and reading all notes or tasks to find information. Search combines word prefixes
 and meaning across languages; rephrase queries or adjust filters when needed.
 
-## 3. Review relevant work
+## 3. Always work through tasks: review and track work
 
-Use `search` to find tasks related to the request. Check whether each relevant task still
+Never perform untracked work. Use `search` to find tasks related to the request. Check whether each relevant task still
 matches the code. Use `task_list` only when the user requests a complete board review or an
 inventory; apply filters and paginate through that scope. Use `stats` for counts.
 
@@ -45,6 +47,11 @@ inventory; apply filters and paginate through that scope. Use `stats` for counts
 - No longer wanted: set `status="cancelled"`. Do not delete it; a cancelled task records the decision.
 - Blocked on something outside the task: set `status="blocked"` and say what blocks it in the body.
 - Being worked on now: set `status="doing"`, one task at a time.
+
+`task_update` appends a timestamped history entry for supplied body text and status transitions.
+Pass only the new update text; do not fetch the existing body to reconstruct it. When the scope
+needs rewriting rather than progressing, close the old task and create a new task whose body
+references the old task id.
 
 ## 4. File what is missing
 
