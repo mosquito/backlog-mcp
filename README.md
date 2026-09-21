@@ -40,6 +40,30 @@ and [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-refe
 
 ## Use it from the terminal
 
+CLI data operations always use MCP. With no endpoint configured, each command starts
+a local stdio server and stops it when the command finishes. The local server uses
+the configured database, state file, computer, and working directory.
+
+To use a running HTTP server:
+
+```bash
+backlog --url https://backlog.example/mcp --project my-project list
+```
+
+Set `url` in the global section of the TOML configuration, or set `BACKLOG_MCP_URL`,
+to use that endpoint for later commands. `--user` and `--password` supply HTTP Basic
+authentication; their environment variables are `BACKLOG_MCP_USER` and
+`BACKLOG_MCP_PASSWORD`. `--timeout` sets the request timeout in seconds (default: 120).
+An unreachable configured server produces an error; it never redirects writes to
+the local database. `--url ''` explicitly selects the local stdio server.
+
+Over HTTP, `--computer` overrides the URL's `computer`; otherwise the CLI uses the
+URL's computer or the local computer name. `--project` overrides the URL's `project`.
+Without either project setting, scoped commands select the deepest registered root
+containing the local working directory. If none exists, they register the local
+checkout through MCP. Broad listings and `skills` do not register a checkout.
+The server's working directory never determines the CLI's local checkout.
+
 ```bash
 cd ~/dev/my-project        # the project is registered on first use
 backlog add Write the release notes -t docs
@@ -53,6 +77,10 @@ backlog close 1            # done
 backlog reopen 1           # todo again
 backlog stats              # open tasks, closed tasks, and notes
 ```
+
+`backlog edit <id>` opens the task fields with an empty body for a new progress
+update. That text is appended to the task history. Status changes also record
+history through MCP. Existing history is preserved.
 
 Every command prints a table or a panel, in colour when the terminal takes it:
 
@@ -310,12 +338,17 @@ project. The params of each notification are the event: `kind`, `action`, `id`, 
 ```
 backlog watch https://host/mcp?computer=laptop -u user --password secret
 backlog --project backlog-mcp watch http://127.0.0.1:3009/mcp
+backlog watch              # use the configured endpoint
 ```
 
 `backlog watch` prints one line per event until interrupted, `-n 5` stops after five. Agents
 do not see these notifications: Claude Code and Codex do not forward them into the
 conversation, so an agent still calls `task_list` or `search`. The notifications serve this
 command, the console, dashboards and bots.
+
+Use a shared HTTP server to watch changes from other clients. Separate local
+stdio servers do not share event subscriptions. The request timeout does not
+limit the duration of a watch subscription.
 
 ## Where the data lives
 
@@ -350,7 +383,8 @@ http_port = 3009
 
 ## The library
 
-The CLI and the MCP server are one object. `Backlog` answers which project a call works on:
+The MCP server uses `Backlog` to resolve project scope and access storage.
+Python applications can also use this object directly:
 
 <!-- name: test_readme_library -->
 ```python
@@ -370,7 +404,7 @@ async def main(directory: Path) -> None:
     await backlog.store.open()
 
     project, origin = await backlog.current()
-    assert origin.value == "created"      # the directory was not registered yet
+    assert origin.value == "created"  # the directory was not registered yet
     assert project.roots[0].root == str(directory)
 
     task = await backlog.store.add_task(
@@ -386,17 +420,20 @@ async def main(directory: Path) -> None:
     assert [item.id for item in found] == [task.id]
 
     saved = await backlog.store.add_note(
-        project_id=project.id, title="Release coordination", body="Contact Anna first", tags=["people"]
+        project_id=project.id,
+        title="Release coordination",
+        body="Contact Anna first",
+        tags=["people"],
     )
     noted = await backlog.store.append_note(saved.id, "Give one day of notice")
     assert noted is not None and noted.body.endswith("Give one day of notice")
-    assert [item.id for item in await backlog.store.search_notes("notice", project_id=project.id)] == [
-        saved.id
-    ]
+    assert [
+        item.id for item in await backlog.store.search_notes("notice", project_id=project.id)
+    ] == [saved.id]
 
     closed = await backlog.store.update_task(task.id, status=Status.DONE)
     assert closed is not None
-    assert closed.closed_at is not None    # closing stamps the time
+    assert closed.closed_at is not None  # closing stamps the time
 
     await backlog.store.close()
 

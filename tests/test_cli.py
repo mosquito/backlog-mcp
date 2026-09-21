@@ -151,11 +151,29 @@ def test_skills_are_listed_and_printed_in_full(run: Runner) -> None:
     assert run("skills", "nothing") == (1, "no skill 'nothing'\n")
 
 
-def test_an_empty_library_says_so(
-    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_an_empty_library_says_so(
+    backlog: Backlog,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from aiohttp.test_utils import TestServer
+
     monkeypatch.setattr(cli.skills, "library", cli.skills.Library(tmp_path / "empty"))
-    assert run("skills") == (1, "no skills\n")
+    monkeypatch.setattr(cli.paths, "config_files", list)
+    async with TestServer(cli.httpd.application(backlog, console=False)) as server:
+        code = await asyncio.to_thread(
+            cli.main,
+            [
+                "--url",
+                str(server.make_url("/mcp")),
+                "--state",
+                str(tmp_path / "client.json"),
+                "skills",
+            ],
+        )
+    output = capsys.readouterr()
+    assert (code, output.out + output.err) == (1, "no skills\n")
 
 
 def test_projects_and_scope(run: Runner, tmp_path: Path) -> None:

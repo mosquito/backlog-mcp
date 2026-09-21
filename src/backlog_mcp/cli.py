@@ -1,4 +1,4 @@
-"""The command line. `backlog mcp` serves MCP; every other command edits the backlog directly."""
+"""The command line: serve MCP, or connect to it over HTTP or local stdio."""
 
 from __future__ import annotations
 
@@ -12,17 +12,37 @@ import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import argclass
 import rtoml
+from aiohttp import ClientError as HTTPClientError
+from aiohttp_tiny_mcp import ClientError, elicit_accept
 from rich.prompt import Confirm
 
 from . import embeddings, httpd, paths, skills
-from .backlog import Backlog, Reach, UnknownProject
-from .models import OPEN_STATUSES, Event, Priority, Status
+from .backlog import Backlog, UnknownProject
+from .client import Connection, ToolError, connect
+from .models import (
+    OPEN_STATUSES,
+    Deleted,
+    Event,
+    FullNotes,
+    FullTasks,
+    NoteOut,
+    Priority,
+    ProjectDeleted,
+    Status,
+    TaskOut,
+)
+from .models import (
+    Projects as ProjectList,
+)
+from .models import (
+    Stats as StatsOut,
+)
 from .render import (
     console,
     event_line,
@@ -44,14 +64,8 @@ from .server import (
     PROJECT_CHANGED,
     TASK_CHANGED,
     VERSION,
-    append_history,
     bound,
-    note_out,
-    project_out,
     registry,
-    scope_of,
-    stats_of,
-    task_out,
     use,
 )
 from .state import State
@@ -190,7 +204,7 @@ def parse_note_form(text: str) -> dict[str, Any]:
     }
 
 
-def form_of(task: Task | None = None) -> str:
+def form_of(task: Task | TaskOut | None = None) -> str:
     """The form to edit: empty for a new task, filled in for one that exists."""
     if task is None:
         return FORM.format(
@@ -205,7 +219,7 @@ def form_of(task: Task | None = None) -> str:
     )
 
 
-def note_form_of(existing: Note | None = None) -> str:
+def note_form_of(existing: Note | NoteOut | None = None) -> str:
     """The note form to edit: empty for a new note, filled in for one that exists."""
     if existing is None:
         return NOTE_FORM.format(title="", tags="", shared="no", body="", limit=NOTE_LIMIT)
@@ -249,10 +263,7 @@ class ConfigTemplate(argclass.TOMLConfigGenerator):
 
 
 class Command(argclass.Parser):
-    """One subcommand. The root parser opens the backlog, then awaits this."""
-
-    #: False for the commands that read no tasks, so they never create a database file.
-    opens = True
+    """One subcommand, using the MCP connection opened by the root parser."""
 
     def options(self) -> CLI:
         """The root parser, however deep this command is nested."""
@@ -262,24 +273,40 @@ class Command(argclass.Parser):
         assert isinstance(parent, CLI), "a command runs under the root parser"
         return parent
 
-    @property
-    def backlog(self) -> Backlog:
-        """The backlog the root parser opened, the one the MCP handlers also see."""
-        return bound()
-
     def reference(self) -> str | None:
         """The project this command works on: the `--project` of the root parser."""
         return self.options().project
 
-    async def reach(self) -> Reach:
-        """What a listing covers, from the project and computer options of this command."""
-        #: The attribute is `at`, not `computer`, for the same reason as `scope`.
-        return await self.backlog.reach(
-            self.reference(),
-            all_projects=bool(getattr(self, "all_projects", False)),
-            computer=getattr(self, "at", None) or None,
-            all_computers=bool(getattr(self, "all_computers", False)),
-        )
+    def listing(self) -> dict[str, Any]:
+        return {
+            "project": self.reference(),
+            "all_projects": bool(getattr(self, "all_projects", False)),
+            "computer": getattr(self, "at", None) or None,
+            "all_computers": bool(getattr(self, "all_computers", False)),
+        }
+
+    @property
+    def connection(self) -> Connection:
+        return self.options().connection
+
+    async def ask(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        params = request.get("params") or request
+        message = str(params.get("message", "Confirm this operation?"))
+        accepted = bool(getattr(self, "yes", False)) or Confirm.ask(message, default=False)
+        return elicit_accept({"ok": accepted})
+
+    async def task(self, task_id: int) -> TaskOut:
+        task = await self.connection.call(TaskOut, "task_get", id=task_id)
+        if task.status == Status.DELETED:
+            raise ToolError(f"no task #{task_id}")
+        return task
+
+    def label(self, result: FullTasks | FullNotes | embeddings.Matches) -> str:
+        if result.project:
+            return result.project
+        if result.computer:
+            return f"every project on {result.computer}"
+        return "every project on every computer"
 
     def show_help(self) -> int:
         """Print the help of this command, the way `--help` after it does.
@@ -307,6 +334,10 @@ class Serve(Command):
 
     These options also come from the `[mcp]` table of a config file and from `BACKLOG_MCP_*`.
     """
+
+    @property
+    def backlog(self) -> Backlog:
+        return bound()
 
     protocol: str = argclass.Argument(
         default="stdio",
@@ -348,8 +379,6 @@ class Serve(Command):
         from aiohttp_tiny_mcp import run_stdio
 
         backlog = self.backlog
-        project, origin = await backlog.current()
-        log.info("project %s (%s)", project.slug, origin.value)
         log.info("serving %s on stdio, database %s", registry.info.name, backlog.store.path)
         await run_stdio(registry)
         return 0
@@ -375,7 +404,7 @@ class Current(Command):
     """Show the project the commands work on, and why that one."""
 
     async def __call__(self) -> int:
-        console.print(scope_panel(await scope_of(self.backlog)))
+        console.print(scope_panel(await self.connection.scope()))
         return 0
 
 
@@ -406,24 +435,11 @@ class ProjectDelete(Command):
     yes: bool = argclass.Argument("-y", "--yes", default=False, help="Delete without asking")
 
     async def __call__(self) -> int:
-        project = await self.backlog.lookup(self.target)
-        contents = await self.backlog.store.project_contents(project.id)
-        if not self.yes and not Confirm.ask(
-            f"delete project {project.slug!r} with {contents.tasks} task(s) and "
-            f"{contents.notes} note(s), {contents.shared_notes} of them shared? "
-            "This cannot be undone",
-            default=False,
-        ):
+        result = await self.connection.call(ProjectDeleted, "project_delete", project=self.target)
+        if not result.deleted:
             warn("nothing deleted")
             return 1
-        try:
-            await self.backlog.delete(project)
-        except ValueError as error:
-            fail(str(error))
-            return 1
-        note(
-            f"deleted project {project.slug!r}: {contents.tasks} task(s), {contents.notes} note(s)"
-        )
+        note(f"deleted project {result.slug!r}: {result.tasks} task(s), {result.notes} note(s)")
         return 0
 
 
@@ -442,16 +458,14 @@ class Projects(Command):
     )
 
     async def __call__(self) -> int:
-        reach = await self.backlog.reach(
-            all_projects=True, computer=self.at or None, all_computers=self.all_computers
+        found = await self.connection.call(
+            ProjectList,
+            "project_list",
+            archived=self.archived,
+            computer=self.at or None,
+            all_computers=self.all_computers,
         )
-        found = await self.backlog.store.projects(archived=self.archived, computer=reach.computer)
-        computer = self.backlog.computer
-        console.print(
-            projects_table(
-                [project_out(item, computer=computer) for item in found], computer=computer
-            )
-        )
+        console.print(projects_table(found.items, computer=self.connection.computer))
         return 0
 
 
@@ -478,21 +492,22 @@ class List(Command):
         return None if self.every else list(OPEN_STATUSES)
 
     async def __call__(self) -> int:
-        reach = await self.reach()
-        found = await self.backlog.store.tasks(
-            project_id=reach.project_id,
-            computer=reach.computer,
-            status=self.wanted(),
+        found = await self.connection.call(
+            FullTasks,
+            "task_list",
+            **self.listing(),
+            status=self.wanted() or [item for item in Status if item != Status.DELETED],
             tag=self.tag or None,
-            priority=Priority(self.priority) if self.priority else None,
+            priority=self.priority or None,
             limit=self.limit,
+            full=True,
         )
         console.print(
             tasks_table(
-                [task_out(item) for item in found],
-                title=f"{len(found)} task(s) of {reach.label}",
-                wide=reach.project is None,
-                computer=self.backlog.computer,
+                found.items,
+                title=f"{len(found.items)} task(s) of {self.label(found)}",
+                wide=found.project is None,
+                computer=self.connection.computer,
             )
         )
         return 0
@@ -515,30 +530,22 @@ class Search(Command):
 
     async def __call__(self) -> int:
         text = " ".join(self.query)
-        args = embeddings.Search(
+        matches = await self.connection.call(
+            embeddings.Matches,
+            "search",
+            **self.listing(),
             query=text,
-            project=self.reference(),
-            all_projects=self.all_projects,
-            computer=self.at or None,
-            all_computers=self.all_computers,
             tag=self.tag or None,
             limit=self.limit,
             min_score=self.min_score,
         )
-        matches = await embeddings.search(args, self.backlog)
-        if matches.project:
-            where = matches.project
-        elif matches.computer:
-            where = f"every project on {matches.computer}"
-        else:
-            where = "every project on every computer"
-        computer = self.backlog.computer
+        where = self.label(matches)
         console.print(
             tasks_table(
                 matches.tasks,
                 title=f"{len(matches.tasks)} task match(es) for {text!r} in {where}",
                 wide=matches.project is None,
-                computer=computer,
+                computer=self.connection.computer,
             )
         )
         if matches.notes:
@@ -547,8 +554,8 @@ class Search(Command):
                     matches.notes,
                     title=f"{len(matches.notes)} note match(es) for {text!r} in {where}",
                     wide=matches.project is None
-                    or any(item.project != matches.project for item in matches.notes),
-                    computer=computer,
+                    or any(n.project != matches.project for n in matches.notes),
+                    computer=self.connection.computer,
                 )
             )
         return 0
@@ -560,11 +567,7 @@ class Show(Command):
     id: int = argclass.Argument("id", type=int, help="Task id")
 
     async def __call__(self) -> int:
-        task = await self.backlog.store.task(self.id)
-        if task is None or task.status == Status.DELETED:
-            fail(f"no task #{self.id}")
-            return 1
-        console.print(task_panel(task_out(task), computer=self.backlog.computer))
+        console.print(task_panel(await self.task(self.id), computer=self.connection.computer))
         return 0
 
 
@@ -578,17 +581,18 @@ class Add(Command):
     tag: list[str] = repeated("-t", "--tag", help="Tag to attach. Repeat for more than one")
 
     async def __call__(self) -> int:
-        project = await self.backlog.resolve(self.reference())
-        task = await self.backlog.store.add_task(
-            project_id=project.id,
+        task = await self.connection.call(
+            TaskOut,
+            "task_add",
+            project=self.reference(),
             title=" ".join(self.title),
             body=self.body,
-            status=Status(self.status),
-            priority=Priority(self.priority),
+            status=self.status,
+            priority=self.priority,
             tags=self.tag,
         )
-        note(f"added #{task.id} to {project.slug}")
-        console.print(task_panel(task_out(task), computer=self.backlog.computer))
+        note(f"added #{task.id} to {task.project}")
+        console.print(task_panel(task, computer=self.connection.computer))
         return 0
 
 
@@ -596,7 +600,6 @@ class Create(Command):
     """Write a task in `$EDITOR`, from a filled-in form."""
 
     async def __call__(self) -> int:
-        project = await self.backlog.resolve(self.reference())
         written = compose(form_of())
         if written is None:
             warn("nothing written, no task added")
@@ -605,9 +608,9 @@ class Create(Command):
         if not fields["title"]:
             warn("the title is empty, no task added")
             return 1
-        task = await self.backlog.store.add_task(project_id=project.id, **fields)
-        note(f"added #{task.id} to {project.slug}")
-        console.print(task_panel(task_out(task), computer=self.backlog.computer))
+        task = await self.connection.call(TaskOut, "task_add", project=self.reference(), **fields)
+        note(f"added #{task.id} to {task.project}")
+        console.print(task_panel(task, computer=self.connection.computer))
         return 0
 
 
@@ -617,11 +620,11 @@ class Edit(Command):
     id: int = argclass.Argument("id", type=int, help="Task id")
 
     async def __call__(self) -> int:
-        task = await self.backlog.store.task(self.id)
-        if task is None or task.status == Status.DELETED:
-            fail(f"no task #{self.id}")
-            return 1
-        written = compose(form_of(task))
+        task = await self.task(self.id)
+        written = compose(
+            "# The body is a new progress update; existing history stays unchanged.\n"
+            + form_of(task.model_copy(update={"body": ""}))
+        )
         if written is None:
             warn("nothing changed")
             return 0
@@ -629,10 +632,11 @@ class Edit(Command):
         if not fields["title"]:
             warn("the title is empty, nothing changed")
             return 1
-        changed = await self.backlog.store.update_task(task.id, **fields)
-        assert changed is not None, "the task edited is gone"
+        if not fields["body"]:
+            fields.pop("body")
+        changed = await self.connection.call(TaskOut, "task_update", id=task.id, **fields)
         note(f"updated #{changed.id}")
-        console.print(task_panel(task_out(changed), computer=self.backlog.computer))
+        console.print(task_panel(changed, computer=self.connection.computer))
         return 0
 
 
@@ -645,9 +649,12 @@ class Transition(Command):
     async def __call__(self) -> int:
         failed = 0
         for task_id in self.ids:
-            task = await self.backlog.store.update_task(task_id, status=self.target)
-            if task is None:
-                fail(f"no task #{task_id}")
+            try:
+                task = await self.connection.call(
+                    TaskOut, "task_update", id=task_id, status=self.target
+                )
+            except ToolError as error:
+                fail(str(error))
                 failed += 1
                 continue
             note(f"#{task.id} is {task.status.value}: {task.title}")
@@ -691,21 +698,14 @@ class Move(Command):
     destination: str = argclass.Argument("destination", help="Project slug, or a path inside it")
 
     async def __call__(self) -> int:
-        project = await self.backlog.lookup(self.destination)
-        existing = await self.backlog.store.task(self.id)
-        if existing is None:
-            fail(f"no task #{self.id}")
-            return 1
-        if existing.project_id == project.id:
-            note(f"#{existing.id} already belongs to {project.slug}")
-            return 0
-        task = await self.backlog.store.update_task(
-            self.id,
-            project_id=project.id,
-            body=append_history(existing.body, f"Moved: {existing.project} → {project.slug}"),
+        existing = await self.task(self.id)
+        task = await self.connection.call(
+            TaskOut, "task_move", id=self.id, project=self.destination
         )
-        assert task is not None
-        note(f"#{task.id} now belongs to {project.slug}")
+        if existing.project == task.project:
+            note(f"#{task.id} already belongs to {task.project}")
+        else:
+            note(f"#{task.id} now belongs to {task.project}")
         return 0
 
 
@@ -721,25 +721,20 @@ class Delete(Command):
     )
 
     async def __call__(self) -> int:
-        task = await self.backlog.store.task(self.id)
-        if task is None or task.status == Status.DELETED:
-            fail(f"no task #{self.id}")
-            return 1
-        current = await self.backlog.resolve(self.reference())
-        where = task.project
+        task = await self.task(self.id)
+        current = (await self.connection.scope()).project
         if (
-            task.project_id != current.id
+            (current is None or task.project != current.slug)
             and not self.yes
             and not Confirm.ask(
-                f"delete task #{task.id} {task.title!r} from {where!r}? "
-                f"Current project: {current.slug}",
+                f"delete task #{task.id} {task.title!r} from {task.project!r}?",
                 default=False,
             )
         ):
             warn("nothing deleted")
             return 1
-        await self.backlog.store.delete_task(task.id)
-        note(f"deleted #{task.id}")
+        await self.connection.call(Deleted, "task_delete", id=self.id)
+        note(f"deleted #{self.id}")
         return 0
 
 
@@ -752,7 +747,7 @@ class Stats(Command):
     at, all_computers = computer_options()
 
     async def __call__(self) -> int:
-        console.print(stats_view(await stats_of(self.backlog, await self.reach())))
+        console.print(stats_view(await self.connection.call(StatsOut, "stats", **self.listing())))
         return 0
 
 
@@ -768,22 +763,21 @@ class NoteList(Command):
     limit: int = argclass.Argument(default=50, help="Most notes to print")
 
     async def __call__(self) -> int:
-        reach = await self.reach()
-        found = await self.backlog.store.notes(
-            project_id=reach.project_id,
-            computer=reach.computer,
+        found = await self.connection.call(
+            FullNotes,
+            "note_list",
+            **self.listing(),
             tag=self.tag or None,
             shared=True if self.shared else None,
             limit=self.limit,
+            full=True,
         )
-        #: A shared note of another project shows up here, so say where it comes from.
-        wide = reach.project is None or any(item.project_id != reach.project_id for item in found)
         console.print(
             notes_table(
-                [note_out(item) for item in found],
-                title=f"{len(found)} note(s) of {reach.label}",
-                wide=wide,
-                computer=self.backlog.computer,
+                found.items,
+                title=f"{len(found.items)} note(s) of {self.label(found)}",
+                wide=found.project is None or any(n.project != found.project for n in found.items),
+                computer=self.connection.computer,
             )
         )
         return 0
@@ -795,11 +789,8 @@ class NoteShow(Command):
     id: int = argclass.Argument("id", type=int, help="Note id")
 
     async def __call__(self) -> int:
-        found = await self.backlog.store.note(self.id)
-        if found is None:
-            fail(f"no note #{self.id}")
-            return 1
-        console.print(note_panel(note_out(found), computer=self.backlog.computer))
+        found = await self.connection.call(NoteOut, "note_get", id=self.id)
+        console.print(note_panel(found, computer=self.connection.computer))
         return 0
 
 
@@ -816,32 +807,33 @@ class NoteAdd(Command):
     )
 
     async def __call__(self) -> int:
-        project = await self.backlog.resolve(self.reference())
         title = " ".join(self.title)
+        check_note(self.body)
+        existing: NoteOut | None = None
         try:
-            check_note(self.body)
-        except ValueError as error:
-            fail(str(error))
-            return 1
-        existing = await self.backlog.store.note_by_title(title, project_id=project.id)
-        if existing is None:
-            saved = await self.backlog.store.add_note(
-                project_id=project.id,
+            existing = await self.connection.call(
+                NoteOut,
+                "note_get",
                 title=title,
-                body=self.body,
-                tags=self.tag,
-                shared=self.shared,
+                project=self.reference(),
             )
-            note(f"added note #{saved.id} to {project.slug}")
+        except ToolError as error:
+            if not str(error).startswith("no note"):
+                raise
+        saved = await self.connection.call(
+            NoteOut,
+            "note_save",
+            project=self.reference(),
+            title=title,
+            body=self.body,
+            tags=self.tag or None,
+            shared=self.shared or None,
+        )
+        if existing is not None and existing.id == saved.id:
+            note(f"replaced note #{saved.id} in {saved.project}")
         else:
-            #: Flags not given leave the tags and the shared state alone; `note edit` clears them.
-            replaced = await self.backlog.store.update_note(
-                existing.id, body=self.body, tags=self.tag or None, shared=self.shared or None
-            )
-            assert replaced is not None, "the note replaced is gone"
-            saved = replaced
-            note(f"replaced note #{saved.id} in {project.slug}")
-        console.print(note_panel(note_out(saved), computer=self.backlog.computer))
+            note(f"added note #{saved.id} to {saved.project}")
+        console.print(note_panel(saved, computer=self.connection.computer))
         return 0
 
 
@@ -852,18 +844,11 @@ class NoteAppend(Command):
     text: list[str] = argclass.Argument("text", nargs="+", help="The paragraph to add")
 
     async def __call__(self) -> int:
-        found = await self.backlog.store.note(self.id)
-        if found is None:
-            fail(f"no note #{self.id}")
-            return 1
-        try:
-            updated = await self.backlog.store.append_note(found.id, " ".join(self.text))
-        except ValueError as error:
-            fail(str(error))
-            return 1
-        assert updated is not None, "the note appended to is gone"
+        updated = await self.connection.call(
+            NoteOut, "note_append", id=self.id, text=" ".join(self.text)
+        )
         note(f"appended to note #{updated.id}")
-        console.print(note_panel(note_out(updated), computer=self.backlog.computer))
+        console.print(note_panel(updated, computer=self.connection.computer))
         return 0
 
 
@@ -873,10 +858,7 @@ class NoteEdit(Command):
     id: int = argclass.Argument("id", type=int, help="Note id")
 
     async def __call__(self) -> int:
-        found = await self.backlog.store.note(self.id)
-        if found is None:
-            fail(f"no note #{self.id}")
-            return 1
+        found = await self.connection.call(NoteOut, "note_get", id=self.id)
         written = compose(note_form_of(found))
         if written is None:
             warn("nothing changed")
@@ -885,14 +867,10 @@ class NoteEdit(Command):
         if not fields["title"]:
             warn("the title is empty, nothing changed")
             return 1
-        try:
-            updated = await self.backlog.store.update_note(found.id, **fields)
-        except ValueError as error:
-            fail(str(error))
-            return 1
-        assert updated is not None, "the note edited is gone"
+        check_note(fields["body"])
+        updated = await self.connection.call(NoteOut, "note_save", id=found.id, **fields)
         note(f"updated note #{updated.id}")
-        console.print(note_panel(note_out(updated), computer=self.backlog.computer))
+        console.print(note_panel(updated, computer=self.connection.computer))
         return 0
 
 
@@ -908,31 +886,16 @@ class NoteDelete(Command):
     )
 
     async def __call__(self) -> int:
-        found = await self.backlog.store.note(self.id)
-        if found is None:
-            fail(f"no note #{self.id}")
-            return 1
-        current = await self.backlog.resolve(self.reference())
-        if (
-            found.project_id != current.id
-            and not self.yes
-            and not Confirm.ask(
-                f"delete note #{found.id} {found.title!r} from {found.project!r}? "
-                f"Current project: {current.slug}",
-                default=False,
-            )
-        ):
+        result = await self.connection.call(Deleted, "note_delete", id=self.id)
+        if not result.deleted:
             warn("nothing deleted")
             return 1
-        await self.backlog.store.delete_note(found.id)
-        note(f"deleted note #{found.id}")
+        note(f"deleted note #{self.id}")
         return 0
 
 
 class Notes(Command):
     """Lasting user context unavailable from other sources."""
-
-    opens = False
 
     list = NoteList(
         help="List the notes of this project and the shared ones",
@@ -983,22 +946,22 @@ class Notes(Command):
 class Skills(Command):
     """The written skills this server offers to MCP clients."""
 
-    opens = False
-
     skill: str = argclass.Argument("skill", nargs="?", default=None, help="Skill to print in full")
 
     async def __call__(self) -> int:
+        found = await self.connection.skills()
         if self.skill is None:
-            found = skills.library.skills()
             if not found:
                 warn("no skills")
                 return 1
             console.print(skills_table(found))
             return 0
-        one = skills.library.skill(self.skill)
+        one = next((item for item in found if item.name == self.skill), None)
         if one is None:
             fail(f"no skill {self.skill!r}")
             return 1
+        content = await self.connection.read(one.uri)
+        one.instructions = skills.body(content.text)
         console.print(skill_panel(one))
         return 0
 
@@ -1006,14 +969,14 @@ class Skills(Command):
 class Watch(Command):
     """Print each change of a backlog server as it happens."""
 
-    opens = False
-
-    url: str = argclass.Argument(
-        "url",
+    endpoint: str = argclass.Argument(
+        "endpoint",
+        nargs="?",
+        default="",
         help="The MCP endpoint of a running server, e.g. https://host/mcp?computer=laptop",
     )
-    user: str = argclass.Argument("-u", "--user", default="", help="Basic auth user")
-    password: str = argclass.Secret("--password", default="", help="Basic auth password")
+    auth_user: str = argclass.Argument("-u", "--user", default="", help="Basic auth user")
+    auth_password: str = argclass.Secret("--password", default="", help="Basic auth password")
     count: int = argclass.Argument(
         "-n",
         "--count",
@@ -1022,43 +985,32 @@ class Watch(Command):
     )
 
     async def __call__(self) -> int:
-        from aiohttp import BasicAuth, ClientSession
-        from aiohttp_tiny_mcp import Client, MethodFilter
-        from aiohttp_tiny_mcp.protocol.selection import AdapterSet
+        from aiohttp_tiny_mcp import MethodFilter
 
         project = self.reference()
-        #: Task and note events are multicast by project; project events are not.
         methods: list[str | MethodFilter] = [
             MethodFilter(method=method, topics=[project]) if project else method
             for method in (TASK_CHANGED, NOTE_CHANGED)
         ]
         methods.append(PROJECT_CHANGED)
-        auth = BasicAuth(self.user, str(self.password)) if self.user else None
-        adapter = AdapterSet.default().by_version["2026-07-28"]
         seen = 0
-        async with (
-            ClientSession(auth=auth) as session,
-            Client(self.url, adapter, session=session) as client,
-        ):
-            await client.initialize()
-            #: The client types its listener as an iterator; it is a generator to close.
-            listening = cast(AsyncGenerator[dict[str, Any]], client.listen(methods=methods))
-            async with contextlib.aclosing(listening) as changes:
-                async for frame in changes:
-                    event = Event.model_validate(frame.get("params") or {})
-                    if project and event.project != project:
-                        continue
-                    console.print(event_line(event), highlight=False)
-                    seen += 1
-                    if self.count and seen >= self.count:
-                        break
+        listening = cast(
+            AsyncGenerator[dict[str, Any]], self.connection.client.listen(methods=methods)
+        )
+        async with contextlib.aclosing(listening) as changes:
+            async for frame in changes:
+                event = Event.model_validate(frame.get("params") or {})
+                if project and event.project != project:
+                    continue
+                console.print(event_line(event), highlight=False)
+                seen += 1
+                if self.count and seen >= self.count:
+                    break
         return 0
 
 
 class Install(Command):
     """Register this server with the MCP clients on this machine."""
-
-    opens = False
 
     name: str = argclass.Argument(default="backlog", help="Name the clients will show")
     claude: bool = argclass.Argument(default=False, help="Only Claude Code")
@@ -1209,6 +1161,15 @@ class CLI(argclass.Parser):
 
     log_level: int = argclass.LogLevel
 
+    url: str = argclass.Argument(
+        "--url",
+        default="",
+        help="MCP HTTP endpoint; unset starts a local stdio server",
+    )
+    user: str = argclass.Argument("--user", default="", help="MCP HTTP Basic auth user")
+    password: str = argclass.Secret("--password", default="", help="MCP HTTP Basic auth password")
+    timeout: float = argclass.Argument(default=120.0, help="MCP request timeout in seconds")
+
     database: Path = argclass.Argument(
         "-d",
         "--database",
@@ -1332,8 +1293,9 @@ class CLI(argclass.Parser):
     edit = Edit(
         help="Edit a task in $EDITOR",
         description=(
-            "Open the same form as `backlog create`, filled in with the task. Leaving the "
-            "file unchanged changes nothing."
+            "Edit the task fields and append a progress update. The body starts empty; "
+            "new text is appended to the existing history. Leaving the file unchanged "
+            "changes nothing."
         ),
     )
     start = Start(
@@ -1419,28 +1381,51 @@ class CLI(argclass.Parser):
     )
 
     async def __call__(self) -> int:
-        """Run the chosen command against one open backlog, or print the help when none was."""
+        """Serve locally, or run a command over one MCP connection."""
         command = self.current_subparser
         if not isinstance(command, Command):
             self.print_help()
             return 0
         try:
-            backlog = build(self)
-        except ValueError as error:
-            #: A computer name that is not one plain word.
+            if isinstance(command, Serve):
+                backlog = build(self)
+                use(backlog)
+                try:
+                    await backlog.store.open()
+                    return await command()
+                finally:
+                    await backlog.store.close()
+            if isinstance(command, (Install, Notes)):
+                return await command()
+            if isinstance(command, Watch):
+                self.url = command.endpoint or self.url
+                self.user = command.auth_user or self.user
+                self.password = command.auth_password or self.password
+            scoped = isinstance(
+                command,
+                (Current, List, Search, Add, Create, Delete, Stats, NoteList, NoteAdd, NoteDelete),
+            )
+            if (
+                getattr(command, "all_projects", False)
+                or getattr(command, "all_computers", False)
+                or getattr(command, "at", None)
+            ):
+                scoped = False
+            async with connect(self, on_ask=command.ask, scope_directory=scoped) as connection:
+                self.connection = connection
+                return await command()
+        except ToolError as error:
             fail(str(error))
-            return 2
-        #: The command and the MCP handlers resolve the backlog the same way.
-        use(backlog)
-        try:
-            if command.opens:
-                await backlog.store.open()
-            return await command()
+            return error.exit_code
         except UnknownProject as error:
             fail(str(error))
             return 2
-        finally:
-            await backlog.store.close()
+        except HTTPClientError as error:
+            fail(f"MCP connection failed: {type(error).__name__}")
+            return 1
+        except (ClientError, OSError, TimeoutError, ValueError) as error:
+            fail(str(error) or "MCP request timed out")
+            return 1
 
 
 def main(argv: Sequence[str] | None = None) -> int:

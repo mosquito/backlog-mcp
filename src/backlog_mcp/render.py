@@ -16,6 +16,7 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from .client import RemoteSkill
 from .models import Action, Event, NoteOut, Priority, ProjectOut, Scope, Stats, Status, TaskOut
 from .skills import Skill
 
@@ -196,7 +197,7 @@ def projects_table(items: Sequence[ProjectOut], *, computer: str | None = None) 
     return table
 
 
-def skills_table(items: Sequence[Skill]) -> Table:
+def skills_table(items: Sequence[Skill | RemoteSkill]) -> Table:
     """One row per skill: what it is called, what it is for, how many files it carries."""
     table = titled("skills")
     table.add_column("name", style="bold magenta")
@@ -280,7 +281,7 @@ def note_panel(item: NoteOut, *, computer: str | None = None) -> Panel:
     )
 
 
-def skill_panel(skill: Skill) -> Panel:
+def skill_panel(skill: Skill | RemoteSkill) -> Panel:
     """One skill in full: what it is for, what it is made of, then the instructions."""
     rows: list[tuple[str, RenderableType]] = [
         ("description", Text(skill.description)),
