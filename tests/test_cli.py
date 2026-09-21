@@ -49,6 +49,11 @@ def run(
     (root / ".git").mkdir(parents=True)
     #: The machine running the tests may have its own configuration and environment.
     monkeypatch.setattr(cli.paths, "config_files", list)
+    monkeypatch.setattr(
+        cli.Command,
+        "registration",
+        lambda self, computer, root, projects: cli.Registration(name=root.name),
+    )
     for name in [key for key in os.environ if key.startswith("BACKLOG_MCP_")]:
         monkeypatch.delenv(name)
     #: A fixed width keeps the tables and the panels off the width of whatever terminal runs this.

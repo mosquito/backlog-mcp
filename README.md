@@ -2,8 +2,8 @@
 
 A project backlog for the terminal, and the same backlog over MCP.
 
-Tasks belong to projects, and a project is a directory tree. The working directory therefore
-decides which board a command works on, so there is nothing to pass and nothing to configure.
+Tasks belong to projects, and each project can have directory bindings on several computers.
+After registration, the computer and working directory select the board for each command.
 Notes preserve lasting context from the user: preferences, working agreements, people,
 and business constraints unavailable from other sources.
 `backlog` is the command for people; `backlog mcp` serves the identical data to an agent, on
@@ -60,12 +60,13 @@ the local database. `--url ''` explicitly selects the local stdio server.
 Over HTTP, `--computer` overrides the URL's `computer`; otherwise the CLI uses the
 URL's computer or the local computer name. `--project` overrides the URL's `project`.
 Without either project setting, scoped commands select the deepest registered root
-containing the local working directory. If none exists, they register the local
-checkout through MCP. Broad listings and `skills` do not register a checkout.
+containing the local working directory on that computer. If none exists, they ask
+for registration details before creating a project or task. This also applies to
+local stdio connections. Broad listings and `skills` do not register a checkout.
 The server's working directory never determines the CLI's local checkout.
 
 ```bash
-cd ~/dev/my-project        # the project is registered on first use
+cd ~/dev/my-project        # first use prompts for project registration
 backlog add Write the release notes -t docs
 backlog create             # the same, in $EDITOR
 backlog list
@@ -145,8 +146,36 @@ MCP revision.
 
 ### Projects
 
-A directory becomes a project the first time a command runs in it. The root is the nearest
-ancestor holding `.git`, `.hg`, `.svn` or `.jj`, else the directory itself.
+On first use, the CLI asks for all registration fields: computer, directory, project
+name, and optional description. Each prompt accepts Enter to keep its default.
+The directory defaults to the nearest ancestor holding `.git`, `.hg`, `.svn` or
+`.jj`, else the working directory itself. The project name defaults to the selected
+directory's name. `--computer` and `--root` set the initial values.
+
+After you change the computer or directory, the CLI checks that location for an
+existing binding. If one exists, it offers to use that project. The pending command
+runs in the selected location. A changed computer name becomes the local default
+after successful registration; an explicit flag, configuration value, or URL computer
+still overrides it. Later commands resolve the directory from their own working
+directory or `--root`.
+
+If the name or slug matches an existing project, including one on another computer,
+the CLI asks whether to bind this directory to that project. It preserves that
+project's description, tasks, and notes. Otherwise it asks to confirm a new project.
+Cancellation or end of input leaves the project and requested task uncreated.
+Later commands reuse the binding without prompting.
+
+Without a terminal, a missing binding is an error. Register explicitly before running
+scripts. Naming a project creates it; `--existing` explicitly reuses a known project:
+
+```bash
+backlog init                         # interactive registration
+backlog init "My project" --description "Release coordination"
+backlog init --existing my-project   # add this computer and directory to the same board
+```
+
+An existing name makes `init NAME` fail with instructions to use `--existing`.
+It does not silently create a second board with a suffixed slug.
 
 ```bash
 backlog current            # which project, and why that one
@@ -163,9 +192,9 @@ backlog projects delete other-project  # every task and note on that board goes 
 
 ### Computers
 
-A project is a directory tree on one computer, and every project remembers its computer. One
-database can therefore hold the boards of several machines: a synced SQLite file, or one HTTP
-server every machine talks to. The name comes from `computer = "..."` in the config file or
+A logical project can bind directories on several computers. One database can hold
+all these boards, accessed through a shared HTTP server or a local stdio server.
+The computer name comes from `computer = "..."` in the config file or
 `--computer`; else it is the short host name, remembered in the state file on first use, so a
 renamed host keeps its projects.
 

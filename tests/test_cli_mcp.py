@@ -54,6 +54,11 @@ async def remote(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[RemoteRunner]:
     monkeypatch.setattr(cli.paths, "config_files", list)
+    monkeypatch.setattr(
+        cli.Command,
+        "registration",
+        lambda self, computer, root, projects: cli.Registration(name=root.name),
+    )
     for name in [key for key in os.environ if key.startswith("BACKLOG_MCP_")]:
         monkeypatch.delenv(name)
     root = tmp_path / "client-workspace"
@@ -245,10 +250,12 @@ def test_local_fallback_uses_a_child_and_closes_it(
         "--root",
         str(tmp_path),
     ]
-    assert cli.main([*flags, "add", "Through stdio"]) == 0
+    assert cli.main([*flags, "init", tmp_path.name]) == 0
     assert len(processes) == 1 and processes[0].returncode == 0
-    assert cli.main([*flags, "show", "404"]) == 1
+    assert cli.main([*flags, "add", "Through stdio"]) == 0
     assert len(processes) == 2 and processes[1].returncode == 0
+    assert cli.main([*flags, "show", "404"]) == 1
+    assert len(processes) == 3 and processes[2].returncode == 0
 
 
 @pytest.mark.parametrize("script", ["import time; time.sleep(60)", "raise SystemExit(7)"])

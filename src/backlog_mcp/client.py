@@ -8,8 +8,8 @@ import json
 import logging
 import sys
 from base64 import b64encode
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -36,6 +36,18 @@ class ToolError(Exception):
     @property
     def exit_code(self) -> int:
         return 2 if str(self).startswith(("no project", "no computer")) else 1
+
+
+@dataclass(frozen=True)
+class Registration:
+    name: str | None = None
+    description: str | None = None
+    project: str | None = None
+    computer: str | None = None
+    root: Path | None = None
+
+
+Registrar = Callable[[str, Path, list[ProjectOut]], Registration]
 
 
 @dataclass
@@ -67,6 +79,8 @@ class Connection:
         self.computer = computer
         self.timeout = timeout
         self.root = root
+        self.relocate: Callable[[str, Path], Awaitable[None]] | None = None
+        self.state: State | None = None
 
     async def call[M: BaseModel](self, model: type[M], tool: str, **arguments: Any) -> M:
         if isinstance(self.client, Client) and arguments.get("project"):
@@ -156,28 +170,82 @@ def local_command(options: CLI, computer: str) -> list[str]:
     return command
 
 
-async def bind_directory(connection: Connection, client: Client, root: Path) -> None:
-    """Select the local checkout using server records, never the HTTP server's cwd."""
-    projects = await connection.call(Projects, "project_list", archived=True)
+def directory_project(computer: str, root: Path, projects: list[ProjectOut]) -> ProjectOut | None:
     candidates = [
         (Path(binding.root), project)
-        for project in projects.items
+        for project in projects
         for binding in project.roots
-        if binding.computer == connection.computer
-        and binding.root
-        and root.is_relative_to(Path(binding.root))
+        if binding.computer == computer and binding.root and root.is_relative_to(Path(binding.root))
     ]
-    if candidates:
-        project = max(candidates, key=lambda item: len(item[0].parts))[1]
-    else:
-        project = await connection.call(ProjectOut, "project_save", root=str(checkout_root(root)))
-    client.base_url = str(URL(client.base_url).update_query(project=project.slug))
+    return max(candidates, key=lambda item: len(item[0].parts))[1] if candidates else None
+
+
+async def bind_directory(connection: Connection, register: Registrar) -> ProjectOut:
+    """Resolve a computer and directory before creating a binding through MCP."""
+    root = connection.root
+    original_computer = connection.computer
+    if not root.is_dir():
+        raise ToolError(f"no such directory: {root}")
+    projects = await connection.call(Projects, "project_list", archived=True)
+    project = directory_project(connection.computer, root, projects.items)
+    if project is None:
+        directory = checkout_root(root)
+        known = await connection.call(Projects, "project_list", archived=True, all_computers=True)
+        chosen = register(connection.computer, directory, known.items)
+        directory = chosen.root or directory
+        computer = chosen.computer or connection.computer
+        if computer != connection.computer or directory != root:
+            assert connection.relocate is not None
+            await connection.relocate(computer, directory)
+        # The edited location can already belong to a project. Check the server again.
+        projects = await connection.call(Projects, "project_list", archived=True)
+        project = directory_project(computer, directory, projects.items)
+        if project is None:
+            project = await connection.call(
+                ProjectOut,
+                "project_save",
+                root=str(directory),
+                project=chosen.project,
+                name=chosen.name,
+                description=chosen.description,
+            )
+    if isinstance(connection.client, Client):
+        connection.client.base_url = str(
+            URL(connection.client.base_url).update_query(project=project.slug)
+        )
+    if connection.computer != original_computer and connection.state is not None:
+        connection.state.update(computer=connection.computer)
+    return project
 
 
 @asynccontextmanager
 async def connect(
-    options: CLI, *, on_ask: Elicitor, scope_directory: bool = True
+    options: CLI, *, on_ask: Elicitor, on_register: Registrar, scope_directory: bool = True
 ) -> AsyncIterator[Connection]:
+    async with AsyncExitStack() as stack:
+        connection = await stack.enter_async_context(transport(options, on_ask=on_ask))
+        connection.state = State(options.state or paths.state_path())
+
+        async def relocate(computer: str, root: Path) -> None:
+            await stack.aclose()
+            options.computer = computer
+            options.root = root
+            replacement = await stack.enter_async_context(transport(options, on_ask=on_ask))
+            connection.client = replacement.client
+            connection.computer = replacement.computer
+            connection.root = replacement.root
+
+        connection.relocate = relocate
+        endpoint = URL(options.url) if options.url else None
+        explicit = options.project or (endpoint.query.get("project") if endpoint else None)
+        if scope_directory and not explicit:
+            await bind_directory(connection, on_register)
+        yield connection
+
+
+@asynccontextmanager
+async def transport(options: CLI, *, on_ask: Elicitor) -> AsyncIterator[Connection]:
+    """Open one transport without resolving or registering a project."""
     adapter = AdapterSet.default().by_version["2026-07-28"]
     if options.timeout <= 0:
         raise ValueError("--timeout must be greater than zero")
@@ -210,8 +278,6 @@ async def connect(
             async with asyncio.timeout(options.timeout):
                 await client.initialize()
             connection = Connection(client, computer=computer, timeout=options.timeout, root=root)
-            if scope_directory and not endpoint.query.get("project"):
-                await bind_directory(connection, client, root)
             yield connection
         return
     process = await asyncio.create_subprocess_exec(
@@ -225,6 +291,7 @@ async def connect(
         local = StdioClient(process.stdout, process.stdin, adapter, on_ask=on_ask)
         async with asyncio.timeout(options.timeout):
             await local.initialize()
-        yield Connection(local, computer=computer, timeout=options.timeout, root=root)
+        connection = Connection(local, computer=computer, timeout=options.timeout, root=root)
+        yield connection
     finally:
         await stop(process)

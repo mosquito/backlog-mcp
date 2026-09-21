@@ -20,11 +20,12 @@ import argclass
 import rtoml
 from aiohttp import ClientError as HTTPClientError
 from aiohttp_tiny_mcp import ClientError, elicit_accept
-from rich.prompt import Confirm
+from rich.prompt import Confirm, Prompt
 
+from . import computer as computer_names
 from . import embeddings, httpd, paths, skills
-from .backlog import Backlog, UnknownProject
-from .client import Connection, ToolError, connect
+from .backlog import Backlog, UnknownProject, slugify
+from .client import Connection, Registration, ToolError, bind_directory, connect, directory_project
 from .models import (
     OPEN_STATUSES,
     Deleted,
@@ -34,6 +35,7 @@ from .models import (
     NoteOut,
     Priority,
     ProjectDeleted,
+    ProjectOut,
     Status,
     TaskOut,
 )
@@ -45,6 +47,7 @@ from .models import (
 )
 from .render import (
     console,
+    errors,
     event_line,
     fail,
     note,
@@ -295,6 +298,9 @@ class Command(argclass.Parser):
         accepted = bool(getattr(self, "yes", False)) or Confirm.ask(message, default=False)
         return elicit_accept({"ok": accepted})
 
+    def registration(self, computer: str, root: Path, projects: list[ProjectOut]) -> Registration:
+        return prompt_registration(computer, root, projects)
+
     async def task(self, task_id: int) -> TaskOut:
         task = await self.connection.call(TaskOut, "task_get", id=task_id)
         if task.status == Status.DELETED:
@@ -405,6 +411,122 @@ class Current(Command):
 
     async def __call__(self) -> int:
         console.print(scope_panel(await self.connection.scope()))
+        return 0
+
+
+def matching_projects(name: str, projects: list[ProjectOut]) -> list[ProjectOut]:
+    exact = [project for project in projects if project.slug == name]
+    return exact or [
+        project
+        for project in projects
+        if project.name.casefold() == name.casefold() or project.slug == slugify(name)
+    ]
+
+
+def prompt_registration(computer: str, root: Path, projects: list[ProjectOut]) -> Registration:
+    """Collect registration details before any project or task is written."""
+    if not sys.stdin.isatty():
+        raise ToolError(
+            f"no project registered for {root} on {computer!r}; "
+            "run `backlog init NAME` or `backlog init --existing SLUG` first"
+        )
+    try:
+        while True:
+            try:
+                computer = computer_names.check(
+                    Prompt.ask("Input computer name", default=computer, console=errors)
+                )
+                break
+            except ValueError as error:
+                errors.print(str(error), markup=False)
+        while True:
+            value = Prompt.ask("Input project directory", default=str(root), console=errors)
+            directory = Path(value.strip()).expanduser()
+            directory = (root / directory).resolve()
+            if directory.is_dir():
+                root = directory
+                break
+            errors.print(f"No such directory: {directory}", markup=False)
+        if existing := directory_project(computer, root, projects):
+            errors.print(f"This directory belongs to {existing.slug!r}.", markup=False)
+            if not Confirm.ask("Use this project?", default=True, console=errors):
+                raise ToolError("registration cancelled")
+            return Registration(project=existing.slug, computer=computer, root=root)
+        name = ""
+        while not name:
+            name = Prompt.ask(
+                "Input project name", default=root.name or "project", console=errors
+            ).strip()
+        matches = matching_projects(name, projects)
+        if matches:
+            if len(matches) > 1:
+                slug = Prompt.ask(
+                    "Input existing project slug",
+                    choices=[item.slug for item in matches],
+                    console=errors,
+                )
+                existing = next(item for item in matches if item.slug == slug)
+            else:
+                existing = matches[0]
+            errors.print(f"Existing project: {existing.name} ({existing.slug})", markup=False)
+            computers = ", ".join(sorted({item.computer for item in existing.roots})) or "none"
+            errors.print(f"Registered computers: {computers}", markup=False)
+            if not Confirm.ask(
+                "Bind this directory to the existing project?", default=True, console=errors
+            ):
+                raise ToolError(
+                    "registration cancelled; choose another name to create a new project"
+                )
+            return Registration(project=existing.slug, computer=computer, root=root)
+        description = Prompt.ask(
+            "Input project description", default="", show_default=False, console=errors
+        )
+        if not Confirm.ask("Register this project?", default=True, console=errors):
+            raise ToolError("registration cancelled")
+        return Registration(name=name, description=description, computer=computer, root=root)
+    except EOFError:
+        raise ToolError("registration cancelled") from None
+
+
+class Init(Command):
+    """Register the current checkout, interactively or with explicit arguments."""
+
+    project_name: str = argclass.Argument(
+        "project_name", nargs="?", default="", help="New project name"
+    )
+    details: str = argclass.Argument("--description", default="", help="New project description")
+    existing: str = argclass.Argument(
+        default="", help="Bind this checkout to an existing project slug"
+    )
+
+    def registration(self, computer: str, root: Path, projects: list[ProjectOut]) -> Registration:
+        if self.project_name and self.existing:
+            raise ToolError("choose a new project name or --existing, not both")
+        if self.existing:
+            return Registration(project=self.existing)
+        if self.project_name:
+            name = self.project_name.strip()
+            if not name:
+                raise ToolError("project name must not be empty")
+            if matches := matching_projects(name, projects):
+                raise ToolError(
+                    f"project already exists; use `backlog init --existing {matches[0].slug}` "
+                    "to bind this directory, or choose a different name"
+                )
+            return Registration(name=name, description=self.details)
+        return super().registration(computer, root, projects)
+
+    async def __call__(self) -> int:
+        if self.project_name and self.existing:
+            raise ToolError("choose a new project name or --existing, not both")
+        if self.project_name and not self.project_name.strip():
+            raise ToolError("project name must not be empty")
+        project = await bind_directory(self.connection, self.registration)
+        if self.existing and project.slug != self.existing:
+            raise ToolError(f"this directory already belongs to {project.slug!r}")
+        if self.project_name and not matching_projects(self.project_name, [project]):
+            raise ToolError(f"this directory already belongs to {project.slug!r}")
+        note(f"registered {project.slug!r} on {self.connection.computer}")
         return 0
 
 
@@ -1246,6 +1368,15 @@ class CLI(argclass.Parser):
             "the state file in use."
         ),
     )
+    init = Init(
+        help="Register this checkout or bind it to an existing project",
+        description=(
+            "Register the current computer and checkout through MCP. Without arguments, ask "
+            "for the computer, directory, name, and description. NAME creates a project without "
+            "prompts; "
+            "--existing SLUG binds the directory to an existing project."
+        ),
+    )
     projects = Projects(
         help="List the registered projects",
         description=(
@@ -1411,7 +1542,9 @@ class CLI(argclass.Parser):
                 or getattr(command, "at", None)
             ):
                 scoped = False
-            async with connect(self, on_ask=command.ask, scope_directory=scoped) as connection:
+            async with connect(
+                self, on_ask=command.ask, on_register=command.registration, scope_directory=scoped
+            ) as connection:
                 self.connection = connection
                 return await command()
         except ToolError as error:
