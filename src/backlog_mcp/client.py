@@ -82,12 +82,19 @@ class Connection:
         self.relocate: Callable[[str, Path], Awaitable[None]] | None = None
         self.state: State | None = None
 
-    async def call[M: BaseModel](self, model: type[M], tool: str, **arguments: Any) -> M:
+    async def call[M: BaseModel](
+        self, model: type[M], tool: str, *, exclude_none: bool = True, **arguments: Any
+    ) -> M:
         if isinstance(self.client, Client) and arguments.get("project"):
             arguments["project"] = project_reference(arguments["project"], self.root)
         async with asyncio.timeout(self.timeout):
             result = await self.client.call_tool(
-                tool, {key: value for key, value in arguments.items() if value is not None}
+                tool,
+                {
+                    key: value
+                    for key, value in arguments.items()
+                    if value is not None or not exclude_none
+                },
             )
         if not isinstance(result, CallToolResult):
             raise ToolError("the server requested unsupported input")

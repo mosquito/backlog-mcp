@@ -188,11 +188,20 @@ def projects_table(items: Sequence[ProjectOut], *, computer: str | None = None) 
     table.add_column("total", justify="right", style="dim")
     table.add_column("root", overflow="fold")
     table.add_column("name", overflow="fold", style="dim")
+    table.add_column("language")
     for item in items:
         slug = Text(item.slug, style="dim strike" if item.archived else "bold magenta")
         cells: list[str | Text] = [slug]
         root = Text(", ".join(f"{root.computer}:{root.root or '—'}" for root in item.roots))
-        cells.extend([str(item.open_tasks), str(item.total_tasks), root, item.name])
+        cells.extend(
+            [
+                str(item.open_tasks),
+                str(item.total_tasks),
+                root,
+                item.name,
+                Text(item.preferred_language if item.preferred_language is not None else "—"),
+            ]
+        )
         table.add_row(*cells)
     return table
 
@@ -356,6 +365,14 @@ def scope_panel(scope: Scope) -> Panel:
                     ),
                 ),
                 ("tasks", Text(f"{project.open_tasks} open of {project.total_tasks}")),
+                (
+                    "preferred language",
+                    Text(
+                        project.preferred_language
+                        if project.preferred_language is not None
+                        else "none"
+                    ),
+                ),
             ]
         )
     rows.append(("computer", Text(scope.computer, style="yellow")))

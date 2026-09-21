@@ -128,6 +128,35 @@ async def test_project_update_archive_and_counts(client: BaseClient) -> None:
     assert (await call(client, "project_list"))["count"] == 1
 
 
+async def test_project_language_create_update_omit_and_clear(client: BaseClient) -> None:
+    default = await call(client, "project_save", root=".")
+    assert default["preferred_language"] is None
+    project = await call(client, "project_save", root="../other", preferred_language="ru")
+    assert project["preferred_language"] == "ru"
+    slug = project["slug"]
+    renamed = await call(client, "project_save", project=slug, name="Renamed")
+    assert renamed["preferred_language"] == "ru"
+    rebound = await call(client, "project_save", project=slug, root="")
+    assert rebound["preferred_language"] == "ru"
+
+    updated = await call(client, "project_save", project=slug, preferred_language="en")
+    assert updated["preferred_language"] == "en"
+    listed = await call(client, "project_list")
+    assert (
+        next(item for item in listed["items"] if item["slug"] == slug)["preferred_language"] == "en"
+    )
+    assert (await call(client, "project_current"))["project"]["preferred_language"] is None
+    saved = await call(client, "project_save", project=default["slug"], preferred_language="ru")
+    assert saved["preferred_language"] == "ru"
+    assert (await call(client, "project_current"))["project"]["preferred_language"] == "ru"
+    assert (await resource(client, "backlog://project"))["project"]["preferred_language"] == "ru"
+
+    cleared = await call(client, "project_save", project=slug, preferred_language=None)
+    assert cleared["preferred_language"] is None
+    kept = await call(client, "project_save", project=slug, description="Changed")
+    assert kept["preferred_language"] is None
+
+
 @pytest.mark.parametrize("closed_status", ["done", "cancelled"])
 async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> None:
     task = await call(client, "task_add", title="Implement feature", body="Details", tags=["api"])

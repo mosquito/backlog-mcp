@@ -565,11 +565,37 @@ class ProjectDelete(Command):
         return 0
 
 
+class ProjectUpdate(Command):
+    """Set or clear the language for project work and task text."""
+
+    target: str = argclass.Argument("target", help="Project slug, or a path inside it")
+    preferred_language: str | None = argclass.Argument(
+        type=str, default=None, help="Language for project work and task text, such as ru or en"
+    )
+    clear_preferred_language: bool = argclass.Argument(
+        default=False, help="Clear the project language preference"
+    )
+
+    async def __call__(self) -> int:
+        if (self.preferred_language is not None) == self.clear_preferred_language:
+            raise ToolError("choose --preferred-language or --clear-preferred-language")
+        project = await self.connection.call(
+            ProjectOut,
+            "project_save",
+            exclude_none=False,
+            project=self.target,
+            preferred_language=self.preferred_language,
+        )
+        note(f"{project.slug}: preferred language = {project.preferred_language or 'none'}")
+        return 0
+
+
 class Projects(Command):
     """List the registered projects of this computer, or of another, or of all."""
 
     archived: bool = argclass.Argument(default=False, help="Include archived projects")
     at, all_computers = computer_options()
+    update = ProjectUpdate(help="Set or clear the project language preference")
     delete = ProjectDelete(
         help="Delete a project for good",
         description=(

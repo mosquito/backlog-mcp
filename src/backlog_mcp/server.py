@@ -40,7 +40,7 @@ from .models import (
     TaskOut,
     Tasks,
 )
-from .store import NOTE_LIMIT, Note, Project, Task
+from .store import NOTE_LIMIT, Note, Project, Task, Unset
 from .version import COMMIT, VERSION
 
 log = logging.getLogger(__name__)
@@ -88,6 +88,11 @@ Naming a project. A `project` argument takes a slug, such as `backlog-mcp`, or a
 the project, such as `.` or `~/dev/thing`. A name that matches nothing is an error and creates \
 nothing; `project_save` is the tool that registers a directory, and `project_list` shows every \
 project with its open and total task counts.
+
+Project language. A project's nullable `preferred_language` specifies the language for project \
+work. Follow it when writing task titles, descriptions, and progress updates. Read it from \
+`project_current` or `project_list` before writing tasks. Null means no language preference. \
+Set or change it with `project_save`; omit the field to keep it, or send null to clear it.
 
 Tasks. Always work through tasks. A task has a title, an optional body, a status (todo, doing, \
 blocked, done, cancelled or deleted), a priority (urgent, high, normal or low) and tags. Keep \
@@ -217,6 +222,7 @@ def project_out(project: Project, *, computer: str) -> ProjectOut:
         roots=[ProjectRootOut(computer=root.computer, root=root.root) for root in project.roots],
         here=any(root.computer == computer and root.root for root in project.roots),
         description=project.description,
+        preferred_language=project.preferred_language,
         archived=project.archived,
         open_tasks=project.open_tasks,
         total_tasks=project.total_tasks,
@@ -484,6 +490,13 @@ class SaveProject(BaseModel):
     )
     name: str | None = None
     description: str | None = None
+    preferred_language: str | None = Field(
+        default=None,
+        description=(
+            "Language to use for project work and task text. "
+            "Omit to keep the current value; null clears it. New projects default to null."
+        ),
+    )
     archived: bool | None = Field(
         default=None, description="Archive the project, or bring it back with false."
     )
@@ -660,13 +673,22 @@ async def project_list(args: ListProjects, backlog: Backlog) -> Projects:
 
 @registry.tool(title="Register or update a project", annotations=Hint.IDEMPOTENT)
 async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
-    """Register a project directory or update its name, description, or archive status."""
+    """Register a project or update its name, description, language, or archive status.
+
+    `preferred_language` sets the language for project work and task text. Omit it to keep
+    the current value, or send null to clear it. New projects default to null.
+    """
     project = await backlog.save(
         reference=args.project,
         root=args.root,
         name=args.name,
         description=args.description,
         archived=args.archived,
+        preferred_language=(
+            args.preferred_language
+            if "preferred_language" in args.model_fields_set
+            else Unset.VALUE
+        ),
     )
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
     return project_out(project, computer=backlog.computer)

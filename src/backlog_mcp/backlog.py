@@ -11,7 +11,7 @@ from pathlib import Path
 from .computer import check
 from .models import Origin
 from .state import State
-from .store import Project, ProjectContents, Store
+from .store import Project, ProjectContents, Store, Unset
 
 log = logging.getLogger(__name__)
 
@@ -264,6 +264,7 @@ class Backlog:
         name: str | None = None,
         description: str | None = None,
         archived: bool | None = None,
+        preferred_language: str | None | Unset = Unset.VALUE,
     ) -> Project:
         """Register a project, or update the one named. Defaults to the working directory."""
         match reference, root:
@@ -293,7 +294,11 @@ class Backlog:
             case str() as named, None:
                 project = await self.lookup(named)
         updated = await self.store.update_project(
-            project.id, name=name, description=description, archived=archived
+            project.id,
+            name=name,
+            description=description,
+            archived=archived,
+            preferred_language=preferred_language,
         )
         assert updated is not None, "the project just updated is gone"
         return updated

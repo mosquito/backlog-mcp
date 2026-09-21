@@ -64,6 +64,10 @@ class ProjectOut(BaseModel):
         description=("True when this computer has a non-empty filesystem binding for the project.")
     )
     description: str = ""
+    preferred_language: str | None = Field(
+        default=None,
+        description="Language to use for project work and task text; null means no preference.",
+    )
     archived: bool = False
     open_tasks: int = 0
     total_tasks: int = 0

@@ -60,6 +60,60 @@ async def test_reopening_keeps_the_schema_and_the_rows(tmp_path: Path) -> None:
     await again.close()
 
 
+async def test_project_language_persists_and_can_be_cleared(tmp_path: Path) -> None:
+    path = tmp_path / "backlog.sqlite3"
+    store = Store(path)
+    project = await store.add_project(
+        slug="one", name="One", root="", computer="here", preferred_language="ru"
+    )
+    assert project.preferred_language == "ru"
+    await store.close()
+
+    reopened = Store(path)
+    try:
+        project = await reopened.project(project.id)
+        assert project is not None and project.preferred_language == "ru"
+        updated = await reopened.update_project(project.id, description="Changed")
+        assert updated is not None and updated.preferred_language == "ru"
+        updated = await reopened.update_project(project.id, preferred_language="en")
+        assert updated is not None and updated.preferred_language == "en"
+        updated = await reopened.update_project(project.id, preferred_language=None)
+        assert updated is not None and updated.preferred_language is None
+    finally:
+        await reopened.close()
+
+
+async def test_existing_projects_gain_a_null_language(tmp_path: Path) -> None:
+    path = tmp_path / "backlog.sqlite3"
+    with sqlite3.connect(path) as connection:
+        for migration in MIGRATIONS[:4]:
+            for statement in migration:
+                connection.execute(statement, {"computer": "here"})
+        connection.execute("PRAGMA user_version=4")
+        connection.execute(
+            "INSERT INTO projects (slug, name, description, created_at, updated_at) "
+            "VALUES ('old', 'Old project', 'Keep this', 1, 2)"
+        )
+        connection.execute("INSERT INTO project_roots VALUES (1, 'here', '/tmp/old')")
+        connection.execute(
+            "INSERT INTO tasks (project_id, title, created_at, updated_at) "
+            "VALUES (1, 'Keep this task', 1, 2)"
+        )
+    store = Store(path)
+    try:
+        project = await store.project(1)
+        assert project is not None
+        assert project.preferred_language is None
+        assert project.description == "Keep this"
+        assert project.roots == [ProjectRoot("here", "/tmp/old")]
+        assert (project.created_at, project.updated_at) == (1, 2)
+        assert await store.count_tasks(project_id=1) == 1
+        fresh = await register(store, "new", tmp_path / "new")
+        assert fresh.preferred_language is None
+    finally:
+        await store.close()
+
+
 async def test_project_for_path_takes_the_deepest_root(store: Store, tmp_path: Path) -> None:
     outer = await register(store, "outer", tmp_path)
     inner = await register(store, "inner", tmp_path / "inner")

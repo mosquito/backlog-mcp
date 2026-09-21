@@ -7,6 +7,7 @@ import re
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,7 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "DROP TABLE projects",
         "ALTER TABLE projects_v4 RENAME TO projects",
     ),
+    ("ALTER TABLE projects ADD COLUMN preferred_language TEXT DEFAULT NULL",),
 )
 
 OPEN_LIST = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
@@ -194,6 +196,12 @@ def match_query(text: str) -> str:
     return " ".join(f'"{token}"*' for token in re.findall(r"\w+", text))
 
 
+class Unset(Enum):
+    """An omitted update field; None explicitly clears a nullable value."""
+
+    VALUE = 0
+
+
 @dataclass(slots=True)
 class Project:
     id: int
@@ -206,6 +214,7 @@ class Project:
     total_tasks: int = 0
     open_tasks: int = 0
     roots: list[ProjectRoot] = field(default_factory=list)
+    preferred_language: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +269,7 @@ def to_project(row: aiosqlite.Row) -> Project:
         slug=row["slug"],
         name=row["name"],
         description=row["description"],
+        preferred_language=row["preferred_language"],
         archived=bool(row["archived"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -455,14 +465,22 @@ class Store:
         return [row["slug"] for row in await self.rows("SELECT slug FROM projects ORDER BY slug")]
 
     async def add_project(
-        self, *, slug: str, name: str, root: Path | str, computer: str, description: str = ""
+        self,
+        *,
+        slug: str,
+        name: str,
+        root: Path | str,
+        computer: str,
+        description: str = "",
+        preferred_language: str | None = None,
     ) -> Project:
         connection = await self.open()
         now = time.time()
         cursor = await connection.execute(
-            "INSERT INTO projects (slug, name, description, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (slug, name, description, now, now),
+            "INSERT INTO projects "
+            "(slug, name, description, preferred_language, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (slug, name, description, preferred_language, now, now),
         )
         await connection.execute(
             "INSERT INTO project_roots (project_id, computer, root) VALUES (?, ?, ?)",
@@ -529,6 +547,7 @@ class Store:
         description: str | None = None,
         archived: bool | None = None,
         slug: str | None = None,
+        preferred_language: str | None | Unset = Unset.VALUE,
     ) -> Project | None:
         changes: dict[str, Any] = {}
         if name is not None:
@@ -539,6 +558,8 @@ class Store:
             changes["archived"] = int(archived)
         if slug is not None:
             changes["slug"] = slug
+        if preferred_language is not Unset.VALUE:
+            changes["preferred_language"] = preferred_language
         if changes:
             changes["updated_at"] = time.time()
             assignments = ", ".join(f"{column} = ?" for column in changes)

@@ -146,7 +146,7 @@ MCP revision.
 
 ### Projects
 
-On first use, the CLI asks for all registration fields: computer, directory, project
+On first use, the CLI asks for registration fields: computer, directory, project
 name, and optional description. Each prompt accepts Enter to keep its default.
 The directory defaults to the nearest ancestor holding `.git`, `.hg`, `.svn` or
 `.jj`, else the working directory itself. The project name defaults to the selected
@@ -176,6 +176,23 @@ backlog init --existing my-project   # add this computer and directory to the sa
 
 An existing name makes `init NAME` fail with instructions to use `--existing`.
 It does not silently create a second board with a suffixed slug.
+
+Each project has an optional `preferred_language`, which defaults to `null`.
+Use this language for project work, including task titles, descriptions, and progress
+updates. `null` means no language preference. The value is text, such as `ru` or `en`.
+Changing it does not translate existing tasks.
+
+Set or clear the preference from the CLI:
+
+```bash
+backlog projects update my-project --preferred-language ru
+backlog projects update my-project --clear-preferred-language
+```
+
+The MCP tool `project_save` accepts `preferred_language` when creating or updating a
+project. Omit the field to keep its current value; send `null` to clear it.
+`project_current` and `project_list` return the preference. The CLI shows it in
+`backlog current` and `backlog projects`.
 
 ```bash
 backlog current            # which project, and why that one

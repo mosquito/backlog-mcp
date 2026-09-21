@@ -126,6 +126,28 @@ def test_statuses_move_back_and_forth(run: Runner) -> None:
     assert run("close", "999") == (1, "no task #999\n")
 
 
+def test_project_language_can_be_set_changed_and_cleared(run: Runner) -> None:
+    run("add", "Keep this task")
+    for language in ("Russian", "English"):
+        code, output = run("projects", "update", "workspace", "--preferred-language", language)
+        assert code == 0
+        assert f"preferred language = {language}" in output
+        assert language in run("current")[1]
+        assert language in run("projects")[1]
+    code, output = run("projects", "update", "workspace", "--clear-preferred-language")
+    assert code == 0
+    assert "preferred language = none" in output
+    assert "English" not in run("current")[1]
+    assert "Keep this task" in run("show", "1")[1]
+
+
+def test_project_language_update_requires_one_option(run: Runner) -> None:
+    for options in ((), ("--preferred-language", "ru", "--clear-preferred-language")):
+        code, output = run("projects", "update", "workspace", *options)
+        assert code == 1
+        assert "choose --preferred-language or --clear-preferred-language" in output
+
+
 def test_show_prints_the_body_and_the_fields(run: Runner) -> None:
     run("add", "Explain", "-b", "The **long** description.", "--priority", "urgent")
     code, output = run("show", "1")
