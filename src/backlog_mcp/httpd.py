@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from base64 import b64decode
 from collections.abc import Awaitable, Callable
-from secrets import compare_digest
 from typing import Any
 
 from aiohttp import web
@@ -14,6 +12,7 @@ from aiohttp.typedefs import Middleware
 from aiohttp_tiny_mcp import Endpoint
 from aiohttp_tiny_mcp.console import Console
 
+from .auth import BasicAuthVerifier, CredentialsVerifier, JWTVerifier, decode_pair
 from .backlog import Backlog
 from .server import VERSION, registry, use
 
@@ -32,52 +31,19 @@ CONSOLE_ABOUT = (
 )
 
 
-def decode_pair(token: str) -> tuple[str, str] | None:
-    """`user:password` from base64, standard or URL-safe alphabet, or `None` when malformed."""
-    stripped = token.strip()
-    padded = stripped + "=" * (-len(stripped) % 4)
-    for altchars in (None, b"-_"):
-        try:
-            decoded = b64decode(padded, altchars=altchars, validate=True).decode("utf-8")
-        except ValueError, UnicodeDecodeError:
-            continue
-        user, separator, password = decoded.partition(":")
-        return (user, password) if separator else None
-    return None
+def request_token(request: web.Request, *, scheme: str, query_parameter: str) -> str:
+    """Read credentials from the header, or from the URL when no header is present."""
+    if "Authorization" in request.headers:
+        parts = request.headers["Authorization"].split()
+        return parts[1] if len(parts) == 2 and parts[0].lower() == scheme.lower() else ""
+    token = request.query.get(query_parameter, "")
+    # Restore a raw '+' in legacy Basic query credentials.
+    return token.replace(" ", "+") if scheme == "Basic" else token
 
 
 def credentials(request: web.Request) -> tuple[str, str] | None:
-    """The user and password of the request: from the Basic header, else from `?auth=`.
-
-    Both carry base64 of `user:password`. The query form serves clients that cannot send
-    headers. Returns `None` when neither is present or well formed.
-    """
-    header = request.headers.get("Authorization", "")
-    scheme, _, payload = header.partition(" ")
-    if scheme.lower() == "basic" and payload:
-        return decode_pair(payload)
-    token = request.query.get("auth")
-    if token:
-        #: A `+` of the standard alphabet arrives as a space when the URL did not escape it.
-        return decode_pair(token.replace(" ", "+"))
-    return None
-
-
-def basic_auth(user: str, password: str) -> Middleware:
-    """Middleware that demands these credentials on every request, in a header or in the URL."""
-
-    @web.middleware
-    async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
-        given = credentials(request)
-        #: Both halves are always compared, so a wrong user takes as long as a wrong password.
-        matched = given is not None and compare_digest(given[0], user)
-        matched &= given is not None and compare_digest(given[1], password)
-        if not matched:
-            log.warning("refused %s %s from %s", request.method, request.path, request.remote)
-            raise web.HTTPUnauthorized(headers={"WWW-Authenticate": f'Basic realm="{REALM}"'})
-        return await handler(request)
-
-    return middleware
+    """Decode Basic credentials from the header or the auth query parameter."""
+    return decode_pair(request_token(request, scheme="Basic", query_parameter="auth"))
 
 
 def bind(backlog: Backlog) -> Middleware:
@@ -101,17 +67,39 @@ def bind(backlog: Backlog) -> Middleware:
     return middleware
 
 
+def authentication(verifier: CredentialsVerifier) -> Middleware:
+    """Verify every request before handling MCP sessions or serving the console."""
+
+    @web.middleware
+    async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+        token = request_token(
+            request, scheme=verifier.scheme, query_parameter=verifier.query_parameter
+        )
+        if not token or not verifier.verify(token):
+            log.warning("refused %s %s from %s", request.method, request.path, request.remote)
+            raise web.HTTPUnauthorized(
+                headers={"WWW-Authenticate": f'{verifier.scheme} realm="{REALM}"'}
+            )
+        return await handler(request)
+
+    return middleware
+
+
 def application(
     backlog: Backlog,
     *,
     user: str = "",
     password: str = "",
+    jwt_public_key: str = "",
+    jwt_pre_shared_key: str = "",
+    jwt_issuer: str = "",
+    jwt_audience: str = "",
     console: bool = True,
     trust_proxy: bool = False,
 ) -> web.Application:
-    """The MCP endpoint at `/mcp`, the console at `/`, both behind Basic auth.
+    """The MCP endpoint at `/mcp` and console at `/`, with Basic or JWT authentication.
 
-    Without a user and a password nothing is asked for, so bind such a server to localhost only.
+    Without Basic credentials or a JWT key, requests do not require authentication.
     Every client shares the credentials and may name any computer; the server tells the
     computers apart, it does not keep them from each other.
 
@@ -120,8 +108,20 @@ def application(
     turns that check off: the proxy must validate the origin instead.
     """
     middlewares: list[Middleware] = [bind(backlog)]
-    if user and password:
-        middlewares.insert(0, basic_auth(user, password))
+    if jwt_public_key or jwt_pre_shared_key:
+        if user or password:
+            raise ValueError("configure JWT or Basic authentication, not both")
+        verifier = JWTVerifier.configure(
+            public_key=jwt_public_key,
+            pre_shared_key=jwt_pre_shared_key,
+            issuer=jwt_issuer,
+            audience=jwt_audience,
+        )
+        middlewares.insert(0, authentication(verifier))
+    elif jwt_issuer or jwt_audience:
+        raise ValueError("JWT issuer and audience require a JWT public key or pre-shared key")
+    elif user and password:
+        middlewares.insert(0, authentication(BasicAuthVerifier(user, password)))
     else:
         log.warning("no credentials given: every request is served without authentication")
     app = web.Application(middlewares=middlewares)
@@ -164,7 +164,9 @@ __all__ = [
     "CONSOLE_PATH",
     "ENDPOINT_PATH",
     "application",
-    "basic_auth",
+    "BasicAuthVerifier",
+    "CredentialsVerifier",
+    "authentication",
     "credentials",
     "decode_pair",
     "serve",

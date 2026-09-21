@@ -481,6 +481,35 @@ def test_server_options_come_from_the_config_file(
     assert seen["port"] == 6000
 
 
+def test_jwt_options_use_config_environment_and_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "jwt.toml"
+    target.write_text(
+        '[mcp]\nhttp_jwt_public_key = "/etc/public.pem"\n'
+        'http_jwt_issuer = "issuer"\nhttp_jwt_audience = "backlog"\n'
+    )
+    parser = cli.CLI(config_files=[target], config_parser_class=argclass.TOMLDefaultsParser)
+    parser.parse_args(["mcp"])
+    assert parser.mcp.http_jwt_public_key == "/etc/public.pem"
+    assert parser.mcp.http_jwt_issuer == "issuer"
+    assert parser.mcp.http_jwt_audience == "backlog"
+    monkeypatch.setenv("BACKLOG_MCP_HTTP_JWT_PUBLIC_KEY", "/etc/environment.pem")
+    parser.parse_args(["mcp"])
+    assert parser.mcp.http_jwt_public_key == "/etc/environment.pem"
+    parser.parse_args(["mcp", "--http-jwt-public-key", "/etc/flag.pem"])
+    assert parser.mcp.http_jwt_public_key == "/etc/flag.pem"
+    monkeypatch.setenv("BACKLOG_MCP_HTTP_JWT_PRE_SHARED_KEY", "test-key" * 8)
+    parser.parse_args(["mcp"])
+    assert str(parser.mcp.http_jwt_pre_shared_key) == "test-key" * 8
+    assert "test-key" not in repr(parser.mcp.http_jwt_pre_shared_key)
+    monkeypatch.setenv("BACKLOG_MCP_TOKEN", "test-token")
+    parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
+    parser.parse_args(["list"])
+    assert str(parser.token) == "test-token"
+    assert "test-token" not in repr(parser.token)
+
+
 def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
     code, output = run("--computer", "desk", "current")
     assert code == 0

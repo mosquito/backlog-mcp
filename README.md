@@ -54,6 +54,9 @@ Set `url` in the global section of the TOML configuration, or set `BACKLOG_MCP_U
 to use that endpoint for later commands. `--user` and `--password` supply HTTP Basic
 authentication; their environment variables are `BACKLOG_MCP_USER` and
 `BACKLOG_MCP_PASSWORD`. `--timeout` sets the request timeout in seconds (default: 120).
+For JWT authentication, use `--token` or `BACKLOG_MCP_TOKEN` instead of Basic credentials.
+The CLI sends `Authorization: Bearer <token>`. An endpoint URL with `?token=<JWT>`
+also works. Basic credentials and JWT tokens are mutually exclusive.
 An unreachable configured server produces an error; it never redirects writes to
 the local database. `--url ''` explicitly selects the local stdio server.
 
@@ -298,7 +301,8 @@ https://backlog.example.com/mcp?computer=laptop&project=app
 `computer` names the computer the client runs on, and `project` fixes its current project, since
 the server cannot see the client's working directory. A client that cannot send an
 `Authorization` header passes the credentials in the URL instead, as `auth=<base64 of
-user:password>`; the header wins when both are present. Without `project`, `project_current`
+user:password>` for Basic or `token=<JWT>` for JWT. The header wins when both are present,
+including when the header is invalid. Without `project`, `project_current`
 reports `origin: none` and every tool that needs a project takes `project=<slug>`: nothing is
 pinned or remembered, so one client never redirects another. `project_current` also reports
 `version` and `commit`, the package version that answers and the git commit of its checkout
@@ -354,11 +358,56 @@ backlog-mcp --protocol=http --http-user=me --http-password=secret
 `backlog-mcp` is `backlog mcp` without the word. A config file holds these options in its
 `[mcp]` table, and the environment as `BACKLOG_MCP_HTTP_PORT` and friends; `--config FILE` is
 accepted before and after `mcp`. Over HTTP the
-endpoint lives at `/mcp` and the bundled console at `/`. A user and a password turn Basic auth
-on; without them every request is served, so bind to `127.0.0.1`. The endpoint refuses a browser
+endpoint lives at `/mcp` and the bundled console at `/`. Configure Basic credentials or a JWT
+verification key to protect both routes. Without authentication, bind to `127.0.0.1`.
+The endpoint refuses a browser
 `Origin` other than its own, against DNS rebinding; behind a TLS-terminating reverse proxy the
 scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
 validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
+
+### JWT authentication
+
+Configure one verification key. `http_jwt_public_key` accepts a PEM public key or the
+path to a PEM file. `http_jwt_pre_shared_key` accepts an HS256 shared secret of at least
+32 bytes. These settings are mutually exclusive, as are JWT and Basic authentication.
+
+```toml
+[mcp]
+protocol = "http"
+http_jwt_public_key = "/etc/backlog/jwt-public.pem"
+http_jwt_issuer = "https://identity.example"
+http_jwt_audience = "backlog"
+```
+
+The corresponding flags are `--http-jwt-public-key`, `--http-jwt-pre-shared-key`,
+`--http-jwt-issuer`, and `--http-jwt-audience`. Environment variables use the
+`BACKLOG_MCP_` prefix, for example `BACKLOG_MCP_HTTP_JWT_PRE_SHARED_KEY`.
+`issuer` and `audience` checks are optional; omit their settings to disable those checks.
+
+The configured key determines the accepted algorithms:
+
+| Key | Algorithms |
+| --- | --- |
+| Pre-shared key | HS256 |
+| RSA public key, at least 2048 bits | RS256/384/512, PS256/384/512 |
+| EC public key, P-256 / P-384 / P-521 | ES256 / ES384 / ES512, respectively |
+| Ed25519 or Ed448 public key | EdDSA |
+
+Token headers cannot enable another algorithm family. Every JWT must have a valid `exp`.
+The server also checks `nbf` and `iat` when present. Invalid keys stop startup;
+invalid, missing, or expired credentials receive HTTP 401, including on existing sessions.
+
+```bash
+backlog --url https://backlog.example/mcp --token "$JWT" list
+backlog --url "https://backlog.example/mcp?token=$JWT" list
+```
+
+The `Authorization` header takes precedence over query credentials. Prefer the header
+when available: URLs can appear in browser history and proxy logs. JWT authenticates
+access to the whole backlog; token claims do not restrict projects or computers.
+The server verifies externally issued tokens; it does not issue or refresh them.
+The bundled browser console has no JWT login form. Its requests also need credentials;
+opening its page with a query token does not authenticate its separate asset requests.
 
 The agent gets 19 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
 `task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,

@@ -271,7 +271,12 @@ async def transport(options: CLI, *, on_ask: Elicitor) -> AsyncIterator[Connecti
             endpoint = endpoint.update_query(project=reference)
             options.project = reference
         headers = {}
-        if options.user:
+        if options.token or endpoint.query.get("token"):
+            if options.user or options.password or endpoint.user or endpoint.query.get("auth"):
+                raise ValueError("configure --token or Basic authentication, not both")
+            if options.token:
+                headers["Authorization"] = f"Bearer {options.token}"
+        elif options.user:
             if ":" in options.user:
                 raise ValueError("the Basic auth user must not contain a colon")
             credentials = b64encode(f"{options.user}:{options.password}".encode()).decode("ascii")

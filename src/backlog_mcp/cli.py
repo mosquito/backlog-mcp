@@ -362,7 +362,19 @@ class Serve(Command):
     http_user: str = argclass.Argument(default="", help="Basic auth user, HTTP only")
     http_password: str = argclass.Secret(
         default="",
-        help="Basic auth password. Without a user and a password the server asks for nothing",
+        help="Basic auth password, HTTP only; mutually exclusive with JWT",
+    )
+    http_jwt_public_key: str = argclass.Argument(
+        default="", help="JWT PEM public key or path to its file; algorithms follow the key type"
+    )
+    http_jwt_pre_shared_key: str = argclass.Secret(
+        default="", help="JWT HS256 pre-shared key, at least 32 bytes; exclusive with a public key"
+    )
+    http_jwt_issuer: str = argclass.Argument(
+        default="", help="Required JWT issuer; empty accepts any issuer"
+    )
+    http_jwt_audience: str = argclass.Argument(
+        default="", help="Required JWT audience; empty disables the audience check"
     )
     http_no_console: bool = argclass.Argument(
         default=False, help="Do not serve the bundled MCP console at /"
@@ -403,6 +415,10 @@ class Serve(Command):
                     port=self.http_port,
                     user=self.http_user,
                     password=str(self.http_password),
+                    jwt_public_key=self.http_jwt_public_key,
+                    jwt_pre_shared_key=str(self.http_jwt_pre_shared_key),
+                    jwt_issuer=self.http_jwt_issuer,
+                    jwt_audience=self.http_jwt_audience,
                     console=not self.http_no_console,
                     trust_proxy=self.http_trust_proxy,
                 )
@@ -1372,6 +1388,9 @@ class CLI(argclass.Parser):
     )
     user: str = argclass.Argument("--user", default="", help="MCP HTTP Basic auth user")
     password: str = argclass.Secret("--password", default="", help="MCP HTTP Basic auth password")
+    token: str = argclass.Secret(
+        "--token", default="", help="MCP HTTP Bearer token; mutually exclusive with Basic auth"
+    )
     timeout: float = argclass.Argument(default=120.0, help="MCP request timeout in seconds")
 
     database: Path = argclass.Argument(
