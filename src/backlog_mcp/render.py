@@ -229,7 +229,7 @@ def owner(item: TaskOut | NoteOut, computer: str | None) -> Text:
 
 
 def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
-    """One task in full: the id and title name the panel, the body follows the fields."""
+    """One task in full: the id and title name the panel, the Markdown body follows the fields."""
     rows: list[tuple[str, RenderableType]] = [
         ("status", status_text(task.status)),
         ("priority", priority_text(task.priority)),
@@ -243,7 +243,7 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
         rows.append(("closed", Text(since(task.closed_at), style="dim")))
     body = local_update_times(task.body.strip())
     parts: list[RenderableType] = [fields(rows), Rule(style="dim")]
-    parts.append(Text(body) if body else Text("no description", style="dim italic"))
+    parts.append(Markdown(body) if body else Text("no description", style="dim italic"))
     return Panel(
         Group(*parts),
         box=ROUNDED,

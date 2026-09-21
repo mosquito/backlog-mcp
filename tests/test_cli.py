@@ -127,11 +127,12 @@ def test_statuses_move_back_and_forth(run: Runner) -> None:
 
 
 def test_show_prints_the_body_and_the_fields(run: Runner) -> None:
-    run("add", "Explain", "-b", "The long description.", "--priority", "urgent")
+    run("add", "Explain", "-b", "The **long** description.", "--priority", "urgent")
     code, output = run("show", "1")
     assert code == 0
     assert "#1 Explain" in output
     assert "The long description." in output
+    assert "**long**" not in output
     assert "urgent" in output
     assert run("show", "42") == (1, "no task #42\n")
 
@@ -141,7 +142,7 @@ def test_show_converts_utc_update_headings_to_local_time(run: Runner) -> None:
     code, output = run("show", "1")
     assert code == 0
     expected = render.local_update_times("# UPDATE: 2026-09-20T00:26:47Z")
-    assert expected in output
+    assert expected.removeprefix("# ") in output
 
 
 def test_skills_are_listed_and_printed_in_full(run: Runner) -> None:
