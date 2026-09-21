@@ -27,7 +27,6 @@ def payload(result: CallToolResult) -> dict[str, object]:
     return decoded
 
 
-@pytest.mark.parametrize("path", [CONSOLE_PATH, ENDPOINT_PATH])
 @pytest.mark.parametrize(
     "authorization",
     [
@@ -39,14 +38,12 @@ def payload(result: CallToolResult) -> dict[str, object]:
         encode_basic_auth("user", "wrong"),
     ],
 )
-async def test_authentication_protects_console_and_mcp(
-    backlog: Backlog, path: str, authorization: str | None
-) -> None:
+async def test_authentication_protects_mcp(backlog: Backlog, authorization: str | None) -> None:
     app = application(backlog, user="user", password="secret")
     headers = {"Authorization": authorization} if authorization is not None else {}
     async with (
         TestClient(TestServer(app)) as client,
-        client.get(path, headers=headers) as response,
+        client.get(ENDPOINT_PATH, headers=headers) as response,
     ):
         assert response.status == 401
         assert response.headers["WWW-Authenticate"] == 'Basic realm="backlog-mcp"'

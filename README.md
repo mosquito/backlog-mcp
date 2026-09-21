@@ -359,7 +359,8 @@ backlog-mcp --protocol=http --http-user=me --http-password=secret
 `[mcp]` table, and the environment as `BACKLOG_MCP_HTTP_PORT` and friends; `--config FILE` is
 accepted before and after `mcp`. Over HTTP the
 endpoint lives at `/mcp` and the bundled console at `/`. Configure Basic credentials or a JWT
-verification key to protect both routes. Without authentication, bind to `127.0.0.1`.
+verification key to protect MCP requests. The console HTML, JS, and CSS are public;
+they contain no backlog data. Without authentication, bind to `127.0.0.1`.
 The endpoint refuses a browser
 `Origin` other than its own, against DNS rebinding; behind a TLS-terminating reverse proxy the
 scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
@@ -406,8 +407,11 @@ The `Authorization` header takes precedence over query credentials. Prefer the h
 when available: URLs can appear in browser history and proxy logs. JWT authenticates
 access to the whole backlog; token claims do not restrict projects or computers.
 The server verifies externally issued tokens; it does not issue or refresh them.
-The bundled browser console has no JWT login form. Its requests also need credentials;
-opening its page with a query token does not authenticate its separate asset requests.
+To use the browser console, open `/`, set its **Endpoint** field to `/mcp?token=<JWT>`,
+and click **Connect**. Add `&computer=laptop&project=app` to select a scope.
+The console preserves the query string on MCP requests and remembers the endpoint
+in browser local storage. Its static files load without credentials; MCP requests
+require valid credentials, including after a session has been established.
 
 The agent gets 19 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
 `task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,

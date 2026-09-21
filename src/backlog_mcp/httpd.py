@@ -22,6 +22,7 @@ Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 ENDPOINT_PATH = "/mcp"
 CONSOLE_PATH = "/"
+CONSOLE_ASSETS = frozenset({CONSOLE_PATH, "/console.js", "/console.css"})
 REALM = "backlog-mcp"
 
 CONSOLE_ABOUT = (
@@ -67,11 +68,15 @@ def bind(backlog: Backlog) -> Middleware:
     return middleware
 
 
-def authentication(verifier: CredentialsVerifier) -> Middleware:
-    """Verify every request before handling MCP sessions or serving the console."""
+def authentication(
+    verifier: CredentialsVerifier, *, public_paths: frozenset[str] = frozenset()
+) -> Middleware:
+    """Verify requests while allowing the browser to load the static console shell."""
 
     @web.middleware
     async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+        if request.method in {"GET", "HEAD"} and request.path in public_paths:
+            return await handler(request)
         token = request_token(
             request, scheme=verifier.scheme, query_parameter=verifier.query_parameter
         )
@@ -97,7 +102,7 @@ def application(
     console: bool = True,
     trust_proxy: bool = False,
 ) -> web.Application:
-    """The MCP endpoint at `/mcp` and console at `/`, with Basic or JWT authentication.
+    """The authenticated MCP endpoint at `/mcp` and the public static console at `/`.
 
     Without Basic credentials or a JWT key, requests do not require authentication.
     Every client shares the credentials and may name any computer; the server tells the
@@ -108,6 +113,7 @@ def application(
     turns that check off: the proxy must validate the origin instead.
     """
     middlewares: list[Middleware] = [bind(backlog)]
+    public_paths = CONSOLE_ASSETS if console else frozenset()
     if jwt_public_key or jwt_pre_shared_key:
         if user or password:
             raise ValueError("configure JWT or Basic authentication, not both")
@@ -117,11 +123,13 @@ def application(
             issuer=jwt_issuer,
             audience=jwt_audience,
         )
-        middlewares.insert(0, authentication(verifier))
+        middlewares.insert(0, authentication(verifier, public_paths=public_paths))
     elif jwt_issuer or jwt_audience:
         raise ValueError("JWT issuer and audience require a JWT public key or pre-shared key")
     elif user and password:
-        middlewares.insert(0, authentication(BasicAuthVerifier(user, password)))
+        middlewares.insert(
+            0, authentication(BasicAuthVerifier(user, password), public_paths=public_paths)
+        )
     else:
         log.warning("no credentials given: every request is served without authentication")
     app = web.Application(middlewares=middlewares)

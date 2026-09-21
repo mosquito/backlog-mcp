@@ -139,8 +139,18 @@ def test_invalid_configuration_fails_before_serving(
         JWTVerifier.configure(public_key=private)
 
 
-@pytest.mark.parametrize("path", ["/", "/mcp"])
-@pytest.mark.parametrize("method", ["get", "post", "delete"])
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/mcp"),
+        ("head", "/mcp"),
+        ("post", "/mcp"),
+        ("delete", "/mcp"),
+        ("post", "/"),
+        ("delete", "/"),
+        ("get", "/console.js/extra"),
+    ],
+)
 async def test_authentication_protects_all_routes_and_methods(
     backlog: Backlog, path: str, method: str, credentials: Credentials
 ) -> None:
@@ -160,20 +170,47 @@ def test_verifier_implementations(credentials: Credentials) -> None:
     assert not credentials.verifier.verify(credentials="")
 
 
+async def test_static_console_loads_without_credentials(
+    backlog: Backlog, credentials: Credentials
+) -> None:
+    async with TestClient(TestServer(httpd.application(backlog, **credentials.options))) as client:
+        page = await client.get("/")
+        assert page.status == 200
+        html = await page.text()
+        assert 'data-endpoint="/mcp"' in html
+        assert 'src="/console.js"' in html
+        assert 'href="/console.css"' in html
+        for path in ("/", "/console.js", "/console.css"):
+            assert (await client.get(path)).status == 200
+            assert (await client.head(path)).status == 200
+        assert (await client.get("/mcp")).status == 401
+        assert (await client.post("/mcp", json={})).status == 401
+
+
+async def test_disabled_console_does_not_exempt_static_paths(
+    backlog: Backlog, credentials: Credentials
+) -> None:
+    app = httpd.application(backlog, console=False, **credentials.options)
+    async with TestClient(TestServer(app)) as client:
+        for path in ("/", "/console.js", "/console.css"):
+            assert (await client.get(path)).status == 401
+            assert (await client.get(path, headers=credentials.headers)).status == 404
+
+
 async def test_header_precedes_query(backlog: Backlog, credentials: Credentials) -> None:
     async with TestClient(TestServer(httpd.application(backlog, **credentials.options))) as client:
-        url = URL("/").with_query(credentials.query)
-        assert (await client.get(url)).status == 200
-        assert (await client.get("/", headers=credentials.headers)).status == 200
+        url = URL("/mcp").with_query(credentials.query)
+        assert (await client.get(url)).status != 401
+        assert (await client.get("/mcp", headers=credentials.headers)).status != 401
         for header in ("Bearer invalid", "Basic invalid", ""):
             assert (await client.get(url, headers={"Authorization": header})).status == 401
-        url = URL("/").with_query({credentials.verifier.query_parameter: "invalid"})
-        assert (await client.get(url, headers=credentials.headers)).status == 200
+        url = URL("/mcp").with_query({credentials.verifier.query_parameter: "invalid"})
+        assert (await client.get(url, headers=credentials.headers)).status != 401
 
 
 async def test_expired_query_token_is_rejected(backlog: Backlog) -> None:
     async with TestClient(TestServer(httpd.application(backlog, jwt_pre_shared_key=PSK))) as client:
-        assert (await client.get(URL("/").with_query(token=token(exp=0)))).status == 401
+        assert (await client.get(URL("/mcp").with_query(token=token(exp=0)))).status == 401
 
 
 @pytest.mark.parametrize("adapter", AdapterSet.default().versions)
