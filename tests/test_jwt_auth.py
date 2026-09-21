@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519
 from yarl import URL
 
 from backlog_mcp import cli, httpd
-from backlog_mcp.auth import JWTAuthentication, JWTVerifier
+from backlog_mcp.auth import HMACJWTVerifier, JWTAuthentication, JWTVerifier, PublicKeyJWTVerifier
 from backlog_mcp.backlog import Backlog
 
 PSK = TEST_PSK
@@ -50,7 +50,7 @@ def test_rsa_algorithms_follow_the_configured_key(
     key_file = tmp_path / "public.pem"
     key_file.write_text(key_pair.public)
     signed = jwt.encode({"exp": time.time() + 300}, key_pair.private, algorithm=algorithm)
-    assert JWTVerifier.configure(public_key=str(key_file)).verify(signed)
+    assert PublicKeyJWTVerifier(public_key=str(key_file)).verify(signed)
     verifier = jwt_verifier
     assert verifier.verify(signed)
     assert not verifier.verify(token())
@@ -74,7 +74,7 @@ def test_rsa_algorithms_follow_the_configured_key(
 )
 def test_ec_curve_selects_the_algorithm(curve: ec.EllipticCurve, algorithm: str) -> None:
     key = ec.generate_private_key(curve)
-    verifier = JWTVerifier.configure(public_key=public_pem(key))
+    verifier = PublicKeyJWTVerifier(public_key=public_pem(key))
     assert verifier.algorithms == (algorithm,)
     assert verifier.verify(jwt.encode({"exp": time.time() + 300}, key, algorithm=algorithm))
     assert not verifier.verify(token())
@@ -83,7 +83,7 @@ def test_ec_curve_selects_the_algorithm(curve: ec.EllipticCurve, algorithm: str)
 @pytest.mark.parametrize("kind", [ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey])
 def test_eddsa_public_keys(kind: type) -> None:
     key = kind.generate()
-    assert JWTVerifier.configure(public_key=public_pem(key)).verify(
+    assert PublicKeyJWTVerifier(public_key=public_pem(key)).verify(
         jwt.encode({"exp": time.time() + 300}, key, algorithm="EdDSA")
     )
 
@@ -102,18 +102,18 @@ def test_eddsa_public_keys(kind: type) -> None:
     ],
 )
 def test_invalid_claims_are_rejected(claims: dict[str, object]) -> None:
-    verifier = JWTVerifier.configure(pre_shared_key=PSK, issuer="issuer", audience="backlog")
+    verifier = HMACJWTVerifier(pre_shared_key=PSK, issuer="issuer", audience="backlog")
     assert not verifier.verify(token(**{"iss": "issuer", "aud": "backlog", **claims}))
 
 
 def test_required_claims_and_hmac_algorithm() -> None:
-    verifier = JWTVerifier.configure(pre_shared_key=PSK, issuer="issuer", audience="backlog")
+    verifier = HMACJWTVerifier(pre_shared_key=PSK, issuer="issuer", audience="backlog")
     assert verifier.verify(token(iss="issuer", aud=["backlog", "other"]))
     assert not verifier.verify(token())
     assert not verifier.verify(jwt.encode({"iss": "issuer", "aud": "backlog"}, PSK))
     assert not verifier.verify(jwt.encode({"exp": time.time() + 300}, "x" * 32))
     assert not verifier.verify(jwt.encode({"exp": time.time() + 300}, PSK * 2, algorithm="HS512"))
-    assert JWTVerifier.configure(pre_shared_key=PSK).verify(token(aud="unspecified"))
+    assert HMACJWTVerifier(pre_shared_key=PSK).verify(token(aud="unspecified"))
     assert PSK not in repr(verifier)
 
 
@@ -122,8 +122,6 @@ def test_invalid_configuration_fails_before_serving(
 ) -> None:
     public_key = key_pair.public
     for options in (
-        {"jwt_public_key": public_key, "jwt_pre_shared_key": PSK},
-        {"jwt_pre_shared_key": PSK, "user": "user", "password": "password"},
         {"jwt_public_key": public_key, "user": "user"},
         {"jwt_issuer": "issuer"},
         {"jwt_audience": "backlog"},
@@ -134,12 +132,12 @@ def test_invalid_configuration_fails_before_serving(
         with pytest.raises(ValueError):
             httpd.application(backlog, **options)
     with pytest.raises(OSError):
-        JWTVerifier.configure(public_key=str(tmp_path / "missing.pem"))
+        PublicKeyJWTVerifier(public_key=str(tmp_path / "missing.pem"))
     private = key_pair.private.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
     ).decode()
     with pytest.raises(ValueError):
-        JWTVerifier.configure(public_key=private)
+        PublicKeyJWTVerifier(public_key=private)
 
 
 @pytest.mark.parametrize(
@@ -206,8 +204,12 @@ async def test_disabled_console_does_not_exempt_static_paths(
             assert (await client.get(path, headers=credentials.headers)).status == 404
 
 
-async def test_header_precedes_query(backlog: Backlog, credentials: Credentials) -> None:
-    async with TestClient(TestServer(httpd.application(backlog, **credentials.options))) as client:
+async def test_header_precedes_query(
+    backlog: Backlog, credentials: Credentials, authentication_options: dict[str, str]
+) -> None:
+    async with TestClient(
+        TestServer(httpd.application(backlog, **authentication_options))
+    ) as client:
         url = URL("/mcp").with_query(credentials.query)
         assert (await client.get(url)).status != 401
         assert (await client.get("/mcp", headers=credentials.headers)).status != 401
@@ -225,9 +227,13 @@ async def test_expired_query_token_is_rejected(backlog: Backlog) -> None:
 @pytest.mark.parametrize("adapter", AdapterSet.default().versions)
 @pytest.mark.parametrize("query", [False, True])
 async def test_authenticated_mcp_handshake_and_calls(
-    backlog: Backlog, adapter: str, query: bool, credentials: Credentials
+    backlog: Backlog,
+    adapter: str,
+    query: bool,
+    credentials: Credentials,
+    authentication_options: dict[str, str],
 ) -> None:
-    async with TestServer(httpd.application(backlog, **credentials.options)) as server:
+    async with TestServer(httpd.application(backlog, **authentication_options)) as server:
         endpoint = server.make_url("/mcp")
         if query:
             endpoint = endpoint.with_query(credentials.query)
@@ -254,10 +260,11 @@ async def test_cli_sends_bearer_or_query_token(
     capsys: pytest.CaptureFixture[str],
     query: bool,
     credentials: Credentials,
+    authentication_options: dict[str, str],
 ) -> None:
     monkeypatch.setattr(cli.paths, "config_files", list)
     await backlog.view(computer="client").save(root="", name="JWT project")
-    async with TestServer(httpd.application(backlog, **credentials.options)) as server:
+    async with TestServer(httpd.application(backlog, **authentication_options)) as server:
         endpoint = server.make_url("/mcp").with_query(computer="client", project="jwt-project")
         auth = [] if query else credentials.cli
         if query:
@@ -286,7 +293,7 @@ def test_invalid_principal_claims_are_rejected(claims: dict[str, object]) -> Non
     encoded = jwt.api_jws.encode(
         json.dumps({"exp": time.time() + 300, **claims}).encode(), PSK, algorithm="HS256"
     )
-    assert JWTVerifier.configure(pre_shared_key=PSK).verify(encoded) is None
+    assert HMACJWTVerifier(pre_shared_key=PSK).verify(encoded) is None
 
 
 @pytest.mark.parametrize(
@@ -305,7 +312,7 @@ def test_invalid_principal_claims_are_rejected(claims: dict[str, object]) -> Non
 def test_verified_claims_define_the_principal(
     claims: dict[str, object], identity: str, scopes: frozenset[str]
 ) -> None:
-    principal = JWTVerifier.configure(pre_shared_key=PSK).verify(token(**claims))
+    principal = HMACJWTVerifier(pre_shared_key=PSK).verify(token(**claims))
     assert principal is not None
     assert principal.identity == identity
     assert principal.scopes == scopes
@@ -439,10 +446,127 @@ async def test_authenticated_users_share_http_and_stdio_notifications(backlog: B
 
 
 async def test_middleware_preserves_policy_refusal_status() -> None:
-    policy = JWTAuthentication(JWTVerifier.configure(pre_shared_key=PSK))
+    policy = JWTAuthentication(HMACJWTVerifier(pre_shared_key=PSK))
     policy.required_scopes = ("read",)
-    app = web.Application(middlewares=[httpd.authentication(policy)])
+    from aiohttp_tiny_mcp import Endpoint, Registry
+
+    endpoint = Endpoint(Registry("auth-test", "test", auth=policy))
+    app = web.Application(middlewares=[httpd.authentication(endpoint)])
     async with TestClient(TestServer(app)) as client:
         response = await client.get("/mcp", headers={"Authorization": f"Bearer {token()}"})
         assert response.status == 403
         assert (await response.json())["error"] == "insufficient_scope"
+
+
+async def test_combined_policies_advertise_schemes_and_preserve_header_precedence(
+    backlog: Backlog, key_pair: KeyPair
+) -> None:
+    options = {
+        "user": "user",
+        "password": "password",
+        "jwt_pre_shared_key": PSK,
+        "jwt_public_key": key_pair.public,
+    }
+    async with TestClient(TestServer(httpd.application(backlog, **options))) as client:
+        response = await client.post("/mcp", json={})
+        assert response.status == 401
+        challenge = response.headers["WWW-Authenticate"]
+        assert 'Basic realm="backlog-mcp"' in challenge
+        assert 'Bearer realm="backlog-mcp"' in challenge
+        both = URL("/mcp").with_query(auth="dXNlcjpwYXNzd29yZA==", token=token())
+        for header in ("Basic invalid", "Bearer invalid", "", "Other credentials"):
+            assert (await client.get(both, headers={"Authorization": header})).status == 401
+        assert (await client.get(both)).status != 401
+        # Failure of one configured verifier must not permit an invalid signature.
+        header, payload, _ = token().split(".")
+        message = f"{header}.{payload}".encode()
+        der = key_pair.private.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        signature = urlsafe_b64encode(hmac.digest(der, message, hashlib.sha256)).rstrip(b"=")
+        forged = f"{message.decode()}.{signature.decode()}"
+        assert (
+            await client.get("/mcp", headers={"Authorization": f"Bearer {forged}"})
+        ).status == 401
+
+
+@pytest.mark.parametrize("adapter", ["2025-03-26", "2025-06-18", "2025-11-25"])
+@pytest.mark.parametrize("owner", [0, 1, 2], ids=["basic", "hmac", "rsa"])
+async def test_combined_policies_preserve_session_ownership(
+    backlog: Backlog, key_pair: KeyPair, adapter: str, owner: int
+) -> None:
+    rsa_token = jwt.encode(
+        {"exp": time.time() + 300, "sub": "rsa-user"}, key_pair.private, algorithm="RS256"
+    )
+    authorizations = [
+        "Basic dXNlcjpwYXNzd29yZA==",
+        f"Bearer {token(sub='hmac-user')}",
+        f"Bearer {rsa_token}",
+    ]
+    app = httpd.application(
+        backlog,
+        user="user",
+        password="password",
+        jwt_pre_shared_key=PSK,
+        jwt_public_key=key_pair.public,
+    )
+    async with (
+        TestServer(app) as server,
+        ClientSession(headers={"Authorization": authorizations[owner]}) as session,
+        Client(str(server.make_url("/mcp")), pick(adapter), session=session) as client,
+    ):
+        await client.initialize()
+        assert client.session_id is not None
+        for index, authorization in enumerate(authorizations):
+            async with session.post(
+                server.make_url("/mcp"),
+                headers={
+                    "Authorization": authorization,
+                    "Mcp-Session-Id": client.session_id,
+                    "MCP-Protocol-Version": adapter,
+                    "Accept": "application/json, text/event-stream",
+                },
+                json={"jsonrpc": "2.0", "id": 99, "method": "tools/list", "params": {}},
+            ) as response:
+                assert response.status == (200 if index == owner else 404)
+
+
+async def test_cached_principals_are_specific_to_each_policy(
+    key_pair: KeyPair, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aiohttp_tiny_mcp import Endpoint, Registry
+
+    from backlog_mcp.auth import BasicAuthentication
+
+    basic = BasicAuthentication("user", "password")
+    hmac_policy = JWTAuthentication(HMACJWTVerifier(PSK))
+    rsa_policy = JWTAuthentication(PublicKeyJWTVerifier(key_pair.public))
+    rsa_policy.required_scopes = ("read",)
+    encoded = jwt.encode(
+        {"exp": time.time() + 300, "sub": "rsa-user", "scope": "read"},
+        key_pair.private,
+        algorithm="RS256",
+    )
+    calls: list[type] = []
+    original = JWTVerifier.verify
+
+    def counted(self: JWTVerifier, credentials: str) -> Principal | None:
+        calls.append(type(self))
+        return original(self, credentials)
+
+    monkeypatch.setattr(JWTVerifier, "verify", counted)
+    endpoint = Endpoint(Registry("auth-test", "test", auth=[basic, hmac_policy, rsa_policy]))
+    app = web.Application(middlewares=[httpd.authentication(endpoint)])
+
+    async def handled(request: web.Request) -> web.Response:
+        assert await basic.authenticate(request) is None
+        assert await hmac_policy.authenticate(request) is None
+        principal = await endpoint.verified(request)
+        assert principal is not None and principal.subject == "rsa-user"
+        return web.Response()
+
+    app.router.add_get("/check", handled)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get("/check", headers={"Authorization": f"Bearer {encoded}"})
+        assert response.status == 200
+    assert calls == [HMACJWTVerifier, PublicKeyJWTVerifier]

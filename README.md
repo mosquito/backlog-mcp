@@ -375,9 +375,11 @@ independent. Authenticated users share backlog data and change notifications.
 
 ### JWT authentication
 
-Configure one verification key. `http_jwt_public_key` accepts a PEM public key or the
+Configure one or both JWT verification methods. `http_jwt_public_key` accepts a PEM public key or the
 path to a PEM file. `http_jwt_pre_shared_key` accepts an HS256 shared secret of at least
-32 bytes. These settings are mutually exclusive, as are JWT and Basic authentication.
+32 bytes. Basic, JWT-HMAC, and public-key JWT are independent server policies;
+enable any combination by supplying their credentials or keys. Each request must
+pass one policy. Each JWT verifier accepts only its configured key family.
 
 ```toml
 [mcp]
@@ -386,6 +388,12 @@ http_jwt_public_key = "/etc/backlog/jwt-public.pem"
 http_jwt_issuer = "https://identity.example"
 http_jwt_audience = "backlog"
 ```
+
+To also accept Basic and HS256 on the same endpoint, configure `http_user`,
+`http_password`, and `http_jwt_pre_shared_key` alongside `http_jwt_public_key`.
+Both JWT policies use the configured issuer and audience checks. The CLI still
+sends one authentication scheme per request. Rejected requests advertise the
+configured schemes in `WWW-Authenticate`.
 
 The corresponding flags are `--http-jwt-public-key`, `--http-jwt-pre-shared-key`,
 `--http-jwt-issuer`, and `--http-jwt-audience`. Environment variables use the

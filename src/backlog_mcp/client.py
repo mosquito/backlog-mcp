@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientResponse, ClientSession, ClientTimeout
 from aiohttp_tiny_mcp import AdapterSet, Client, StdioClient
 from aiohttp_tiny_mcp.client_base import BaseClient, Elicitor
 from aiohttp_tiny_mcp.models import CallToolResult, TextContent, TextResourceContents
@@ -250,6 +250,12 @@ async def connect(
         yield connection
 
 
+async def check_authentication(response: ClientResponse) -> None:
+    """Reject HTTP auth errors before parsing JSON-RPC; allow MCP session recovery on 404."""
+    if response.status in {401, 403}:
+        response.raise_for_status()
+
+
 @asynccontextmanager
 async def transport(options: CLI, *, on_ask: Elicitor) -> AsyncIterator[Connection]:
     """Open one transport without resolving or registering a project."""
@@ -283,7 +289,9 @@ async def transport(options: CLI, *, on_ask: Elicitor) -> AsyncIterator[Connecti
             headers["Authorization"] = f"Basic {credentials}"
         async with (
             ClientSession(
-                headers=headers, timeout=ClientTimeout(total=None, sock_connect=options.timeout)
+                headers=headers,
+                timeout=ClientTimeout(total=None, sock_connect=options.timeout),
+                raise_for_status=check_authentication,
             ) as session,
             Client(str(endpoint), adapter, session=session, on_ask=on_ask) as client,
         ):

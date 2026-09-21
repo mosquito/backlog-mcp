@@ -37,7 +37,9 @@ def decode_pair(token: str) -> tuple[str, str] | None:
 
 REALM = "backlog-mcp"
 # Trusted request-local result from the pre-dispatch authentication middleware.
-VERIFIED = web.RequestKey("backlog_verified_principal", Principal)
+VERIFIED: web.RequestKey[dict[Authentication, Principal | None]] = web.RequestKey(
+    "backlog_verified_principals", dict
+)
 
 
 def request_token(request: web.Request, *, scheme: str, query_parameter: str) -> str:
@@ -61,14 +63,17 @@ class BasicAuthentication(StaticBasicAuth):
         super().__init__(user, password, realm=REALM)
 
     async def authenticate(self, request: web.Request) -> Principal | None:
-        if VERIFIED in request:
-            return request[VERIFIED]
+        verified: dict[Authentication, Principal | None] = request.setdefault(VERIFIED, {})
+        if self in verified:
+            return verified[self]
         given = credentials(request)
         if given is None or any(ord(char) < 32 or ord(char) == 127 for char in "".join(given)):
+            verified[self] = None
             return None
         principal = await self.verify(*given)
         # Empty namespace preserves the shared Hub used by HTTP and stdio writers.
-        return replace(principal, namespace="") if principal else None
+        verified[self] = replace(principal, namespace="") if principal else None
+        return verified[self]
 
 
 @dataclass(frozen=True)
@@ -77,47 +82,6 @@ class JWTVerifier:
     algorithms: tuple[str, ...]
     issuer: str = ""
     audience: str = ""
-
-    @classmethod
-    def configure(
-        cls, *, public_key: str = "", pre_shared_key: str = "", issuer: str = "", audience: str = ""
-    ) -> JWTVerifier:
-        """Load a PEM public key or an HMAC secret once, before accepting requests."""
-        if bool(public_key) == bool(pre_shared_key):
-            raise ValueError("configure exactly one JWT public key or pre-shared key")
-        if pre_shared_key:
-            hmac = jwt.algorithms.HMACAlgorithm(jwt.algorithms.HMACAlgorithm.SHA256)
-            try:
-                key = hmac.prepare_key(pre_shared_key)
-            except jwt.InvalidKeyError as error:
-                raise ValueError("the JWT pre-shared key must not be an asymmetric key") from error
-            if len(key) < 32:
-                raise ValueError("the JWT pre-shared key must contain at least 32 bytes")
-            return cls(key, ("HS256",), issuer, audience)
-
-        material = public_key.strip()
-        if not material.startswith("-----BEGIN "):
-            material = Path(material).expanduser().read_text(encoding="utf-8")
-        try:
-            loaded = serialization.load_pem_public_key(material.encode("utf-8"))
-        except (ValueError, TypeError, UnsupportedAlgorithm) as error:
-            raise ValueError("the JWT public key must be a supported PEM public key") from error
-        algorithms: tuple[str, ...]
-        if isinstance(loaded, rsa.RSAPublicKey):
-            if loaded.key_size < 2048:
-                raise ValueError("the JWT RSA public key must contain at least 2048 bits")
-            algorithms = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512")
-        elif isinstance(loaded, ec.EllipticCurvePublicKey):
-            curves = {"secp256r1": "ES256", "secp384r1": "ES384", "secp521r1": "ES512"}
-            algorithm = curves.get(loaded.curve.name)
-            if algorithm is None:
-                raise ValueError("unsupported JWT elliptic curve")
-            algorithms = (algorithm,)
-        elif isinstance(loaded, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
-            algorithms = ("EdDSA",)
-        else:
-            raise ValueError("unsupported JWT public key type")
-        return cls(loaded, algorithms, issuer, audience)
 
     def verify(self, credentials: str) -> Principal | None:
         """Check the signature, required expiry, and configured issuer and audience."""
@@ -162,6 +126,49 @@ class JWTVerifier:
             return None
 
 
+class HMACJWTVerifier(JWTVerifier):
+    """Verify HS256 JWTs with a configured pre-shared key."""
+
+    def __init__(self, pre_shared_key: str, *, issuer: str = "", audience: str = "") -> None:
+        hmac = jwt.algorithms.HMACAlgorithm(jwt.algorithms.HMACAlgorithm.SHA256)
+        try:
+            key = hmac.prepare_key(pre_shared_key)
+        except jwt.InvalidKeyError as error:
+            raise ValueError("the JWT pre-shared key must not be an asymmetric key") from error
+        if len(key) < 32:
+            raise ValueError("the JWT pre-shared key must contain at least 32 bytes")
+        super().__init__(key, ("HS256",), issuer, audience)
+
+
+class PublicKeyJWTVerifier(JWTVerifier):
+    """Verify RSA, EC, or EdDSA JWTs with a configured public key."""
+
+    def __init__(self, public_key: str, *, issuer: str = "", audience: str = "") -> None:
+        material = public_key.strip()
+        if not material.startswith("-----BEGIN "):
+            material = Path(material).expanduser().read_text(encoding="utf-8")
+        try:
+            loaded = serialization.load_pem_public_key(material.encode("utf-8"))
+        except (ValueError, TypeError, UnsupportedAlgorithm) as error:
+            raise ValueError("the JWT public key must be a supported PEM public key") from error
+        algorithms: tuple[str, ...]
+        if isinstance(loaded, rsa.RSAPublicKey):
+            if loaded.key_size < 2048:
+                raise ValueError("the JWT RSA public key must contain at least 2048 bits")
+            algorithms = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512")
+        elif isinstance(loaded, ec.EllipticCurvePublicKey):
+            curves = {"secp256r1": "ES256", "secp384r1": "ES384", "secp521r1": "ES512"}
+            algorithm = curves.get(loaded.curve.name)
+            if algorithm is None:
+                raise ValueError("unsupported JWT elliptic curve")
+            algorithms = (algorithm,)
+        elif isinstance(loaded, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
+            algorithms = ("EdDSA",)
+        else:
+            raise ValueError("unsupported JWT public key type")
+        super().__init__(loaded, algorithms, issuer, audience)
+
+
 class JWTAuthentication(Authentication):
     """Authenticate externally issued JWTs without advertising an OAuth server."""
 
@@ -170,10 +177,12 @@ class JWTAuthentication(Authentication):
         self.verifier = verifier
 
     async def authenticate(self, request: web.Request) -> Principal | None:
-        if VERIFIED in request:
-            return request[VERIFIED]
+        verified: dict[Authentication, Principal | None] = request.setdefault(VERIFIED, {})
+        if self in verified:
+            return verified[self]
         token = request_token(request, scheme="Bearer", query_parameter="token")
-        return self.verifier.verify(token)
+        verified[self] = self.verifier.verify(token) if token else None
+        return verified[self]
 
     def challenge(self, refusal: Unauthorized) -> str:
         return f'Bearer realm="{REALM}"'

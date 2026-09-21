@@ -15,7 +15,13 @@ from aiohttp_tiny_mcp.testing import connect
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from backlog_mcp.auth import BasicAuthentication, JWTAuthentication, JWTVerifier
+from backlog_mcp.auth import (
+    BasicAuthentication,
+    HMACJWTVerifier,
+    JWTAuthentication,
+    JWTVerifier,
+    PublicKeyJWTVerifier,
+)
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.server import ACTIVE, registry
 from backlog_mcp.state import State
@@ -76,12 +82,12 @@ def key_pair() -> KeyPair:
 
 @pytest.fixture(scope="session")
 def jwt_verifier(key_pair: KeyPair) -> JWTVerifier:
-    return JWTVerifier.configure(public_key=key_pair.public)
+    return PublicKeyJWTVerifier(public_key=key_pair.public)
 
 
 @pytest.fixture(scope="session")
 def hmac_verifier() -> JWTVerifier:
-    return JWTVerifier.configure(pre_shared_key=TEST_PSK)
+    return HMACJWTVerifier(pre_shared_key=TEST_PSK)
 
 
 @pytest.fixture(scope="session")
@@ -146,3 +152,17 @@ def credentials(
                 {"jwt_public_key": key_pair.public},
                 jwt.encode(claims, key_pair.private, algorithm="RS256"),
             )
+
+
+@pytest.fixture(params=[False, True], ids=["single-policy", "all-policies"])
+def authentication_options(
+    request: pytest.FixtureRequest, credentials: Credentials, key_pair: KeyPair
+) -> dict[str, str]:
+    if request.param:
+        return {
+            "user": "user",
+            "password": "password",
+            "jwt_pre_shared_key": TEST_PSK,
+            "jwt_public_key": key_pair.public,
+        }
+    return credentials.options

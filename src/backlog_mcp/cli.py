@@ -362,13 +362,14 @@ class Serve(Command):
     http_user: str = argclass.Argument(default="", help="Basic auth user, HTTP only")
     http_password: str = argclass.Secret(
         default="",
-        help="Basic auth password, HTTP only; mutually exclusive with JWT",
+        help="Basic auth password, HTTP only; can be enabled alongside JWT",
     )
     http_jwt_public_key: str = argclass.Argument(
         default="", help="JWT PEM public key or path to its file; algorithms follow the key type"
     )
     http_jwt_pre_shared_key: str = argclass.Secret(
-        default="", help="JWT HS256 pre-shared key, at least 32 bytes; exclusive with a public key"
+        default="",
+        help="JWT HS256 pre-shared key, at least 32 bytes; independent of public-key JWT",
     )
     http_jwt_issuer: str = argclass.Argument(
         default="", help="Required JWT issuer; empty accepts any issuer"

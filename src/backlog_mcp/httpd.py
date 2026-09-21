@@ -12,7 +12,7 @@ from aiohttp.typedefs import Middleware
 from aiohttp_tiny_mcp import Authentication, Endpoint, Registry, Unauthorized
 from aiohttp_tiny_mcp.console import Console
 
-from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, JWTVerifier
+from .auth import BasicAuthentication, HMACJWTVerifier, JWTAuthentication, PublicKeyJWTVerifier
 from .backlog import Backlog
 from .server import VERSION, registry, use
 
@@ -52,9 +52,7 @@ def bind(backlog: Backlog) -> Middleware:
     return middleware
 
 
-def authentication(
-    policy: Authentication, *, public_paths: frozenset[str] = frozenset()
-) -> Middleware:
+def authentication(endpoint: Endpoint, *, public_paths: frozenset[str] = frozenset()) -> Middleware:
     """Reject invalid credentials before routing or body parsing; allow console assets."""
 
     @web.middleware
@@ -62,14 +60,10 @@ def authentication(
         if request.method in {"GET", "HEAD"} and request.path in public_paths:
             return await handler(request)
         try:
-            request[VERIFIED] = policy.check(await policy.authenticate(request))
+            await endpoint.verified(request)
         except Unauthorized as refusal:
             log.warning("refused %s %s from %s", request.method, request.path, request.remote)
-            return web.json_response(
-                {"error": refusal.error, "error_description": refusal.description},
-                status=refusal.status,
-                headers={"WWW-Authenticate": policy.challenge(refusal)},
-            )
+            return endpoint.refuse(refusal)
         return await handler(request)
 
     return middleware
@@ -98,29 +92,34 @@ def application(
     turns that check off: the proxy must validate the origin instead.
     """
     middlewares: list[Middleware] = [bind(backlog)]
-    policy: Authentication | None = None
-    if jwt_public_key or jwt_pre_shared_key:
-        if user or password:
-            raise ValueError("configure JWT or Basic authentication, not both")
-        verifier = JWTVerifier.configure(
-            public_key=jwt_public_key,
-            pre_shared_key=jwt_pre_shared_key,
-            issuer=jwt_issuer,
-            audience=jwt_audience,
+    policies: list[Authentication] = []
+    if user and password:
+        policies.append(BasicAuthentication(user, password))
+    elif (user or password) and (jwt_public_key or jwt_pre_shared_key):
+        raise ValueError("Basic authentication requires both a user and a password")
+    if jwt_pre_shared_key:
+        policies.append(
+            JWTAuthentication(
+                HMACJWTVerifier(jwt_pre_shared_key, issuer=jwt_issuer, audience=jwt_audience)
+            )
         )
-        policy = JWTAuthentication(verifier)
-    elif jwt_issuer or jwt_audience:
+    if jwt_public_key:
+        policies.append(
+            JWTAuthentication(
+                PublicKeyJWTVerifier(jwt_public_key, issuer=jwt_issuer, audience=jwt_audience)
+            )
+        )
+    if (jwt_issuer or jwt_audience) and not (jwt_public_key or jwt_pre_shared_key):
         raise ValueError("JWT issuer and audience require a JWT public key or pre-shared key")
-    elif user and password:
-        policy = BasicAuthentication(user, password)
-    else:
+    if not policies:
         log.warning("no credentials given: every request is served without authentication")
-    if policy is not None:
-        public_paths = CONSOLE_ASSETS if console else frozenset()
-        middlewares.insert(0, authentication(policy, public_paths=public_paths))
     # Share the registered surface and notification Hub, but not auth or session storage.
     configured = Registry(
-        "backlog", VERSION, instructions=registry.instructions, hub=registry.hub, auth=policy
+        "backlog",
+        VERSION,
+        instructions=registry.instructions,
+        hub=registry.hub,
+        auth=policies or None,
     )
     configured.tools = registry.tools
     configured.resources_fixed = registry.resources_fixed
@@ -130,8 +129,12 @@ def application(
     configured.providers = registry.providers
     configured.extensions = registry.extensions
     configured.resource_aliases = registry.resource_aliases
+    endpoint = Endpoint(configured, trust_proxy_origin_validation=trust_proxy)
+    if policies:
+        public_paths = CONSOLE_ASSETS if console else frozenset()
+        middlewares.insert(0, authentication(endpoint, public_paths=public_paths))
     app = web.Application(middlewares=middlewares)
-    Endpoint(configured, trust_proxy_origin_validation=trust_proxy).setup(app, ENDPOINT_PATH)
+    endpoint.setup(app, ENDPOINT_PATH)
     if console:
         page = Console(
             endpoint_path=ENDPOINT_PATH,
