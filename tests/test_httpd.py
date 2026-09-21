@@ -11,8 +11,9 @@ from aiohttp_tiny_mcp.models import CallToolResult, TextContent, TextResourceCon
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
 
+from backlog_mcp.auth import credentials
 from backlog_mcp.backlog import Backlog
-from backlog_mcp.httpd import CONSOLE_PATH, ENDPOINT_PATH, application, credentials
+from backlog_mcp.httpd import CONSOLE_PATH, ENDPOINT_PATH, application
 from backlog_mcp.server import ACTIVE
 
 
@@ -46,7 +47,7 @@ async def test_authentication_protects_mcp(backlog: Backlog, authorization: str 
         client.get(ENDPOINT_PATH, headers=headers) as response,
     ):
         assert response.status == 401
-        assert response.headers["WWW-Authenticate"] == 'Basic realm="backlog-mcp"'
+        assert response.headers["WWW-Authenticate"] == 'Basic realm="backlog-mcp", charset="UTF-8"'
 
 
 @pytest.mark.parametrize("adapter", AdapterSet.default().versions)

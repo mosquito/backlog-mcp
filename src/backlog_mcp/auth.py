@@ -1,13 +1,13 @@
 """Basic and JWT credentials verified against trusted server configuration."""
 
-from abc import ABC, abstractmethod
+import math
 from base64 import b64decode
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from secrets import compare_digest
-from typing import ClassVar
 
 import jwt
+from aiohttp import web
+from aiohttp_tiny_mcp import Authentication, Principal, StaticBasicAuth, Unauthorized
 from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, rsa
@@ -35,38 +35,44 @@ def decode_pair(token: str) -> tuple[str, str] | None:
     return None
 
 
-class CredentialsVerifier(ABC):
-    """Verify credentials using the authentication mode configured by the server."""
+REALM = "backlog-mcp"
+# Trusted request-local result from the pre-dispatch authentication middleware.
+VERIFIED = web.RequestKey("backlog_verified_principal", Principal)
 
-    scheme: ClassVar[str]
-    query_parameter: ClassVar[str]
 
-    @abstractmethod
-    def verify(self, credentials: str) -> bool:
-        """Return whether the supplied credentials are valid."""
-        raise NotImplementedError
+def request_token(request: web.Request, *, scheme: str, query_parameter: str) -> str:
+    """Read query credentials only when no Authorization header is present."""
+    if "Authorization" in request.headers:
+        parts = request.headers["Authorization"].split()
+        return parts[1] if len(parts) == 2 and parts[0].lower() == scheme.lower() else ""
+    token = request.query.get(query_parameter, "")
+    return token.replace(" ", "+") if scheme == "Basic" else token
+
+
+def credentials(request: web.Request) -> tuple[str, str] | None:
+    """Decode Basic credentials from the header or the auth query parameter."""
+    return decode_pair(request_token(request, scheme="Basic", query_parameter="auth"))
+
+
+class BasicAuthentication(StaticBasicAuth):
+    """Use library verification with Backlog's header and query transports."""
+
+    def __init__(self, user: str, password: str) -> None:
+        super().__init__(user, password, realm=REALM)
+
+    async def authenticate(self, request: web.Request) -> Principal | None:
+        if VERIFIED in request:
+            return request[VERIFIED]
+        given = credentials(request)
+        if given is None or any(ord(char) < 32 or ord(char) == 127 for char in "".join(given)):
+            return None
+        principal = await self.verify(*given)
+        # Empty namespace preserves the shared Hub used by HTTP and stdio writers.
+        return replace(principal, namespace="") if principal else None
 
 
 @dataclass(frozen=True)
-class BasicAuthVerifier(CredentialsVerifier):
-    user: str
-    password: str = field(repr=False)
-    scheme: ClassVar[str] = "Basic"
-    query_parameter: ClassVar[str] = "auth"
-
-    def verify(self, credentials: str) -> bool:
-        given = decode_pair(credentials)
-        if given is None:
-            return False
-        matched = compare_digest(given[0].encode(), self.user.encode())
-        matched &= compare_digest(given[1].encode(), self.password.encode())
-        return matched
-
-
-@dataclass(frozen=True)
-class JWTVerifier(CredentialsVerifier):
-    scheme: ClassVar[str] = "Bearer"
-    query_parameter: ClassVar[str] = "token"
+class JWTVerifier:
     key: VerificationKey = field(repr=False)
     algorithms: tuple[str, ...]
     issuer: str = ""
@@ -113,10 +119,10 @@ class JWTVerifier(CredentialsVerifier):
             raise ValueError("unsupported JWT public key type")
         return cls(loaded, algorithms, issuer, audience)
 
-    def verify(self, credentials: str) -> bool:
+    def verify(self, credentials: str) -> Principal | None:
         """Check the signature, required expiry, and configured issuer and audience."""
         try:
-            jwt.decode(
+            claims = jwt.decode(
                 credentials,
                 self.key,
                 algorithms=self.algorithms,
@@ -124,6 +130,50 @@ class JWTVerifier(CredentialsVerifier):
                 audience=self.audience or None,
                 options={"require": ["exp"], "verify_aud": bool(self.audience)},
             )
+            subject = claims.get("sub")
+            issuer = claims.get("iss")
+            client_id = claims.get("client_id", claims.get("azp", ""))
+            if subject is not None and not isinstance(subject, str):
+                return None
+            if issuer is not None and not isinstance(issuer, str):
+                return None
+            if not isinstance(client_id, str):
+                return None
+            scope = claims.get("scope", claims.get("scp", []))
+            if isinstance(scope, str):
+                scopes = frozenset(scope.split())
+            elif isinstance(scope, list) and all(isinstance(item, str) for item in scope):
+                scopes = frozenset(scope)
+            else:
+                return None
+            expires_at = float(claims["exp"])
+            if not math.isfinite(expires_at):
+                return None
+            return Principal(
+                subject=subject,
+                issuer=issuer,
+                client_id=client_id,
+                scopes=scopes,
+                expires_at=expires_at,
+                claims=claims,
+                namespace="",
+            )
         except jwt.InvalidTokenError, ValueError, TypeError, OverflowError:
-            return False
-        return True
+            return None
+
+
+class JWTAuthentication(Authentication):
+    """Authenticate externally issued JWTs without advertising an OAuth server."""
+
+    def __init__(self, verifier: JWTVerifier) -> None:
+        super().__init__()
+        self.verifier = verifier
+
+    async def authenticate(self, request: web.Request) -> Principal | None:
+        if VERIFIED in request:
+            return request[VERIFIED]
+        token = request_token(request, scheme="Bearer", query_parameter="token")
+        return self.verifier.verify(token)
+
+    def challenge(self, refusal: Unauthorized) -> str:
+        return f'Bearer realm="{REALM}"'

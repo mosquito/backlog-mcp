@@ -366,6 +366,13 @@ The endpoint refuses a browser
 scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
 validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
 
+HTTP authentication uses the
+[aiohttp-tiny-mcp policies](https://github.com/mosquito/aiohttp-tiny-mcp/blob/master/docs/guide/auth.md).
+Basic and JWT policies accept the existing header and query credentials. Basic rejection
+responses include `charset="UTF-8"`. These policies do not publish OAuth metadata.
+Each HTTP application has its own authentication policy and session storage; stdio stays
+independent. Authenticated users share backlog data and change notifications.
+
 ### JWT authentication
 
 Configure one verification key. `http_jwt_public_key` accepts a PEM public key or the
@@ -397,6 +404,13 @@ The configured key determines the accepted algorithms:
 Token headers cannot enable another algorithm family. Every JWT must have a valid `exp`.
 The server also checks `nbf` and `iat` when present. Invalid keys stop startup;
 invalid, missing, or expired credentials receive HTTP 401, including on existing sessions.
+
+Session ownership uses the verified `iss` and `sub`, or `client_id`/`azp` when `sub` is
+absent. Renewed tokens with the same identity can reuse a session; another identity
+receives HTTP 404. Tokens without either identity claim retain shared-account behavior
+within their issuer. Issue tokens with `sub` or `client_id` for separate session owners.
+The verifier maps `scope` (a space-separated string) or `scp` (a list) to the principal.
+These claims do not create project or computer permissions.
 
 ```bash
 backlog --url https://backlog.example/mcp --token "$JWT" list

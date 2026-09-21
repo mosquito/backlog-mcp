@@ -7,6 +7,7 @@ from typing import NamedTuple
 import jwt
 import pytest
 from aiohttp import encode_basic_auth
+from aiohttp_tiny_mcp import Authentication
 from aiohttp_tiny_mcp.client_base import BaseClient
 from aiohttp_tiny_mcp.hub import MemoryHub
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
@@ -14,7 +15,7 @@ from aiohttp_tiny_mcp.testing import connect
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from backlog_mcp.auth import BasicAuthVerifier, CredentialsVerifier, JWTVerifier
+from backlog_mcp.auth import BasicAuthentication, JWTAuthentication, JWTVerifier
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.server import ACTIVE, registry
 from backlog_mcp.state import State
@@ -84,27 +85,35 @@ def hmac_verifier() -> JWTVerifier:
 
 
 @pytest.fixture(scope="session")
-def basic_verifier() -> BasicAuthVerifier:
-    return BasicAuthVerifier("user", "password")
+def basic_verifier() -> BasicAuthentication:
+    return BasicAuthentication("user", "password")
 
 
 @dataclass
 class Credentials:
-    verifier: CredentialsVerifier
+    verifier: Authentication
     options: dict[str, str]
     token: str
 
     @property
+    def scheme(self) -> str:
+        return "Basic" if isinstance(self.verifier, BasicAuthentication) else "Bearer"
+
+    @property
+    def query_parameter(self) -> str:
+        return "auth" if self.scheme == "Basic" else "token"
+
+    @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"{self.verifier.scheme} {self.token}"}
+        return {"Authorization": f"{self.scheme} {self.token}"}
 
     @property
     def query(self) -> dict[str, str]:
-        return {self.verifier.query_parameter: self.token}
+        return {self.query_parameter: self.token}
 
     @property
     def cli(self) -> list[str]:
-        if self.verifier.scheme == "Basic":
+        if self.scheme == "Basic":
             return ["--user", self.options["user"], "--password", self.options["password"]]
         return ["--token", self.token]
 
@@ -115,7 +124,7 @@ def credentials(
     key_pair: KeyPair,
     jwt_verifier: JWTVerifier,
     hmac_verifier: JWTVerifier,
-    basic_verifier: BasicAuthVerifier,
+    basic_verifier: BasicAuthentication,
 ) -> Credentials:
     claims = {"exp": int(time.time()) + 300}
     match request.param:
@@ -127,13 +136,13 @@ def credentials(
             )
         case "hs256":
             return Credentials(
-                hmac_verifier,
+                JWTAuthentication(hmac_verifier),
                 {"jwt_pre_shared_key": TEST_PSK},
                 jwt.encode(claims, TEST_PSK, algorithm="HS256"),
             )
         case _:
             return Credentials(
-                jwt_verifier,
+                JWTAuthentication(jwt_verifier),
                 {"jwt_public_key": key_pair.public},
                 jwt.encode(claims, key_pair.private, algorithm="RS256"),
             )

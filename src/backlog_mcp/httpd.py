@@ -9,10 +9,10 @@ from typing import Any
 
 from aiohttp import web
 from aiohttp.typedefs import Middleware
-from aiohttp_tiny_mcp import Endpoint
+from aiohttp_tiny_mcp import Authentication, Endpoint, Registry, Unauthorized
 from aiohttp_tiny_mcp.console import Console
 
-from .auth import BasicAuthVerifier, CredentialsVerifier, JWTVerifier, decode_pair
+from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, JWTVerifier
 from .backlog import Backlog
 from .server import VERSION, registry, use
 
@@ -23,28 +23,12 @@ Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 ENDPOINT_PATH = "/mcp"
 CONSOLE_PATH = "/"
 CONSOLE_ASSETS = frozenset({CONSOLE_PATH, "/console.js", "/console.css"})
-REALM = "backlog-mcp"
 
 CONSOLE_ABOUT = (
     "Projects and tasks of this backlog. Tools work on one project at a time; "
     "list and search tools reach every project with all_projects, and every computer with "
     "all_computers. Connect as another computer with ?computer=<name>&project=<slug>."
 )
-
-
-def request_token(request: web.Request, *, scheme: str, query_parameter: str) -> str:
-    """Read credentials from the header, or from the URL when no header is present."""
-    if "Authorization" in request.headers:
-        parts = request.headers["Authorization"].split()
-        return parts[1] if len(parts) == 2 and parts[0].lower() == scheme.lower() else ""
-    token = request.query.get(query_parameter, "")
-    # Restore a raw '+' in legacy Basic query credentials.
-    return token.replace(" ", "+") if scheme == "Basic" else token
-
-
-def credentials(request: web.Request) -> tuple[str, str] | None:
-    """Decode Basic credentials from the header or the auth query parameter."""
-    return decode_pair(request_token(request, scheme="Basic", query_parameter="auth"))
 
 
 def bind(backlog: Backlog) -> Middleware:
@@ -69,21 +53,22 @@ def bind(backlog: Backlog) -> Middleware:
 
 
 def authentication(
-    verifier: CredentialsVerifier, *, public_paths: frozenset[str] = frozenset()
+    policy: Authentication, *, public_paths: frozenset[str] = frozenset()
 ) -> Middleware:
-    """Verify requests while allowing the browser to load the static console shell."""
+    """Reject invalid credentials before routing or body parsing; allow console assets."""
 
     @web.middleware
     async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
         if request.method in {"GET", "HEAD"} and request.path in public_paths:
             return await handler(request)
-        token = request_token(
-            request, scheme=verifier.scheme, query_parameter=verifier.query_parameter
-        )
-        if not token or not verifier.verify(token):
+        try:
+            request[VERIFIED] = policy.check(await policy.authenticate(request))
+        except Unauthorized as refusal:
             log.warning("refused %s %s from %s", request.method, request.path, request.remote)
-            raise web.HTTPUnauthorized(
-                headers={"WWW-Authenticate": f'{verifier.scheme} realm="{REALM}"'}
+            return web.json_response(
+                {"error": refusal.error, "error_description": refusal.description},
+                status=refusal.status,
+                headers={"WWW-Authenticate": policy.challenge(refusal)},
             )
         return await handler(request)
 
@@ -113,7 +98,7 @@ def application(
     turns that check off: the proxy must validate the origin instead.
     """
     middlewares: list[Middleware] = [bind(backlog)]
-    public_paths = CONSOLE_ASSETS if console else frozenset()
+    policy: Authentication | None = None
     if jwt_public_key or jwt_pre_shared_key:
         if user or password:
             raise ValueError("configure JWT or Basic authentication, not both")
@@ -123,17 +108,30 @@ def application(
             issuer=jwt_issuer,
             audience=jwt_audience,
         )
-        middlewares.insert(0, authentication(verifier, public_paths=public_paths))
+        policy = JWTAuthentication(verifier)
     elif jwt_issuer or jwt_audience:
         raise ValueError("JWT issuer and audience require a JWT public key or pre-shared key")
     elif user and password:
-        middlewares.insert(
-            0, authentication(BasicAuthVerifier(user, password), public_paths=public_paths)
-        )
+        policy = BasicAuthentication(user, password)
     else:
         log.warning("no credentials given: every request is served without authentication")
+    if policy is not None:
+        public_paths = CONSOLE_ASSETS if console else frozenset()
+        middlewares.insert(0, authentication(policy, public_paths=public_paths))
+    # Share the registered surface and notification Hub, but not auth or session storage.
+    configured = Registry(
+        "backlog", VERSION, instructions=registry.instructions, hub=registry.hub, auth=policy
+    )
+    configured.tools = registry.tools
+    configured.resources_fixed = registry.resources_fixed
+    configured.resources_templated = registry.resources_templated
+    configured.prompts = registry.prompts
+    configured.completer = registry.completer
+    configured.providers = registry.providers
+    configured.extensions = registry.extensions
+    configured.resource_aliases = registry.resource_aliases
     app = web.Application(middlewares=middlewares)
-    Endpoint(registry, trust_proxy_origin_validation=trust_proxy).setup(app, ENDPOINT_PATH)
+    Endpoint(configured, trust_proxy_origin_validation=trust_proxy).setup(app, ENDPOINT_PATH)
     if console:
         page = Console(
             endpoint_path=ENDPOINT_PATH,
@@ -172,10 +170,6 @@ __all__ = [
     "CONSOLE_PATH",
     "ENDPOINT_PATH",
     "application",
-    "BasicAuthVerifier",
-    "CredentialsVerifier",
     "authentication",
-    "credentials",
-    "decode_pair",
     "serve",
 ]
