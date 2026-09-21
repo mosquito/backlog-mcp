@@ -61,9 +61,9 @@ dependency links, so the body is where a dependency lives.
 When executing work, update task status with `task_update`: set to `doing` when starting work,
 and `done` or `cancelled` upon completion.
 
-`task_update` appends supplied body text as timestamped history. Send only the new update text;
-do not read and resend the task body. If the task must be rewritten, close it and create a new
-task that references the old task id instead of replacing its body.
+Use `task_comment_add(task_id, body)` for progress, findings, and verification.
+`task_update(body=...)` replaces the description; use it when the task definition changes.
+Follow the project's `preferred_language` for task and comment text.
 
 ## 6. Retain knowledge supplied by the user
 

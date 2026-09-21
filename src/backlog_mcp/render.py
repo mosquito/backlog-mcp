@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 
 from rich.box import ROUNDED
 from rich.console import Console, Group, RenderableType
@@ -17,7 +16,19 @@ from rich.table import Table
 from rich.text import Text
 
 from .client import RemoteSkill
-from .models import Action, Event, NoteOut, Priority, ProjectOut, Scope, Stats, Status, TaskOut
+from .models import (
+    Action,
+    CommentOut,
+    Event,
+    NoteOut,
+    Priority,
+    ProjectOut,
+    Scope,
+    Stats,
+    Status,
+    TaskDetails,
+    TaskOut,
+)
 from .skills import Skill
 
 STATUS_STYLE = {
@@ -37,9 +48,6 @@ PRIORITY_STYLE = {
 }
 
 UNITS = ((86400.0, "d"), (3600.0, "h"), (60.0, "m"))
-UPDATE_TIMESTAMP = re.compile(
-    r"(?m)^(# UPDATE: )(\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}(?:Z)?)$"
-)
 
 
 def terminal(*, stderr: bool = False) -> Console:
@@ -69,22 +77,6 @@ def since(moment: float) -> str:
     """How long ago, as a phrase."""
     passed = age(moment)
     return "just now" if passed == "now" else f"{passed} ago"
-
-
-def local_update_times(body: str) -> str:
-    """Render UTC update headings in the terminal's local timezone.
-
-    Older entries omitted their zone but were written in UTC, so treat them as UTC too.
-    """
-
-    def replace(match: re.Match[str]) -> str:
-        raw = match.group(2).replace("Z", "+00:00")
-        moment = datetime.fromisoformat(raw)
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=UTC)
-        return f"{match.group(1)}{moment.astimezone().isoformat(timespec='seconds')}"
-
-    return UPDATE_TIMESTAMP.sub(replace, body)
 
 
 def titled(title: str) -> Table:
@@ -250,9 +242,23 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
         rows.append(("changed", Text(since(task.updated_at), style="dim")))
     if task.closed_at:
         rows.append(("closed", Text(since(task.closed_at), style="dim")))
-    body = local_update_times(task.body.strip())
+    body = task.body.strip()
     parts: list[RenderableType] = [fields(rows), Rule(style="dim")]
     parts.append(Markdown(body) if body else Text("no description", style="dim italic"))
+    if task.history_warning:
+        parts.append(
+            Text("Legacy history needs review; its original text was preserved.", style="yellow")
+        )
+    if isinstance(task, TaskDetails) and task.comments_total:
+        parts.append(Rule(f"comments and history ({task.comments_total})", style="dim"))
+        parts.extend(comment_panel(item) for item in task.comments)
+        if task.comments_next_offset is not None:
+            parts.append(
+                Text(
+                    f"More: backlog comments {task.id} --offset {task.comments_next_offset}",
+                    style="dim",
+                )
+            )
     return Panel(
         Group(*parts),
         box=ROUNDED,
@@ -263,6 +269,28 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
         padding=(1, 2),
         width=width(),
     )
+
+
+def comment_panel(comment: CommentOut) -> Panel:
+    when = datetime.fromtimestamp(comment.created_at).astimezone().isoformat(timespec="seconds")
+    return Panel(
+        Markdown(comment.body) if comment.body.strip() else Text("empty legacy entry", style="dim"),
+        title=Text(f"{comment.kind} #{comment.id} · {when}"),
+        title_align="left",
+        box=ROUNDED,
+        subtitle=Text(f"task #{comment.task_id}"),
+        width=width(),
+    )
+
+
+def comments_table(items: Sequence[CommentOut], *, title: str) -> Table:
+    table = titled(title)
+    for label in ("comment", "task", "project", "kind", "match"):
+        table.add_column(label, overflow="fold")
+    for item in items:
+        snippet = getattr(item, "snippet", None) or item.body[:200]
+        table.add_row(str(item.id), str(item.task_id), Text(item.project), item.kind, Text(snippet))
+    return table
 
 
 def note_panel(item: NoteOut, *, computer: str | None = None) -> Panel:

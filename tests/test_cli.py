@@ -159,12 +159,18 @@ def test_show_prints_the_body_and_the_fields(run: Runner) -> None:
     assert run("show", "42") == (1, "no task #42\n")
 
 
-def test_show_converts_utc_update_headings_to_local_time(run: Runner) -> None:
-    run("add", "Explain", "-b", "---\n# UPDATE: 2026-09-20T00:26:47Z\nImplemented")
+def test_show_renders_comments_separately(run: Runner) -> None:
+    run("add", "Explain", "-b", "The description")
+    code, output = run("comment", "1", "The **comment**")
+    assert code == 0 and "The comment" in output
     code, output = run("show", "1")
     assert code == 0
-    expected = render.local_update_times("# UPDATE: 2026-09-20T00:26:47Z")
-    assert expected.removeprefix("# ") in output
+    assert "The description" in output and "The comment" in output
+    assert "comments and history (1)" in output
+    assert "**comment**" not in output
+    assert "comment #1" in output
+    code, output = run("comments", "1", "--limit", "1")
+    assert code == 0 and "1 of 1" in output
 
 
 def test_skills_are_listed_and_printed_in_full(run: Runner) -> None:

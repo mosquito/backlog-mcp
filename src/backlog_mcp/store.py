@@ -9,11 +9,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import aiosqlite
 
 from .computer import hostname
+from .history import split_history
 from .models import CLOSED_STATUSES, OPEN_STATUSES, PRIORITIES, RANKS, Priority, Status
 
 #: Applied in order; the file's `user_version` says how many already ran. `:computer` is the
@@ -144,6 +145,54 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "ALTER TABLE projects_v4 RENAME TO projects",
     ),
     ("ALTER TABLE projects ADD COLUMN preferred_language TEXT DEFAULT NULL",),
+    (
+        "ALTER TABLE tasks ADD COLUMN history_warning INTEGER NOT NULL DEFAULT 0",
+        """CREATE TABLE task_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'comment',
+            created_at REAL NOT NULL
+        )""",
+        "CREATE INDEX comments_by_task ON task_comments (task_id, created_at, id)",
+        """CREATE VIRTUAL TABLE comments_fts USING fts5 (
+            body, content='task_comments', content_rowid='id',
+            tokenize="unicode61 remove_diacritics 2"
+        )""",
+        """CREATE TRIGGER comments_fts_insert AFTER INSERT ON task_comments BEGIN
+            INSERT INTO comments_fts (rowid, body) VALUES (new.id, new.body);
+        END""",
+        """CREATE TRIGGER comments_fts_delete AFTER DELETE ON task_comments BEGIN
+            INSERT INTO comments_fts (comments_fts, rowid, body)
+            VALUES ('delete', old.id, old.body);
+        END""",
+        """CREATE TRIGGER comments_fts_update AFTER UPDATE ON task_comments BEGIN
+            INSERT INTO comments_fts (comments_fts, rowid, body)
+            VALUES ('delete', old.id, old.body);
+            INSERT INTO comments_fts (rowid, body) VALUES (new.id, new.body);
+        END""",
+        """CREATE TABLE task_history_originals (
+            task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+            body TEXT NOT NULL
+        )""",
+        """CREATE TRIGGER task_status_history AFTER UPDATE OF status ON tasks
+        WHEN old.status != new.status BEGIN
+            INSERT INTO task_comments (task_id, body, kind, created_at)
+            VALUES (new.id, 'Status changed: ' || old.status || ' → ' || new.status,
+                    'status', new.updated_at);
+        END""",
+        """CREATE TRIGGER task_move_history AFTER UPDATE OF project_id ON tasks
+        WHEN old.project_id != new.project_id BEGIN
+            INSERT INTO task_comments (task_id, body, kind, created_at)
+            VALUES (new.id, 'Moved: ' || (SELECT slug FROM projects WHERE id = old.project_id)
+                    || ' → ' || (SELECT slug FROM projects WHERE id = new.project_id),
+                    'move', new.updated_at);
+        END""",
+        """CREATE TRIGGER comment_updates_task AFTER INSERT ON task_comments
+        WHEN new.kind = 'comment' BEGIN
+            UPDATE tasks SET updated_at = new.created_at WHERE id = new.task_id;
+        END""",
+    ),
 )
 
 OPEN_LIST = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
@@ -203,6 +252,18 @@ class Unset(Enum):
 
 
 @dataclass(slots=True)
+class Comment:
+    id: int
+    task_id: int
+    project_id: int
+    project: str
+    body: str
+    kind: Literal["comment", "status", "move", "legacy"]
+    created_at: float
+    snippet: str | None = None
+
+
+@dataclass(slots=True)
 class Project:
     id: int
     slug: str
@@ -246,6 +307,7 @@ class Task:
     updated_at: float
     closed_at: float | None = None
     snippet: str | None = None
+    history_warning: bool = False
 
 
 @dataclass(slots=True)
@@ -283,6 +345,7 @@ def to_task(row: aiosqlite.Row) -> Task:
     return Task(
         id=row["id"],
         project_id=row["project_id"],
+        history_warning=bool(row["history_warning"]),
         project=row["project"],
         title=row["title"],
         body=row["body"],
@@ -325,6 +388,7 @@ class Store:
         self.computer = computer
         self.connection: aiosqlite.Connection | None = None
         self.opening = asyncio.Lock()
+        self.task_writes = asyncio.Lock()
 
     @property
     def in_memory(self) -> bool:
@@ -337,10 +401,14 @@ class Store:
                     self.path.parent.mkdir(parents=True, exist_ok=True)
                 connection = await aiosqlite.connect(str(self.path))
                 connection.row_factory = aiosqlite.Row
-                await connection.execute("PRAGMA journal_mode=WAL")
-                await connection.execute("PRAGMA busy_timeout=5000")
-                await self.migrate(connection)
-                await connection.execute("PRAGMA foreign_keys=ON")
+                try:
+                    await connection.execute("PRAGMA journal_mode=WAL")
+                    await connection.execute("PRAGMA busy_timeout=5000")
+                    await self.migrate(connection)
+                    await connection.execute("PRAGMA foreign_keys=ON")
+                except BaseException:
+                    await connection.close()
+                    raise
                 self.connection = connection
             return self.connection
 
@@ -355,10 +423,38 @@ class Store:
         done = int(row[0]) if row else 0
         parameters = {"computer": self.computer or hostname()}
         for number, steps in enumerate(MIGRATIONS[done:], start=done + 1):
-            for statement in steps:
-                await connection.execute(statement, parameters)
-            await connection.execute(f"PRAGMA user_version={number}")
-            await connection.commit()
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                for statement in steps:
+                    await connection.execute(statement, parameters)
+                if number == 6:
+                    await self.migrate_history(connection)
+                await connection.execute(f"PRAGMA user_version={number}")
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+
+    async def migrate_history(self, connection: aiosqlite.Connection) -> None:
+        async with connection.execute("SELECT id, body FROM tasks") as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            description, entries, warning = split_history(row["body"])
+            if not entries and not warning:
+                continue
+            await connection.execute(
+                "INSERT INTO task_history_originals (task_id, body) VALUES (?, ?)",
+                (row["id"], row["body"]),
+            )
+            await connection.execute(
+                "UPDATE tasks SET body = ?, history_warning = ? WHERE id = ?",
+                (description, int(warning), row["id"]),
+            )
+            await connection.executemany(
+                "INSERT INTO task_comments (task_id, body, kind, created_at) "
+                "VALUES (?, ?, 'legacy', ?)",
+                [(row["id"], entry.body, entry.created_at) for entry in entries],
+            )
 
     async def close(self) -> None:
         if self.connection is not None:
@@ -626,42 +722,117 @@ class Store:
         tags: Iterable[str] | None = None,
         project_id: int | None = None,
     ) -> Task | None:
-        changes: dict[str, Any] = {}
-        if title is not None:
-            changes["title"] = title
-        if body is not None:
-            changes["body"] = body
-        if status is not None:
-            changes["status"] = status.value
-            #: Closing stamps the time; reopening clears it.
-            closing = status in CLOSED_STATUSES
-            changes["closed_at"] = time.time() if closing else None
-        if priority is not None:
-            changes["priority"] = RANKS[priority]
-        if tags is not None:
-            changes["tags"] = join_tags(tags)
-        if project_id is not None:
-            changes["project_id"] = project_id
-        if changes:
-            changes["updated_at"] = time.time()
-            assignments = ", ".join(f"{column} = ?" for column in changes)
+        async with self.task_writes:
             connection = await self.open()
-            await connection.execute(
-                f"UPDATE tasks SET {assignments} WHERE id = ?", (*changes.values(), task_id)
-            )
+            existing = await self.task(task_id)
+            if existing is None:
+                return None
+            changes: dict[str, Any] = {}
+            now = time.time()
+            if title is not None:
+                changes["title"] = title
+            if body is not None:
+                changes["body"] = body
+                changes["history_warning"] = 0
+            if status is not None and status != existing.status:
+                changes["status"] = status.value
+                changes["closed_at"] = now if status in CLOSED_STATUSES else None
+            if priority is not None:
+                changes["priority"] = RANKS[priority]
+            if tags is not None:
+                changes["tags"] = join_tags(tags)
+            if project_id is not None and project_id != existing.project_id:
+                destination = await self.project(project_id)
+                if destination is None:
+                    raise ValueError(f"no project #{project_id}")
+                changes["project_id"] = project_id
+            if changes:
+                changes["updated_at"] = now
+                assignments = ", ".join(f"{column} = ?" for column in changes)
+                await connection.execute(
+                    f"UPDATE tasks SET {assignments} WHERE id = ?",
+                    (*changes.values(), task_id),
+                )
             await connection.commit()
-        return await self.task(task_id)
+            return await self.task(task_id)
 
     async def delete_task(self, task_id: int) -> bool:
-        connection = await self.open()
-        now = time.time()
-        cursor = await connection.execute(
-            "UPDATE tasks SET status = ?, closed_at = ?, updated_at = ? "
-            "WHERE id = ? AND status != ?",
-            (Status.DELETED.value, now, now, task_id, Status.DELETED.value),
+        task = await self.task(task_id)
+        if task is None or task.status == Status.DELETED:
+            return False
+        return await self.update_task(task_id, status=Status.DELETED) is not None
+
+    async def comment(self, comment_id: int) -> Comment | None:
+        row = await self.row(
+            "SELECT c.*, t.project_id, p.slug AS project FROM task_comments c "
+            "JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id "
+            "WHERE c.id = ?",
+            (comment_id,),
         )
-        await connection.commit()
-        return bool(cursor.rowcount)
+        return Comment(**dict(row)) if row else None
+
+    async def add_comment(self, task_id: int, body: str) -> Comment:
+        if not body.strip():
+            raise ValueError("a comment must not be empty")
+        async with self.task_writes:
+            connection = await self.open()
+            if await self.task(task_id) is None:
+                raise LookupError(f"no task #{task_id}")
+            now = time.time()
+            cursor = await connection.execute(
+                "INSERT INTO task_comments (task_id, body, created_at) VALUES (?, ?, ?)",
+                (task_id, body, now),
+            )
+            await connection.commit()
+            saved = await self.comment(cursor.lastrowid or 0)
+            assert saved is not None
+            return saved
+
+    async def count_comments(self, task_id: int) -> int:
+        row = await self.row("SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (task_id,))
+        return int(row[0]) if row else 0
+
+    async def comments(
+        self,
+        *,
+        task_id: int | None = None,
+        project_id: int | None = None,
+        computer: str | None = None,
+        status: Sequence[Status] | None = None,
+        tag: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Comment]:
+        clauses, parameters = self.filters(
+            project_id=project_id, computer=computer, status=status, tag=tag, priority=None
+        )
+        if task_id is not None:
+            clauses.append("c.task_id = ?")
+            parameters.append(task_id)
+        elif not status:
+            clauses.append("t.status != ?")
+            parameters.append(Status.DELETED.value)
+        source = "task_comments c"
+        snippet = ""
+        order = "c.created_at, c.id"
+        if query is not None:
+            match = match_query(query)
+            if not match:
+                return []
+            source = "comments_fts JOIN task_comments c ON c.id = comments_fts.rowid"
+            clauses.append("comments_fts MATCH ?")
+            parameters.append(match)
+            snippet = ", snippet(comments_fts, 0, '[', ']', '…', 16) AS snippet"
+            order = "bm25(comments_fts), c.created_at, c.id"
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = await self.rows(
+            f"SELECT c.*, t.project_id, p.slug AS project {snippet} FROM {source} "
+            "JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id "
+            f"{where} ORDER BY {order} LIMIT ? OFFSET ?",
+            (*parameters, limit, offset),
+        )
+        return [Comment(**dict(row)) for row in rows]
 
     def filters(
         self,

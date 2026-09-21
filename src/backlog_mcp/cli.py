@@ -28,6 +28,8 @@ from .backlog import Backlog, UnknownProject, slugify
 from .client import Connection, Registration, ToolError, bind_directory, connect, directory_project
 from .models import (
     OPEN_STATUSES,
+    CommentOut,
+    Comments,
     Deleted,
     Event,
     FullNotes,
@@ -37,6 +39,7 @@ from .models import (
     ProjectDeleted,
     ProjectOut,
     Status,
+    TaskDetails,
     TaskOut,
 )
 from .models import (
@@ -46,6 +49,8 @@ from .models import (
     Stats as StatsOut,
 )
 from .render import (
+    comment_panel,
+    comments_table,
     console,
     errors,
     event_line,
@@ -301,8 +306,8 @@ class Command(argclass.Parser):
     def registration(self, computer: str, root: Path, projects: list[ProjectOut]) -> Registration:
         return prompt_registration(computer, root, projects)
 
-    async def task(self, task_id: int) -> TaskOut:
-        task = await self.connection.call(TaskOut, "task_get", id=task_id)
+    async def task(self, task_id: int) -> TaskDetails:
+        task = await self.connection.call(TaskDetails, "task_get", id=task_id)
         if task.status == Status.DELETED:
             raise ToolError(f"no task #{task_id}")
         return task
@@ -662,14 +667,21 @@ class List(Command):
 
 
 class Search(Command):
-    """FTS and semantic search across tasks and notes, including shared notes."""
+    """FTS and semantic search across tasks, comments, and notes."""
 
+    kind: list[str] = repeated(
+        "--kind",
+        choices=("tasks", "comments", "notes"),
+        help="Content to search; repeat for several kinds (default: all)",
+    )
     query: list[str] = argclass.Argument("query", nargs="+", help="Words or meaning to search for")
     all_projects: bool = argclass.Argument(
         "-a", "--all-projects", default=False, help="Search every project on this computer"
     )
     at, all_computers = computer_options()
-    tag: str = argclass.Argument(default="", help="Only tasks and notes carrying this tag")
+    tag: str = argclass.Argument(
+        default="", help="Filter by task or note tags; comments use their task tags"
+    )
     limit: int = argclass.Argument(default=20, help="Most matches to print, of each kind")
     min_score: float = argclass.Argument(
         default=0.15,
@@ -683,6 +695,7 @@ class Search(Command):
             "search",
             **self.listing(),
             query=text,
+            kinds=self.kind or None,
             tag=self.tag or None,
             limit=self.limit,
             min_score=self.min_score,
@@ -696,6 +709,13 @@ class Search(Command):
                 computer=self.connection.computer,
             )
         )
+        if matches.comments:
+            console.print(
+                comments_table(
+                    matches.comments,
+                    title=f"{len(matches.comments)} comment match(es) for {text!r} in {where}",
+                )
+            )
         if matches.notes:
             console.print(
                 notes_table(
@@ -716,6 +736,46 @@ class Show(Command):
 
     async def __call__(self) -> int:
         console.print(task_panel(await self.task(self.id), computer=self.connection.computer))
+        return 0
+
+
+class CommentAdd(Command):
+    """Add a Markdown comment without changing the task description."""
+
+    id: int = argclass.Argument("id", type=int, help="Task id")
+    body: list[str] = argclass.Argument("body", nargs="+", help="Comment text")
+
+    async def __call__(self) -> int:
+        comment = await self.connection.call(
+            CommentOut,
+            "task_comment_add",
+            task_id=self.id,
+            body=" ".join(self.body),
+        )
+        console.print(comment_panel(comment))
+        return 0
+
+
+class CommentList(Command):
+    """Read one chronological page of comments and history."""
+
+    id: int = argclass.Argument("id", type=int, help="Task id")
+    limit: int = argclass.Argument(default=50, help="Most entries to show (1–200)")
+    offset: int = argclass.Argument(default=0, help="Number of entries to skip")
+
+    async def __call__(self) -> int:
+        result = await self.connection.call(
+            Comments,
+            "task_comment_list",
+            task_id=self.id,
+            limit=self.limit,
+            offset=self.offset,
+        )
+        for item in result.items:
+            console.print(comment_panel(item))
+        note(f"{len(result.items)} of {result.count} comments and history entries")
+        if result.next_offset is not None:
+            note(f"More: backlog comments {self.id} --offset {result.next_offset}")
         return 0
 
 
@@ -769,10 +829,7 @@ class Edit(Command):
 
     async def __call__(self) -> int:
         task = await self.task(self.id)
-        written = compose(
-            "# The body is a new progress update; existing history stays unchanged.\n"
-            + form_of(task.model_copy(update={"body": ""}))
-        )
+        written = compose(form_of(task))
         if written is None:
             warn("nothing changed")
             return 0
@@ -780,8 +837,6 @@ class Edit(Command):
         if not fields["title"]:
             warn("the title is empty, nothing changed")
             return 1
-        if not fields["body"]:
-            fields.pop("body")
         changed = await self.connection.call(TaskOut, "task_update", id=task.id, **fields)
         note(f"updated #{changed.id}")
         console.print(task_panel(changed, computer=self.connection.computer))
@@ -1421,13 +1476,15 @@ class CLI(argclass.Parser):
         ),
     )
     search = Search(
-        help="FTS and semantic search over tasks and notes",
+        help="FTS and semantic search over tasks, comments, and notes",
         description=(
             "Search titles, bodies and tags with FTS prefixes and local multilingual embeddings. "
             "FTS matches come first, followed by semantic matches without duplicate IDs. "
             "--min-score filters semantic matches only. --all-projects searches every board."
         ),
     )
+    comment = CommentAdd(help="Add a task comment")
+    comments = CommentList(help="Read task comments and history")
     show = Show(
         help="Print one task in full",
         description="Print the title, body, status, priority, tags and timestamps of one task.",
@@ -1450,9 +1507,8 @@ class CLI(argclass.Parser):
     edit = Edit(
         help="Edit a task in $EDITOR",
         description=(
-            "Edit the task fields and append a progress update. The body starts empty; "
-            "new text is appended to the existing history. Leaving the file unchanged "
-            "changes nothing."
+            "Edit the task fields and description. Use `backlog comment` for progress updates. "
+            "Leaving the file unchanged changes nothing."
         ),
     )
     start = Start(

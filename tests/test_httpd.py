@@ -70,7 +70,12 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
         assert task["title"] == "Over HTTP"
         read = await client.call_tool("task_get", {"id": task["id"]})
         assert isinstance(read, CallToolResult)
-        assert payload(read) == task
+        assert payload(read) == {
+            **task,
+            "comments": [],
+            "comments_total": 0,
+            "comments_next_offset": None,
+        }
         async with session.get(server.make_url("/")) as response:
             assert response.status == 200
             assert response.content_type == "text/html"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from datetime import UTC, datetime
 from typing import Any, Literal
 
 from aiohttp_tiny_mcp import Exchange, Extension, Hint, NeedInput, Registry, elicit
@@ -20,6 +19,8 @@ from .models import (
     OPEN_STATUSES,
     PRIORITIES,
     Action,
+    CommentOut,
+    Comments,
     Deleted,
     Event,
     FullNotes,
@@ -36,11 +37,12 @@ from .models import (
     Scope,
     Stats,
     Status,
+    TaskDetails,
     TaskListItem,
     TaskOut,
     Tasks,
 )
-from .store import NOTE_LIMIT, Note, Project, Task, Unset
+from .store import NOTE_LIMIT, Comment, Note, Project, Task, Unset
 from .version import COMMIT, VERSION
 
 log = logging.getLogger(__name__)
@@ -94,17 +96,16 @@ work. Follow it when writing task titles, descriptions, and progress updates. Re
 `project_current` or `project_list` before writing tasks. Null means no language preference. \
 Set or change it with `project_save`; omit the field to keep it, or send null to clear it.
 
-Tasks. Always work through tasks. A task has a title, an optional body, a status (todo, doing, \
-blocked, done, cancelled or deleted), a priority (urgent, high, normal or low) and tags. Keep \
-the board true to life: set status to `doing` when beginning work, and `done`, `cancelled` or \
-`deleted` upon completion (which stamps the closing time). A supplied `body`, or an actual \
-status change, to `task_update` appends a timestamped history entry. Listings show the open \
-statuses (todo, doing, blocked), most important first, until `status` asks for others or \
-`order="recent"` sorts by last change instead.
+Tasks. A task has a title, a Markdown description in `body`, a status, a priority, and tags.
+Always track work: set `doing` when starting and `done`, `cancelled`, or `deleted` when appropriate.
+Listings show open statuses, most important first, unless filters ask for others.
 
-When recording progress, pass only the new text to `task_update`; it appends the text, so do not \
-read the task body and send it back. If a task needs a rewritten scope rather than a progress \
-update, close the old task and create a new one that refers to its id.
+Comments. Use `task_comment_add` for progress, findings, blockers, decisions, and verification.
+Comments are stored separately from the description. `task_update(body=...)` replaces the
+whole description; use it only to revise the task definition. An empty body clears it.
+Status transitions and moves create separate history entries. `task_get` returns a chronological
+page of `comments`, `comments_total`, and `comments_next_offset`. Use `task_comment_list` for
+further pages. Each entry has its own id, task_id, kind, and creation time.
 
 Notes. Code changes; notes remain. Keep lasting user context unavailable elsewhere: \
 preferences, working agreements, people and responsibilities, business constraints, and reasons \
@@ -142,12 +143,13 @@ facts that may have changed. Avoid full listings and reading every task or note.
 `task_list` and `note_list` for an explicitly requested inventory or a complete review; \
 use filters and pagination then. Use `stats` when only counts are needed.
 
-`search` combines full-text prefix matching and multilingual semantic search over titles, \
-bodies and tags. FTS matches come first, then semantic matches by cosine similarity, without \
-duplicate IDs. Status filters apply to tasks; tag filters apply to both. Embeddings run \
-locally; no text is sent to an external service.
+`search` combines full-text prefix matching and multilingual semantic search. Use `kinds`
+to select tasks, comments, notes, or several kinds. Task descriptions and comments are indexed
+separately; comment matches include the comment id and task_id. FTS matches come first,
+then semantic matches, without duplicate IDs within each kind. Embeddings run locally.
 
-Writes. `task_add`, `task_update`, `task_move`, `task_delete`, `note_save`, `note_append`, \
+Writes. `task_add`, `task_comment_add`, `task_update`, `task_move`, `task_delete`,
+`note_save`, `note_append`, \
 `note_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
 one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
 notification says what the write did: kind, action, id, project, title, status, priority and \
@@ -244,6 +246,7 @@ def task_out(task: Task) -> TaskOut:
         updated_at=task.updated_at,
         closed_at=task.closed_at,
         snippet=task.snippet,
+        history_warning=task.history_warning,
     )
 
 
@@ -266,11 +269,29 @@ def compact_snippet(body: str, limit: int = 150) -> str:
     return f"{shortened or text[: limit - 1]}…"
 
 
-def append_history(body: str, *parts: str) -> str:
-    """Append one timestamped task-history entry to a task body."""
-    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    entry = f"---\n# UPDATE: {timestamp}\n" + "\n\n".join(parts)
-    return f"{body.rstrip()}\n{entry}\n" if body else f"{entry}\n"
+def comment_out(comment: Comment) -> CommentOut:
+    return CommentOut(
+        id=comment.id,
+        task_id=comment.task_id,
+        project=comment.project,
+        body=comment.body,
+        kind=comment.kind,
+        created_at=comment.created_at,
+    )
+
+
+async def task_details(
+    task: Task, backlog: Backlog, *, limit: int = 50, offset: int = 0
+) -> TaskDetails:
+    comments = await backlog.store.comments(task_id=task.id, limit=limit, offset=offset)
+    total = await backlog.store.count_comments(task.id)
+    following = offset + len(comments)
+    return TaskDetails(
+        **task_out(task).model_dump(),
+        comments=[comment_out(item) for item in comments],
+        comments_total=total,
+        comments_next_offset=following if following < total else None,
+    )
 
 
 def task_list_item(task: Task) -> TaskListItem:
@@ -553,12 +574,30 @@ class TaskId(BaseModel):
     id: int
 
 
+class GetTask(TaskId):
+    comments_limit: int = Field(default=50, ge=1, le=200)
+    comments_offset: int = Field(default=0, ge=0)
+
+
+class AddComment(BaseModel):
+    task_id: int
+    body: str = Field(
+        min_length=1, description="New Markdown comment. Does not change the task description."
+    )
+
+
+class ListComments(BaseModel):
+    task_id: int
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
+
+
 class UpdateTask(BaseModel):
     id: int = Field(description="Task id to update.")
     title: str | None = Field(default=None, description="Updated task title.")
     body: str | None = Field(
         default=None,
-        description="Appends a timestamped update to task details, blockers, or dependencies.",
+        description="Replaces the task description. Use task_comment_add for progress updates.",
     )
     status: Status | None = Field(
         default=None,
@@ -807,40 +846,59 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
 
 
 @registry.tool(title="Read a task", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_get(args: TaskId, backlog: Backlog) -> TaskOut:
-    """Read full task details, requirements, blockers, and dependencies before working on it."""
+async def task_get(args: GetTask, backlog: Backlog) -> TaskDetails:
+    """Read a task with a separate chronological page of comments and history.
+
+    comments_total and comments_next_offset describe the remaining entries. Use
+    task_comment_list to read further pages. The body is only the task description.
+    """
     task = await backlog.store.task(args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
-    return task_out(task)
+    return await task_details(task, backlog, limit=args.comments_limit, offset=args.comments_offset)
+
+
+@registry.tool(title="Add a task comment", annotations=Hint.OPEN_WORLD)
+async def task_comment_add(args: AddComment, backlog: Backlog) -> CommentOut:
+    """Record progress, findings, blockers, or verification as a separate Markdown comment.
+
+    Use this for routine updates. Follow the project's preferred_language. Task descriptions
+    change only through task_update. Repeated calls create separate comments.
+    """
+    comment = await backlog.store.add_comment(args.task_id, args.body)
+    task = await backlog.store.task(args.task_id)
+    assert task is not None
+    await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
+    return comment_out(comment)
+
+
+@registry.tool(title="List task comments", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+async def task_comment_list(args: ListComments, backlog: Backlog) -> Comments:
+    """Read comments and history in creation-time order, with id as a stable tie-breaker."""
+    task = await backlog.store.task(args.task_id)
+    if task is None:
+        raise LookupError(f"no task #{args.task_id}")
+    details = await task_details(task, backlog, limit=args.limit, offset=args.offset)
+    return Comments(
+        items=details.comments,
+        task_id=task.id,
+        count=details.comments_total,
+        next_offset=details.comments_next_offset,
+    )
 
 
 @registry.tool(title="Update a task", annotations=Hint.IDEMPOTENT)
 async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
-    """Update task fields and keep the board true to life.
+    """Edit task fields. A supplied body replaces the description; an empty string clears it.
 
-    A supplied body or an actual status change appends a timestamped history entry. Send only the
-    new update text; do not read the existing body to reconstruct it. To rewrite a task's scope,
-    close it and create a successor task that refers to its id. Always track active work: mark a
-    task as `doing` when starting it, and `done` or `cancelled`
-    upon completion. Never do untracked work. Setting status to `done` or `cancelled` stamps the
-    closing time; other statuses clear it."""
-    body = args.body.strip() if args.body is not None else None
-    if body is not None or args.status is not None:
-        existing = await backlog.store.task(args.id)
-        if existing is None:
-            raise LookupError(f"no task #{args.id}")
-        parts: list[str] = []
-        if args.status is not None and args.status != existing.status:
-            parts.append(f"Status changed: {existing.status.value} → {args.status.value}")
-        if body:
-            parts.append(body)
-        body = append_history(existing.body, *parts) if parts else None
-
+    Use task_comment_add for progress, findings, and verification. Status transitions create
+    separate history entries. Mark active work doing and completed work done or cancelled.
+    Closing stamps the closing time; reopening clears it.
+    """
     task = await backlog.store.update_task(
         args.id,
         title=args.title,
-        body=body,
+        body=args.body,
         status=args.status,
         priority=args.priority,
         tags=args.tags,
@@ -863,7 +921,6 @@ async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
     task = await backlog.store.update_task(
         args.id,
         project_id=project.id,
-        body=append_history(existing.body, f"Moved: {existing.project} → {project.slug}"),
     )
     assert task is not None
     await changed(task_event(task, Action.MOVED, computer=backlog.computer))
@@ -913,8 +970,7 @@ async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
     if task is None:
         raise LookupError(f"no task #{args.id}")
     if task.status != Status.DELETED:
-        body = append_history(task.body, f"Status changed: {task.status.value} → deleted")
-        gone = await backlog.store.update_task(task.id, status=Status.DELETED, body=body)
+        gone = await backlog.store.update_task(task.id, status=Status.DELETED)
         assert gone is not None
         await changed(task_event(gone, Action.DELETED, computer=backlog.computer))
     return Deleted(id=args.id, title=task.title, deleted=True)
@@ -1092,7 +1148,7 @@ async def one_task(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
     task = await backlog.store.task(int(args.id))
     if task is None:
         return {"error": f"no task #{args.id}"}
-    return task_out(task).model_dump()
+    return (await task_details(task, backlog)).model_dump()
 
 
 @registry.resource("backlog://notes", mime_type="application/json")

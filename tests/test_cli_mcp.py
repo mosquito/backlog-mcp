@@ -91,7 +91,7 @@ async def test_http_operations_use_server_storage(remote: RemoteRunner, backlog:
     assert (await remote("close", "1"))[0] == 0
     task = await backlog.store.task(1)
     assert task is not None and task.status == Status.DONE
-    assert "Status changed: todo → done" in task.body
+    assert (await backlog.store.comments(task_id=task.id))[0].body == "Status changed: todo → done"
     assert (await remote("note", "add", "Constraint", "-b", "Keep history"))[0] == 0
     assert (await remote("note", "append", "1", "Use MCP"))[0] == 0
     assert "Use MCP" in (await remote("note", "show", "1"))[1]
@@ -166,7 +166,7 @@ async def test_remote_confirmations_are_answered_in_the_terminal(
     assert await backlog.store.note(1) is None
 
 
-async def test_edit_appends_only_new_text_and_delete_keeps_history(
+async def test_edit_replaces_description_and_preserves_comments(
     remote: RemoteRunner,
     backlog: Backlog,
     monkeypatch: pytest.MonkeyPatch,
@@ -174,19 +174,22 @@ async def test_edit_appends_only_new_text_and_delete_keeps_history(
     await remote("add", "Original", "-b", "Original requirement")
 
     def edit(text: str) -> str:
-        assert "Original requirement" not in text
-        return text.replace("Title: Original", "Title: Renamed") + "\nProgress update"
+        assert "Original requirement" in text
+        return text.replace("Title: Original", "Title: Renamed").replace(
+            "Original requirement", "Revised requirement"
+        )
 
+    assert (await remote("comment", "1", "Progress update"))[0] == 0
     monkeypatch.setattr(cli, "compose", edit)
     assert (await remote("edit", "1"))[0] == 0
     task = await backlog.store.task(1)
     assert task is not None and task.title == "Renamed"
-    assert task.body.count("Original requirement") == 1
-    assert "Progress update" in task.body
+    assert task.body == "Revised requirement"
+    assert (await backlog.store.comments(task_id=1))[0].body == "Progress update"
     assert (await remote("delete", "1"))[0] == 0
     task = await backlog.store.task(1)
     assert task is not None and task.status == Status.DELETED
-    assert "Original requirement" in task.body
+    assert task.body == "Revised requirement"
     assert "Renamed" not in (await remote("list", "--every"))[1]
 
 
@@ -290,3 +293,18 @@ def test_stdio_startup_failure_reaps_child(
         != 0
     )
     assert len(processes) == 1 and processes[0].returncode is not None
+
+
+async def test_comment_search_and_pagination_over_http(remote: RemoteRunner) -> None:
+    await remote("add", "Task", "-b", "Definition")
+    await remote("comment", "1", "uniquemarker first")
+    await remote("comment", "1", "Second comment")
+    code, output = await remote("search", "uniquemarker", "--kind", "comments", "--min-score", "1")
+    assert code == 0 and "1 comment match(es)" in output
+    assert "uniquemarker" in output
+    code, output = await remote("search", "uniquemarker", "--kind", "tasks", "--min-score", "1")
+    assert code == 0 and "0 task match(es)" in output and "comment match(es)" not in output
+    code, output = await remote("comments", "1", "--limit", "1")
+    assert code == 0 and "1 of 2" in output and "--offset 1" in output
+    code, output = await remote("comments", "1", "--offset", "1")
+    assert code == 0 and "Second comment" in output and "uniquemarker" not in output

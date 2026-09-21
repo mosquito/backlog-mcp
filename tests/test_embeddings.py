@@ -159,9 +159,11 @@ async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
     semantic = await backlog.store.add_task(project_id=project.id, title="Related work")
     scores: list[float] = []
 
-    def matches(*args: Any) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+    def matches(
+        *args: Any,
+    ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], list[tuple[int, float]]]:
         scores.append(args[-1])
-        return [(lexical.id, 0.8), (semantic.id, 0.3)], []
+        return [(lexical.id, 0.8), (semantic.id, 0.3)], [], []
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
@@ -180,9 +182,11 @@ async def test_search_uses_default_semantic_floor_without_fts(
     task = await backlog.store.add_task(project_id=project.id, title="Related work")
     scores: list[float] = []
 
-    def matches(*args: Any) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+    def matches(
+        *args: Any,
+    ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], list[tuple[int, float]]]:
         scores.append(args[-1])
-        return [(task.id, 0.3)], []
+        return [(task.id, 0.3)], [], []
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
@@ -205,6 +209,8 @@ async def test_index_contains_only_ids_vectors_and_digest(
             "task_vectors",
             "note_ids",
             "note_vectors",
+            "comment_ids",
+            "comment_vectors",
         }
         assert saved["task_ids"].tolist() == [task.id]
         assert saved["task_vectors"].shape == (1, 512)
@@ -228,7 +234,7 @@ async def test_index_contains_only_ids_vectors_and_digest(
     await backlog.store.delete_task(task.id)
     await embeddings.indexes(backlog)
     with np.load(path, allow_pickle=False) as saved:
-        assert saved["task_ids"].tolist() == []
+        assert saved["task_ids"].tolist() == [task.id]
 
 
 async def test_results_are_read_by_id_after_ranking(
@@ -264,8 +270,8 @@ async def test_concurrent_builds_of_one_index_encode_once(monkeypatch: pytest.Mo
     tasks = [(1, "Reset password")]
     notes = [(1, "Password policy")]
     results = await asyncio.gather(
-        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes),
-        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes),
+        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, []),
+        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, []),
     )
     assert calls == [2]
     assert results[0][0].ids == results[1][0].ids == [1]
@@ -280,7 +286,9 @@ from pathlib import Path
 from backlog_mcp import embeddings
 root = embeddings.cache_root()
 assert root.is_dir() and root.parent == Path(tempfile.gettempdir())
-a, b = embeddings.cached_indexes('shared-db', [(1, 'Reset password')], [(1, 'Password policy')])
+a, b, c = embeddings.cached_indexes(
+    'shared-db', [(1, 'Reset password')], [(1, 'Password policy')], []
+)
 assert a.ids == [1] and b.ids == [1]
 assert a.vectors.shape == b.vectors.shape == (1, 512)
 assert len(list(root.glob('*.npz'))) == 1 and not list(root.glob('*.lock'))

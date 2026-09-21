@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -75,6 +76,22 @@ class ProjectOut(BaseModel):
     updated_at: float
 
 
+class CommentOut(BaseModel):
+    id: int = Field(description="Stable comment id.")
+    task_id: int
+    project: str
+    body: str
+    kind: Literal["comment", "status", "move", "legacy"] = "comment"
+    created_at: float
+
+
+class Comments(BaseModel):
+    items: list[CommentOut]
+    task_id: int
+    count: int = Field(description="Total number of comments and history entries.")
+    next_offset: int | None = None
+
+
 class TaskOut(BaseModel):
     id: int
     project: str = Field(description="Slug of the owning project.")
@@ -87,6 +104,13 @@ class TaskOut(BaseModel):
     updated_at: float
     closed_at: float | None = None
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
+    history_warning: bool = Field(default=False, description="Legacy history needs manual review.")
+
+
+class TaskDetails(TaskOut):
+    comments: list[CommentOut] = Field(default_factory=list)
+    comments_total: int = 0
+    comments_next_offset: int | None = None
 
 
 class TaskListItem(BaseModel):
@@ -176,16 +200,6 @@ class FullNotes(BaseModel):
     computer: str | None = Field(default=None, description=COVERED)
 
 
-class Matches(BaseModel):
-    """What one search found: tasks and notes, best match first inside each list."""
-
-    tasks: list[TaskOut]
-    notes: list[NoteOut]
-    count: int = Field(description="Tasks and notes matched, together.")
-    project: str | None = Field(default=None, description="Slug searched, absent when global.")
-    computer: str | None = Field(default=None, description=COVERED)
-
-
 class Scope(BaseModel):
     """The project the tools work on when no project is named, and the computer this is."""
 
@@ -251,7 +265,9 @@ __all__ = [
     "PRIORITIES",
     "RANKS",
     "Deleted",
-    "Matches",
+    "CommentOut",
+    "Comments",
+    "TaskDetails",
     "NoteOut",
     "Notes",
     "Origin",

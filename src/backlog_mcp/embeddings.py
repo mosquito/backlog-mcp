@@ -23,8 +23,8 @@ from numpy.typing import NDArray
 from pydantic import BaseModel, Field, StringConstraints
 
 from .backlog import Backlog
-from .models import NoteOut, Status, TaskOut
-from .store import Note, Store, Task
+from .models import CommentOut, NoteOut, Status, TaskOut
+from .store import Comment, Note, Store, Task
 
 if TYPE_CHECKING:
     from model2vec import StaticModel
@@ -95,6 +95,11 @@ class Encoded(ResultModel):
 
 
 class Search(BaseModel):
+    kinds: list[Literal["tasks", "comments", "notes"]] = Field(
+        default=["tasks", "comments", "notes"],
+        min_length=1,
+        description="Content to search. Task descriptions and comments are indexed separately.",
+    )
     query: Text = Field(
         description=(
             "Words or meaning to find in titles, bodies and tags. "
@@ -109,7 +114,7 @@ class Search(BaseModel):
     all_computers: bool = Field(default=False, description="Every project of every computer.")
     status: list[Status] | None = Field(default=None, description="Task statuses only.")
     tag: str | None = None
-    limit: int = Field(default=20, ge=1, le=200, description="Most tasks, and most notes.")
+    limit: int = Field(default=20, ge=1, le=200, description="Maximum matches per content kind.")
     min_score: float = Field(
         default=DEFAULT_MIN_SCORE,
         ge=-1,
@@ -136,10 +141,17 @@ class NoteHit(NoteOut):
     )
 
 
+class CommentHit(CommentOut):
+    match: Literal["fts", "semantic"]
+    score: float | None = None
+    snippet: str | None = None
+
+
 class Matches(BaseModel):
     model: str = MODEL_NAME
     tasks: list[TaskHit]
     notes: list[NoteHit]
+    comments: list[CommentHit]
     count: int
     project: str | None
     computer: str | None = Field(
@@ -211,39 +223,54 @@ INDEXING = RLock()
 
 
 def cached_indexes(
-    database: str, tasks: list[tuple[int, str]], notes: list[tuple[int, str]]
-) -> tuple[VectorIndex, VectorIndex]:
+    database: str,
+    tasks: list[tuple[int, str]],
+    notes: list[tuple[int, str]],
+    comments: list[tuple[int, str]],
+) -> tuple[VectorIndex, VectorIndex, VectorIndex]:
     """Load the ID/vector snapshot of this process, or build it and write it for the next call."""
     digest = model_digest(encoder.path)
     identity = sha256(f"{database}:{digest}".encode()).hexdigest()
-    signature = sha256(json.dumps([tasks, notes], ensure_ascii=False).encode()).hexdigest()
+    signature = sha256(
+        json.dumps([tasks, notes, comments], ensure_ascii=False).encode()
+    ).hexdigest()
     directory = cache_root()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{identity}.npz"
     with INDEXING:
-        return load_or_build(path, signature, tasks, notes)
+        return load_or_build(path, signature, tasks, notes, comments)
 
 
 def load_or_build(
-    path: Path, signature: str, tasks: list[tuple[int, str]], notes: list[tuple[int, str]]
-) -> tuple[VectorIndex, VectorIndex]:
+    path: Path,
+    signature: str,
+    tasks: list[tuple[int, str]],
+    notes: list[tuple[int, str]],
+    comments: list[tuple[int, str]],
+) -> tuple[VectorIndex, VectorIndex, VectorIndex]:
     try:
         with np.load(path, allow_pickle=False) as saved:
             if str(saved["signature"].item()) == signature:
                 task_index = VectorIndex(saved["task_ids"].tolist(), saved["task_vectors"])
                 note_index = VectorIndex(saved["note_ids"].tolist(), saved["note_vectors"])
+                comment_index = VectorIndex(saved["comment_ids"].tolist(), saved["comment_vectors"])
                 if all(
                     index.vectors.shape == (len(index.ids), DIMENSIONS)
                     and np.isfinite(index.vectors).all()
-                    for index in (task_index, note_index)
+                    for index in (task_index, note_index, comment_index)
                 ):
-                    return task_index, note_index
+                    return task_index, note_index, comment_index
     except OSError, ValueError, KeyError, EOFError, BadZipFile:
         pass
-    texts = [text for _, text in tasks] + [text for _, text in notes]
+    texts = (
+        [text for _, text in tasks] + [text for _, text in notes] + [text for _, text in comments]
+    )
     vectors = encoder.encode(texts) if texts else np.empty((0, DIMENSIONS), dtype=np.float32)
     task_index = VectorIndex([item[0] for item in tasks], vectors[: len(tasks)])
-    note_index = VectorIndex([item[0] for item in notes], vectors[len(tasks) :])
+    note_index = VectorIndex(
+        [item[0] for item in notes], vectors[len(tasks) : len(tasks) + len(notes)]
+    )
+    comment_index = VectorIndex([item[0] for item in comments], vectors[len(tasks) + len(notes) :])
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as stream:
@@ -255,12 +282,14 @@ def load_or_build(
                 task_vectors=task_index.vectors,
                 note_ids=np.asarray(note_index.ids, dtype=np.int64),
                 note_vectors=note_index.vectors,
+                comment_ids=np.asarray(comment_index.ids, dtype=np.int64),
+                comment_vectors=comment_index.vectors,
             )
         os.replace(temporary, path)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-    return task_index, note_index
+    return task_index, note_index, comment_index
 
 
 def database_key(backlog: Backlog) -> str:
@@ -269,23 +298,24 @@ def database_key(backlog: Backlog) -> str:
     return str(backlog.store.path.resolve())
 
 
-async def snapshot(backlog: Backlog) -> tuple[list[Task], list[Note]]:
-    tasks = await backlog.store.tasks(status=[s for s in Status if s != Status.DELETED], limit=-1)
+async def snapshot(backlog: Backlog) -> tuple[list[Task], list[Note], list[Comment]]:
+    tasks = await backlog.store.tasks(status=list(Status), limit=-1)
     notes = await backlog.store.notes(limit=-1)
-    return tasks, notes
+    comments = await backlog.store.comments(status=list(Status), limit=-1)
+    return tasks, notes, comments
 
 
 @dataclass
 class IndexState:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     revision: tuple[object, int, int] | None = None
-    indexes: tuple[VectorIndex, VectorIndex] | None = None
+    indexes: tuple[VectorIndex, VectorIndex, VectorIndex] | None = None
 
 
 states: WeakKeyDictionary[Store, IndexState] = WeakKeyDictionary()
 
 
-async def indexes(backlog: Backlog) -> tuple[VectorIndex, VectorIndex]:
+async def indexes(backlog: Backlog) -> tuple[VectorIndex, VectorIndex, VectorIndex]:
     """Build lazily; local writes and external commits invalidate the cached snapshot."""
     state = states.setdefault(backlog.store, IndexState())
     async with state.lock:
@@ -294,30 +324,33 @@ async def indexes(backlog: Backlog) -> tuple[VectorIndex, VectorIndex]:
         assert version is not None
         revision = (connection, int(version[0]), connection.total_changes)
         if state.indexes is None or state.revision != revision:
-            tasks, notes = await snapshot(backlog)
+            tasks, notes, comments = await snapshot(backlog)
             state.indexes = await asyncio.to_thread(
                 cached_indexes,
                 database_key(backlog),
                 [(item.id, document(item)) for item in tasks],
                 [(item.id, document(item)) for item in notes],
+                [(item.id, item.body) for item in comments],
             )
             state.revision = revision
         return state.indexes
 
 
 def match_ids(
-    indexes: tuple[VectorIndex, VectorIndex],
+    indexes: tuple[VectorIndex, VectorIndex, VectorIndex],
     args: Search,
     task_ids: set[int],
     note_ids: set[int],
+    comment_ids: set[int],
     min_score: float,
-) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]:
+) -> tuple[list[tuple[int, float]], list[tuple[int, float]], list[tuple[int, float]]]:
     """Rank allowed IDs entirely in a worker thread."""
-    task_index, note_index = indexes
+    task_index, note_index, comment_index = indexes
     query = encoder.encode([args.query])[0]
     return (
         task_index.search(query, task_ids, args.limit, min_score),
         note_index.search(query, note_ids, args.limit, min_score),
+        comment_index.search(query, comment_ids, args.limit, min_score),
     )
 
 
@@ -331,7 +364,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     )
     project_id, computer = reach.project_id, reach.computer
 
-    def inside(record: Task | Note) -> bool:
+    def inside(record: Task | Note | Comment) -> bool:
         """True when the record is in reach by itself, shared notes aside."""
         if project_id is not None:
             return record.project_id == project_id
@@ -350,11 +383,30 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     lexical_notes = await backlog.store.search_notes(
         args.query, project_id=project_id, computer=computer, tag=args.tag, limit=args.limit
     )
+    lexical_comments = (
+        await backlog.store.comments(
+            query=args.query,
+            project_id=project_id,
+            computer=computer,
+            status=args.status,
+            tag=args.tag,
+            limit=args.limit,
+        )
+        if "comments" in args.kinds
+        else []
+    )
+    if "tasks" not in args.kinds:
+        lexical_tasks = []
+    if "notes" not in args.kinds:
+        lexical_notes = []
+    comment_snippets = {item.id: item.snippet for item in lexical_comments}
     task_snippets = {item.id: item.snippet for item in lexical_tasks}
     note_snippets = {item.id: item.snippet for item in lexical_notes}
     del lexical_tasks, lexical_notes
     min_score = (
-        max(args.min_score, FTS_MIN_SCORE) if task_snippets or note_snippets else args.min_score
+        max(args.min_score, FTS_MIN_SCORE)
+        if task_snippets or note_snippets or comment_snippets
+        else args.min_score
     )
     vectors = await indexes(backlog)
     tasks = await backlog.store.tasks(
@@ -375,13 +427,30 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     allowed_notes = {
         item.id for item in notes if (inside(item) or item.shared) and (not tag or tag in item.tags)
     }
-    del tasks, notes
-    task_ids, note_ids = await asyncio.to_thread(
+    comments = (
+        await backlog.store.comments(
+            project_id=project_id,
+            computer=computer,
+            status=args.status,
+            tag=args.tag,
+            limit=-1,
+        )
+        if "comments" in args.kinds
+        else []
+    )
+    allowed_comments = {item.id for item in comments}
+    if "tasks" not in args.kinds:
+        allowed_tasks = set()
+    if "notes" not in args.kinds:
+        allowed_notes = set()
+    del tasks, notes, comments
+    task_ids, note_ids, comment_ids = await asyncio.to_thread(
         match_ids,
         vectors,
         args,
         allowed_tasks,
         allowed_notes,
+        allowed_comments,
         min_score,
     )
     task_hits: list[TaskHit] = []
@@ -428,10 +497,41 @@ async def search(args: Search, backlog: Backlog) -> Matches:
                 score=note_scores.get(record_id),
             )
         )
+    comment_hits: list[CommentHit] = []
+    comment_scores = dict(comment_ids)
+    ranked_comments = list(dict.fromkeys([*comment_snippets, *comment_scores]))[: args.limit]
+    current_comments = (
+        {
+            item.id: item
+            for item in await backlog.store.comments(
+                project_id=project_id,
+                computer=computer,
+                status=args.status,
+                tag=args.tag,
+                limit=-1,
+            )
+        }
+        if ranked_comments
+        else {}
+    )
+    for record_id in ranked_comments:
+        comment = current_comments.get(record_id)
+        if comment is None:
+            continue
+        data = asdict(comment)
+        data["snippet"] = comment_snippets.get(record_id) or comment.body[:200]
+        comment_hits.append(
+            CommentHit(
+                **data,
+                match="fts" if record_id in comment_snippets else "semantic",
+                score=comment_scores.get(record_id),
+            )
+        )
     return Matches(
+        comments=comment_hits,
         tasks=task_hits,
         notes=note_hits,
-        count=len(task_hits) + len(note_hits),
+        count=len(task_hits) + len(note_hits) + len(comment_hits),
         project=reach.slug,
         computer=reach.scope_computer,
     )

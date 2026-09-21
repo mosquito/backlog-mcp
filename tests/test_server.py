@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 from typing import Any
 
 import pytest
@@ -45,6 +44,8 @@ async def test_catalogue(client: BaseClient) -> None:
         "project_save",
         "project_delete",
         "task_add",
+        "task_comment_add",
+        "task_comment_list",
         "task_list",
         "task_get",
         "task_update",
@@ -165,11 +166,9 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
     assert task["closed_at"] is None
     closed = await call(client, "task_update", id=task["id"], status=closed_status)
     assert closed["closed_at"] is not None
-    assert re.fullmatch(
-        rf"Details\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}Z\n"
-        rf"Status changed: todo → {closed_status}\n",
-        closed["body"],
-    )
+    assert closed["body"] == "Details"
+    history = await call(client, "task_comment_list", task_id=task["id"])
+    assert history["items"][0]["body"] == f"Status changed: todo → {closed_status}"
     assert closed["tags"] == ["api"]
     assert (await call(client, "task_list"))["count"] == 0
     assert (await call(client, "task_list", status=[closed_status]))["items"][0]["id"] == task["id"]
@@ -178,16 +177,14 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
         client, "task_update", id=task["id"], status="doing", body="", tags=[], priority="urgent"
     )
     assert reopened["closed_at"] is None
-    assert re.fullmatch(
-        rf"Details\n---\n# UPDATE: \d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}Z\n"
-        rf"Status changed: todo → {closed_status}\n---\n"
-        r"# UPDATE: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n"
-        rf"Status changed: {closed_status} → doing\n",
-        reopened["body"],
-    )
+    assert reopened["body"] == ""
+    history = await call(client, "task_comment_list", task_id=task["id"])
+    assert history["items"][-1]["body"] == f"Status changed: {closed_status} → doing"
     assert reopened["tags"] == []
     assert reopened["priority"] == "urgent"
-    assert await call(client, "task_get", id=task["id"]) == reopened
+    details = await call(client, "task_get", id=task["id"])
+    assert all(details[key] == value for key, value in reopened.items())
+    assert details["comments_total"] == 2
 
 
 async def test_task_filters_pagination_and_global_scope(client: BaseClient) -> None:
@@ -244,11 +241,9 @@ async def test_move_preserves_task_and_changes_project_counts(client: BaseClient
     assert (await call(client, "task_list"))["count"] == 0
     assert (await call(client, "task_list", project=other["slug"]))["count"] == 1
     assert (await call(client, "task_get", id=task["id"]))["project"] == other["slug"]
-    assert re.search(
-        rf"# UPDATE: \d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}:\d{{2}}:\d{{2}}Z\n"
-        rf"Moved: {re.escape(task['project'])} → {re.escape(other['slug'])}\n$",
-        moved["body"],
-    )
+    assert moved["body"] == "Keep this"
+    history = await call(client, "task_comment_list", task_id=task["id"])
+    assert history["items"][0]["body"] == f"Moved: {task['project']} → {other['slug']}"
 
 
 async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient) -> None:
@@ -274,29 +269,28 @@ async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient
     assert (await call(client, "search", query="login"))["count"] == 1
 
 
-async def test_task_body_updates_append_timestamped_history(client: BaseClient) -> None:
+async def test_task_body_updates_replace_description(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Track progress", body="Initial scope")
-
-    updated = await call(
-        client, "task_update", id=task["id"], body="\nImplemented the first step\n"
+    comment = await call(
+        client, "task_comment_add", task_id=task["id"], body="Implemented step one"
     )
+    updated = await call(client, "task_update", id=task["id"], body="Revised scope")
+    assert updated["body"] == "Revised scope"
+    details = await call(client, "task_get", id=task["id"])
+    assert details["comments"] == [comment]
+    assert (await call(client, "task_update", id=task["id"], body=""))["body"] == ""
+    assert (await call(client, "task_get", id=task["id"]))["comments"] == [comment]
 
-    assert re.fullmatch(
-        r"Initial scope\n---\n# UPDATE: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n"
-        r"Implemented the first step\n",
-        updated["body"],
-    )
 
-
-async def test_task_status_changes_append_timestamped_history(client: BaseClient) -> None:
+async def test_task_status_changes_create_separate_history(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Track status")
-
     updated = await call(client, "task_update", id=task["id"], status="doing")
-
-    assert re.fullmatch(
-        r"---\n# UPDATE: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\nStatus changed: todo → doing\n",
-        updated["body"],
-    )
+    assert updated["body"] == ""
+    await call(client, "task_update", id=task["id"], status="doing")
+    history = await call(client, "task_comment_list", task_id=task["id"])
+    assert history["count"] == 1
+    assert history["items"][0]["body"] == "Status changed: todo → doing"
+    assert history["items"][0]["kind"] == "status"
 
 
 async def test_statistics(client: BaseClient) -> None:
@@ -331,7 +325,9 @@ async def test_statistics(client: BaseClient) -> None:
 async def test_resources(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Visible")
     await call(client, "task_add", title="Closed", status="done")
-    assert await resource(client, f"backlog://tasks/{task['id']}") == task
+    assert await resource(client, f"backlog://tasks/{task['id']}") == await call(
+        client, "task_get", id=task["id"]
+    )
     assert [item["id"] for item in await resource(client, "backlog://tasks")] == [task["id"]]
     current = await resource(client, "backlog://project")
     assert current["project"]["slug"] == task["project"]
@@ -397,6 +393,8 @@ async def test_scoped_completions(client: BaseClient) -> None:
     ("name", "arguments", "message"),
     [
         ("task_get", {"id": 999}, "no task #999"),
+        ("task_comment_add", {"task_id": 999, "body": "Missing"}, "no task #999"),
+        ("task_comment_list", {"task_id": 999}, "no task #999"),
         ("task_update", {"id": 999, "title": "Missing"}, "no task #999"),
         ("task_delete", {"id": 999}, "no task #999"),
         ("note_get", {"id": 999}, "no note #999"),

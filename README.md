@@ -70,7 +70,7 @@ cd ~/dev/my-project        # first use prompts for project registration
 backlog add Write the release notes -t docs
 backlog create             # the same, in $EDITOR
 backlog list
-backlog search notes       # tasks and notes at once
+backlog search notes       # tasks, comments, and notes
 backlog show 1
 backlog start 1            # doing
 backlog block 1            # blocked
@@ -79,9 +79,33 @@ backlog reopen 1           # todo again
 backlog stats              # open tasks, closed tasks, and notes
 ```
 
-`backlog edit <id>` opens the task fields with an empty body for a new progress
-update. That text is appended to the task history. Status changes also record
-history through MCP. Existing history is preserved.
+`backlog edit <id>` edits the task fields and description. Routine progress belongs
+in a separate comment:
+
+```bash
+backlog comment 1 "Implemented the parser; checking error handling."
+backlog comments 1 --limit 20 --offset 0
+backlog search parser --kind comments
+backlog search parser --kind tasks --kind comments
+```
+
+`backlog show <id>` displays the description and a page of comments as separate
+Markdown blocks. Dates and entry types appear outside the comment text. Use the
+printed `backlog comments` command to read more entries.
+
+Over MCP, `task_comment_add(task_id, body)` adds a comment. `task_update(body=...)`
+replaces the description; an empty string clears it. `task_get` returns `comments`,
+`comments_total`, and `comments_next_offset`. `task_comment_list(task_id, limit, offset)`
+returns subsequent pages. Entries sort by creation time, then id. Status transitions
+and project moves create history entries without changing the description.
+
+The database migration extracts recognized legacy `# UPDATE` blocks and keeps an exact
+copy of each affected body in `task_history_originals`. Ambiguous histories stay intact
+and set `history_warning` for manual review. Code fences are preserved.
+
+Search accepts `kinds=["tasks", "comments", "notes"]` by default. Select any subset to
+search task descriptions, comment text, or notes. Each kind has its own result list;
+comment results include their id, task_id, project, snippet, and match score.
 
 Every command prints a table or a panel, in colour when the terminal takes it:
 
@@ -112,7 +136,7 @@ reviews, with filters and pagination; use `stats` for counts.
 `backlog search` and the MCP `search` tool combine SQLite FTS5 prefix matching with
 multilingual semantic search over titles, bodies and tags. FTS matches come first in
 BM25 order. Additional semantic matches follow in cosine similarity order. Each ID
-appears once per record kind. The limit applies separately to tasks and notes after merging.
+appears once per record kind. The limit applies separately to each selected content kind after merging.
 
 Project scope, task status and tag filters apply to both searches. Shared notes remain
 visible across projects. `min_score` (`--min-score` in the terminal) defaults to `0.15`
@@ -302,11 +326,12 @@ on; without them every request is served, so bind to `127.0.0.1`. The endpoint r
 scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
 validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
 
-The agent gets 17 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
-`task_add`, `task_get`, `task_list`, `task_update`, `task_move`, `task_delete`, `note_save`,
+The agent gets 19 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
+`task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,
+`task_move`, `task_delete`, `note_save`,
 `note_append`, `note_get`, `note_list`, `note_delete`, `search`, `stats`), the same
-boards, and the same database. `search` is the one search: it answers with the tasks and
-the notes that match, so a new kind of record later is one more list in the result, not a new
+boards, and the same database. `search` is the one search: it answers with the tasks, comments, and
+notes that match, so a new kind of record later is one more list in the result, not a new
 tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`,
 `backlog://tasks/{id}`, `backlog://notes` and `backlog://notes/{id}` read the same data without a
 tool call, and a write publishes `notifications/resources/updated` for the ones it touched. Each
@@ -400,7 +425,7 @@ limit the duration of a watch subscription.
 
 | What | Path | Override |
 | --- | --- | --- |
-| Projects, tasks and notes | `$XDG_DATA_HOME/backlog-mcp/backlog.sqlite3` | `--database`, `BACKLOG_MCP_DATABASE` |
+| Projects, tasks, comments, and notes | `$XDG_DATA_HOME/backlog-mcp/backlog.sqlite3` | `--database`, `BACKLOG_MCP_DATABASE` |
 | The computer name | `$XDG_STATE_HOME/backlog-mcp/state.json` | `--state`, `BACKLOG_MCP_STATE` |
 | Defaults | `/etc/backlog-mcp/config.toml`, `$XDG_CONFIG_HOME/backlog-mcp/config.toml`, `./.backlog-mcp.toml` | `--config` |
 

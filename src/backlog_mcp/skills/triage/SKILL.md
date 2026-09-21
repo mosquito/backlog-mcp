@@ -45,13 +45,12 @@ inventory; apply filters and paginate through that scope. Use `stats` for counts
 
 - Done in the code but open on the board: set `status="done"` with `task_update`.
 - No longer wanted: set `status="cancelled"`. Do not delete it; a cancelled task records the decision.
-- Blocked on something outside the task: set `status="blocked"` and say what blocks it in the body.
+- Blocked on something outside the task: set `status="blocked"` and explain the blocker with `task_comment_add`.
 - Being worked on now: set `status="doing"`, one task at a time.
 
-`task_update` appends a timestamped history entry for supplied body text and status transitions.
-Pass only the new update text; do not fetch the existing body to reconstruct it. When the scope
-needs rewriting rather than progressing, close the old task and create a new task whose body
-references the old task id.
+Use `task_comment_add(task_id, body)` for progress and decisions. Status transitions
+create separate history entries. `task_update(body=...)` replaces the task description;
+use it only when the task definition changes. Follow the project's `preferred_language`.
 
 ## 4. File what is missing
 
