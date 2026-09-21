@@ -79,6 +79,40 @@ backlog reopen 1           # todo again
 backlog stats              # open tasks, closed tasks, and notes
 ```
 
+Every command has a two-letter alias, shown in `--help`. Short forms are unique
+across the command tree. Full names and aliases can be mixed.
+
+| Command | Alias | Command | Alias |
+| --- | --- | --- | --- |
+| `add` | `ad` | `create` | `cr` |
+| `list` | `ls` | `search` | `se` |
+| `show` | `sh` | `edit` | `ed` |
+| `comment` | `co` | `comments` | `cm` |
+| `start` | `st` | `stats` | `ss` |
+| `block` | `bl` | `close` | `cl` |
+| `cancel` | `ca` | `reopen` | `re` |
+| `move` | `mv` | `delete` | `rm` |
+| `current` | `cu` | `init` | `in` |
+| `projects` | `pr` | `note` | `no` |
+| `skills` | `sk` | `watch` | `wa` |
+| `mcp` | `mc` | `install` | `is` |
+
+Nested aliases start with `p` for projects and `n` for notes:
+
+| Command | Short form |
+| --- | --- |
+| `projects update` | `pr pu` |
+| `projects delete` | `pr pd` |
+| `note add` | `no na` |
+| `note append` | `no np` |
+| `note list` | `no nl` |
+| `note show` | `no ns` |
+| `note edit` | `no ne` |
+| `note delete` | `no nd` |
+
+For example, `backlog sh 1` shows a task and `backlog no na Convention -b "Use English"`
+saves a note. Arguments and options work the same with either spelling.
+
 `backlog edit <id>` edits the task fields and description. Routine progress belongs
 in a separate comment:
 

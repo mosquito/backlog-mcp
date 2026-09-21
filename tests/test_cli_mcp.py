@@ -100,6 +100,34 @@ async def test_http_operations_use_server_storage(remote: RemoteRunner, backlog:
     assert (await remote("show", "999")) == (1, "no task #999\n")
 
 
+async def test_aliases_route_tasks_notes_and_projects(
+    remote: RemoteRunner, backlog: Backlog
+) -> None:
+    assert (await remote("ad", "Alias task", "-t", "cli"))[0] == 0
+    assert "Alias task" in (await remote("ls"))[1]
+    assert (await remote("co", "1", "Alias comment"))[0] == 0
+    assert "Alias comment" in (await remote("cm", "1"))[1]
+    assert "Alias comment" in (await remote("sh", "1"))[1]
+    assert (await remote("st", "1"))[0] == 0
+    task = await backlog.store.task(1)
+    assert task is not None and task.status == Status.DOING
+    assert (await remote("cl", "1"))[0] == 0
+    task = await backlog.store.task(1)
+    assert task is not None and task.status == Status.DONE
+
+    assert (await remote("no", "na", "Alias note", "-b", "Original text"))[0] == 0
+    assert (await remote("note", "np", "1", "More text"))[0] == 0
+    assert "More text" in (await remote("no", "show", "1"))[1]
+    assert "Alias note" in (await remote("no", "nl"))[1]
+    assert (await remote("no", "nd", "1"))[0] == 0
+    assert await backlog.store.note(1) is None
+
+    code, output = await remote("pr", "pu", "client-workspace", "--preferred-language", "ru")
+    assert code == 0 and "preferred language = ru" in output
+    project = await backlog.store.project_by_slug("client-workspace")
+    assert project is not None and project.preferred_language == "ru"
+
+
 async def test_remote_scope_uses_nested_local_root_and_explicit_override(
     remote: RemoteRunner,
     backlog: Backlog,

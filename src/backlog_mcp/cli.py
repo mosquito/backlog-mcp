@@ -600,8 +600,9 @@ class Projects(Command):
 
     archived: bool = argclass.Argument(default=False, help="Include archived projects")
     at, all_computers = computer_options()
-    update = ProjectUpdate(help="Set or clear the project language preference")
+    update = ProjectUpdate(aliases=["pu"], help="Set or clear the project language preference")
     delete = ProjectDelete(
+        aliases=["pd"],
         help="Delete a project for good",
         description=(
             "Delete a project with every task and note on its board, and free its directories "
@@ -1095,6 +1096,7 @@ class Notes(Command):
     """Lasting user context unavailable from other sources."""
 
     list = NoteList(
+        aliases=["nl"],
         help="List the notes of this project and the shared ones",
         description=(
             "Print the notes of the current project plus every shared note, most recently "
@@ -1103,10 +1105,12 @@ class Notes(Command):
         ),
     )
     show = NoteShow(
+        aliases=["ns"],
         help="Print one note in full",
         description="Print a note by id: its tags, whether it is shared, and the markdown body.",
     )
     add = NoteAdd(
+        aliases=["na"],
         help="Write a note, or replace the one with that title",
         description=(
             "Save a note from the command line. A title is unique inside a project: a new "
@@ -1115,6 +1119,7 @@ class Notes(Command):
         ),
     )
     append = NoteAppend(
+        aliases=["np"],
         help="Add a paragraph at the end of a note",
         description=(
             "Extend a note by id without rewriting it. The text lands after a blank line, so "
@@ -1122,6 +1127,7 @@ class Notes(Command):
         ),
     )
     edit = NoteEdit(
+        aliases=["ne"],
         help="Edit a note in $EDITOR",
         description=(
             "Open a note in the editor as a form: the title, the tags and the shared flag on "
@@ -1129,6 +1135,7 @@ class Notes(Command):
         ),
     )
     delete = NoteDelete(
+        aliases=["nd"],
         help="Delete a note for good",
         description=(
             "Delete a note permanently. Ask first only for another project, unless --yes is given. "
@@ -1420,6 +1427,7 @@ class CLI(argclass.Parser):
     )
 
     mcp = Serve(
+        aliases=["mc"],
         help="Serve MCP, on stdio or over HTTP",
         description=(
             "Run the MCP server on the same backlog the other commands use. stdio is the "
@@ -1436,6 +1444,7 @@ class CLI(argclass.Parser):
         config_parser_class=argclass.TOMLDefaultsParser,
     )
     current = Current(
+        aliases=["cu"],
         help="Show which project the commands work on",
         description=(
             "Print the current project and why it is current: named by --project, found from "
@@ -1444,6 +1453,7 @@ class CLI(argclass.Parser):
         ),
     )
     init = Init(
+        aliases=["in"],
         help="Register this checkout or bind it to an existing project",
         description=(
             "Register the current computer and checkout through MCP. Without arguments, ask "
@@ -1453,6 +1463,7 @@ class CLI(argclass.Parser):
         ),
     )
     projects = Projects(
+        aliases=["pr"],
         help="List the registered projects",
         description=(
             "Print the projects of this computer with their root directory and their open and "
@@ -1462,6 +1473,7 @@ class CLI(argclass.Parser):
         ),
     )
     list = List(
+        aliases=["ls"],
         help="List tasks of this project, or of all",
         description=(
             "List tasks, most important first, open ones (todo, doing, blocked) before the "
@@ -1470,6 +1482,7 @@ class CLI(argclass.Parser):
         ),
     )
     search = Search(
+        aliases=["se"],
         help="FTS and semantic search over tasks, comments, and notes",
         description=(
             "Search titles, bodies and tags with FTS prefixes and local multilingual embeddings. "
@@ -1477,13 +1490,15 @@ class CLI(argclass.Parser):
             "--min-score filters semantic matches only. --all-projects searches every board."
         ),
     )
-    comment = CommentAdd(help="Add a task comment")
-    comments = CommentList(help="Read task comments and history")
+    comment = CommentAdd(aliases=["co"], help="Add a task comment")
+    comments = CommentList(aliases=["cm"], help="Read task comments and history")
     show = Show(
+        aliases=["sh"],
         help="Print one task in full",
         description="Print the title, body, status, priority, tags and timestamps of one task.",
     )
     add = Add(
+        aliases=["ad"],
         help="Add a task from the command line",
         description=(
             "Add a task without opening an editor. The title is the positional argument; "
@@ -1491,6 +1506,7 @@ class CLI(argclass.Parser):
         ),
     )
     create = Create(
+        aliases=["cr"],
         help="Write a task in $EDITOR",
         description=(
             "Open $VISUAL, else $EDITOR, else vi on a form. The headers at the top set the "
@@ -1499,6 +1515,7 @@ class CLI(argclass.Parser):
         ),
     )
     edit = Edit(
+        aliases=["ed"],
         help="Edit a task in $EDITOR",
         description=(
             "Edit the task fields and description. Use `backlog comment` for progress updates. "
@@ -1506,18 +1523,22 @@ class CLI(argclass.Parser):
         ),
     )
     start = Start(
+        aliases=["st"],
         help="Mark tasks in progress",
         description="Move one or more tasks to the doing status.",
     )
     block = Block(
+        aliases=["bl"],
         help="Mark tasks blocked",
         description="Move one or more tasks to the blocked status. They stay open.",
     )
     close = Close(
+        aliases=["cl"],
         help="Mark tasks done",
         description="Move one or more tasks to the done status, which stamps the closing time.",
     )
     cancel = Cancel(
+        aliases=["ca"],
         help="Mark tasks cancelled",
         description=(
             "Move one or more tasks to the cancelled status: kept and searchable, but closed. "
@@ -1525,10 +1546,12 @@ class CLI(argclass.Parser):
         ),
     )
     reopen = Reopen(
+        aliases=["re"],
         help="Put tasks back on the pile",
         description="Move one or more tasks back to the todo status and clear the closing time.",
     )
     move = Move(
+        aliases=["mv"],
         help="Move a task into another project",
         description=(
             "Give a task to another board. The destination is a project slug or any path "
@@ -1536,6 +1559,7 @@ class CLI(argclass.Parser):
         ),
     )
     delete = Delete(
+        aliases=["rm"],
         help="Delete a task for good",
         description=(
             "Delete a task permanently. Ask first only for another project, unless --yes is given. "
@@ -1543,6 +1567,7 @@ class CLI(argclass.Parser):
         ),
     )
     stats = Stats(
+        aliases=["ss"],
         help="Count open tasks, closed tasks, and notes",
         description=(
             "Show open tasks, closed tasks, and notes, followed by status and priority counts "
@@ -1550,6 +1575,7 @@ class CLI(argclass.Parser):
         ),
     )
     note = Notes(
+        aliases=["no"],
         help="Lasting user context: preferences, agreements, and constraints",
         description=(
             "Code changes; notes remain. Keep lasting user context unavailable elsewhere, not "
@@ -1560,6 +1586,7 @@ class CLI(argclass.Parser):
         ),
     )
     skills = Skills(
+        aliases=["sk"],
         help="Show the skills this server offers to MCP clients",
         description=(
             "Print the written skills served over MCP: their names, what each one is for, and "
@@ -1568,6 +1595,7 @@ class CLI(argclass.Parser):
         ),
     )
     watch = Watch(
+        aliases=["wa"],
         help="Print the changes of a backlog server as they happen",
         description=(
             "Listen to a running server over HTTP and print one line per change: tasks, notes "
@@ -1577,6 +1605,7 @@ class CLI(argclass.Parser):
         ),
     )
     install = Install(
+        aliases=["is"],
         help="Register this server with Claude Code and Codex",
         description=(
             "Add this backlog as an MCP server to the clients on this machine. Their own CLIs "

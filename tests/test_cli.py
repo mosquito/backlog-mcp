@@ -7,6 +7,7 @@ import tomllib
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
+import argclass
 import pytest
 
 from backlog_mcp import cli, render
@@ -85,6 +86,30 @@ def test_no_command_prints_the_help(run: Runner) -> None:
     assert code == 0
     assert "Serve MCP, on stdio or over HTTP" in output
     assert "install" in output
+
+
+def test_aliases_are_unique_and_show_the_same_help(capsys: pytest.CaptureFixture[str]) -> None:
+    root = cli.CLI()
+    seen: set[str] = set()
+
+    def help_text(words: list[str]) -> str:
+        with pytest.raises(SystemExit) as error:
+            root.parse_args([*words, "--help"])
+        assert error.value.code == 0
+        return capsys.readouterr().out
+
+    def check(parser: argclass.Parser, names: list[str], short: list[str]) -> None:
+        for name, child in parser.__subparsers__.items():
+            aliases = child._parser_kwargs["aliases"]
+            assert len(aliases) == 1
+            alias = aliases[0]
+            assert len(alias) == 2 and alias.isalpha() and alias.islower()
+            assert alias not in seen
+            seen.add(alias)
+            assert help_text([*short, alias]) == help_text([*names, name])
+            check(child, [*names, name], [*short, alias])
+
+    check(root, [], [])
 
 
 def test_add_list_search_and_close_one_task(run: Runner) -> None:
@@ -500,10 +525,12 @@ def test_server_main_runs_the_server_command(monkeypatch: pytest.MonkeyPatch) ->
     assert seen == [["mcp", "--protocol", "stdio"]]
 
 
-def test_note_group_prints_its_help_and_opens_nothing(run: Runner) -> None:
-    code, output = run("note")
+@pytest.mark.parametrize("command", ["note", "no"])
+def test_note_group_prints_its_help_and_opens_nothing(run: Runner, command: str) -> None:
+    code, output = run(command)
     assert code == 0
-    assert "note [-h] {list,show,add,append,edit,delete}" in output
+    assert "note [-h]" in output
+    assert "{list,nl,show,ns,add,na,append,np,edit,ne,delete,nd}" in output
     assert "List the notes of this project" in output
     assert "append" in output
     assert not run.database.exists()
