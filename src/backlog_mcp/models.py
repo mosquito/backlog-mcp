@@ -89,7 +89,6 @@ class Comments(BaseModel):
     items: list[CommentOut]
     task_id: int
     count: int = Field(description="Total number of comments and history entries.")
-    next_offset: int | None = None
 
 
 class TaskOut(BaseModel):
@@ -109,8 +108,6 @@ class TaskOut(BaseModel):
 
 class TaskDetails(TaskOut):
     comments: list[CommentOut] = Field(default_factory=list)
-    comments_total: int = 0
-    comments_next_offset: int | None = None
 
 
 class TaskListItem(BaseModel):

@@ -757,25 +757,19 @@ class CommentAdd(Command):
 
 
 class CommentList(Command):
-    """Read one chronological page of comments and history."""
+    """Read all comments and history in chronological order."""
 
     id: int = argclass.Argument("id", type=int, help="Task id")
-    limit: int = argclass.Argument(default=50, help="Most entries to show (1–200)")
-    offset: int = argclass.Argument(default=0, help="Number of entries to skip")
 
     async def __call__(self) -> int:
         result = await self.connection.call(
             Comments,
             "task_comment_list",
             task_id=self.id,
-            limit=self.limit,
-            offset=self.offset,
         )
         for item in result.items:
             console.print(comment_panel(item))
-        note(f"{len(result.items)} of {result.count} comments and history entries")
-        if result.next_offset is not None:
-            note(f"More: backlog comments {self.id} --offset {result.next_offset}")
+        note(f"{result.count} comments and history entries")
         return 0
 
 

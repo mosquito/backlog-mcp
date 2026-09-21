@@ -801,8 +801,7 @@ class Store:
         status: Sequence[Status] | None = None,
         tag: str | None = None,
         query: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
+        limit: int = -1,
     ) -> list[Comment]:
         clauses, parameters = self.filters(
             project_id=project_id, computer=computer, status=status, tag=tag, priority=None
@@ -829,8 +828,8 @@ class Store:
         rows = await self.rows(
             f"SELECT c.*, t.project_id, p.slug AS project {snippet} FROM {source} "
             "JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id "
-            f"{where} ORDER BY {order} LIMIT ? OFFSET ?",
-            (*parameters, limit, offset),
+            f"{where} ORDER BY {order} LIMIT ?",
+            (*parameters, limit),
         )
         return [Comment(**dict(row)) for row in rows]
 

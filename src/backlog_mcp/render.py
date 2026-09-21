@@ -249,16 +249,9 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
         parts.append(
             Text("Legacy history needs review; its original text was preserved.", style="yellow")
         )
-    if isinstance(task, TaskDetails) and task.comments_total:
-        parts.append(Rule(f"comments and history ({task.comments_total})", style="dim"))
+    if isinstance(task, TaskDetails) and task.comments:
+        parts.append(Rule(f"comments and history ({len(task.comments)})", style="dim"))
         parts.extend(comment_panel(item) for item in task.comments)
-        if task.comments_next_offset is not None:
-            parts.append(
-                Text(
-                    f"More: backlog comments {task.id} --offset {task.comments_next_offset}",
-                    style="dim",
-                )
-            )
     return Panel(
         Group(*parts),
         box=ROUNDED,

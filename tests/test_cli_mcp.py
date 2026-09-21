@@ -295,7 +295,7 @@ def test_stdio_startup_failure_reaps_child(
     assert len(processes) == 1 and processes[0].returncode is not None
 
 
-async def test_comment_search_and_pagination_over_http(remote: RemoteRunner) -> None:
+async def test_comment_search_and_complete_history_over_http(remote: RemoteRunner) -> None:
     await remote("add", "Task", "-b", "Definition")
     await remote("comment", "1", "uniquemarker first")
     await remote("comment", "1", "Second comment")
@@ -304,7 +304,6 @@ async def test_comment_search_and_pagination_over_http(remote: RemoteRunner) -> 
     assert "uniquemarker" in output
     code, output = await remote("search", "uniquemarker", "--kind", "tasks", "--min-score", "1")
     assert code == 0 and "0 task match(es)" in output and "comment match(es)" not in output
-    code, output = await remote("comments", "1", "--limit", "1")
-    assert code == 0 and "1 of 2" in output and "--offset 1" in output
-    code, output = await remote("comments", "1", "--offset", "1")
-    assert code == 0 and "Second comment" in output and "uniquemarker" not in output
+    code, output = await remote("comments", "1")
+    assert code == 0 and "2 comments and history entries" in output
+    assert "uniquemarker" in output and "Second comment" in output

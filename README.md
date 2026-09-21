@@ -84,19 +84,19 @@ in a separate comment:
 
 ```bash
 backlog comment 1 "Implemented the parser; checking error handling."
-backlog comments 1 --limit 20 --offset 0
+backlog comments 1
 backlog search parser --kind comments
 backlog search parser --kind tasks --kind comments
 ```
 
-`backlog show <id>` displays the description and a page of comments as separate
-Markdown blocks. Dates and entry types appear outside the comment text. Use the
-printed `backlog comments` command to read more entries.
+`backlog show <id>` displays the description and all comments as separate Markdown
+blocks. Dates and entry types appear outside the comment text. `backlog comments <id>`
+shows the complete history without the task description.
 
 Over MCP, `task_comment_add(task_id, body)` adds a comment. `task_update(body=...)`
-replaces the description; an empty string clears it. `task_get` returns `comments`,
-`comments_total`, and `comments_next_offset`. `task_comment_list(task_id, limit, offset)`
-returns subsequent pages. Entries sort by creation time, then id. Status transitions
+replaces the description; an empty string clears it. `task_get` returns all comments
+in a separate `comments` list. `task_comment_list(task_id)` returns the complete history
+on its own. Entries sort by creation time, then id. Status transitions
 and project moves create history entries without changing the description.
 
 The database migration extracts recognized legacy `# UPDATE` blocks and keeps an exact

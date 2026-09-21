@@ -103,9 +103,9 @@ Listings show open statuses, most important first, unless filters ask for others
 Comments. Use `task_comment_add` for progress, findings, blockers, decisions, and verification.
 Comments are stored separately from the description. `task_update(body=...)` replaces the
 whole description; use it only to revise the task definition. An empty body clears it.
-Status transitions and moves create separate history entries. `task_get` returns a chronological
-page of `comments`, `comments_total`, and `comments_next_offset`. Use `task_comment_list` for
-further pages. Each entry has its own id, task_id, kind, and creation time.
+Status transitions and moves create separate history entries. `task_get` returns all `comments`
+in chronological order. Use `task_comment_list` to read the complete history separately.
+Each entry has its own id, task_id, kind, and creation time.
 
 Notes. Code changes; notes remain. Keep lasting user context unavailable elsewhere: \
 preferences, working agreements, people and responsibilities, business constraints, and reasons \
@@ -280,17 +280,11 @@ def comment_out(comment: Comment) -> CommentOut:
     )
 
 
-async def task_details(
-    task: Task, backlog: Backlog, *, limit: int = 50, offset: int = 0
-) -> TaskDetails:
-    comments = await backlog.store.comments(task_id=task.id, limit=limit, offset=offset)
-    total = await backlog.store.count_comments(task.id)
-    following = offset + len(comments)
+async def task_details(task: Task, backlog: Backlog) -> TaskDetails:
+    comments = await backlog.store.comments(task_id=task.id)
     return TaskDetails(
         **task_out(task).model_dump(),
         comments=[comment_out(item) for item in comments],
-        comments_total=total,
-        comments_next_offset=following if following < total else None,
     )
 
 
@@ -574,11 +568,6 @@ class TaskId(BaseModel):
     id: int
 
 
-class GetTask(TaskId):
-    comments_limit: int = Field(default=50, ge=1, le=200)
-    comments_offset: int = Field(default=0, ge=0)
-
-
 class AddComment(BaseModel):
     task_id: int
     body: str = Field(
@@ -588,8 +577,6 @@ class AddComment(BaseModel):
 
 class ListComments(BaseModel):
     task_id: int
-    limit: int = Field(default=50, ge=1, le=200)
-    offset: int = Field(default=0, ge=0)
 
 
 class UpdateTask(BaseModel):
@@ -846,16 +833,15 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
 
 
 @registry.tool(title="Read a task", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_get(args: GetTask, backlog: Backlog) -> TaskDetails:
-    """Read a task with a separate chronological page of comments and history.
+async def task_get(args: TaskId, backlog: Backlog) -> TaskDetails:
+    """Read a task with all comments and history in chronological order.
 
-    comments_total and comments_next_offset describe the remaining entries. Use
-    task_comment_list to read further pages. The body is only the task description.
+    The body is only the task description; comments are returned as a separate list.
     """
     task = await backlog.store.task(args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
-    return await task_details(task, backlog, limit=args.comments_limit, offset=args.comments_offset)
+    return await task_details(task, backlog)
 
 
 @registry.tool(title="Add a task comment", annotations=Hint.OPEN_WORLD)
@@ -878,12 +864,11 @@ async def task_comment_list(args: ListComments, backlog: Backlog) -> Comments:
     task = await backlog.store.task(args.task_id)
     if task is None:
         raise LookupError(f"no task #{args.task_id}")
-    details = await task_details(task, backlog, limit=args.limit, offset=args.offset)
+    details = await task_details(task, backlog)
     return Comments(
         items=details.comments,
         task_id=task.id,
-        count=details.comments_total,
-        next_offset=details.comments_next_offset,
+        count=len(details.comments),
     )
 
 

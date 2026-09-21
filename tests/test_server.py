@@ -184,7 +184,7 @@ async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> 
     assert reopened["priority"] == "urgent"
     details = await call(client, "task_get", id=task["id"])
     assert all(details[key] == value for key, value in reopened.items())
-    assert details["comments_total"] == 2
+    assert len(details["comments"]) == 2
 
 
 async def test_task_filters_pagination_and_global_scope(client: BaseClient) -> None:

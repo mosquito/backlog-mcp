@@ -80,18 +80,18 @@ async def test_migration_preserves_originals_and_is_not_repeated(tmp_path: Path)
         await store.close()
 
 
-async def test_comments_page_without_changing_description(client: BaseClient) -> None:
+async def test_all_comments_are_returned_without_changing_description(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Task", body="Description")
     assert (await call(client, "task_get", id=task["id"]))["comments"] == []
-    for number in range(3):
-        await call(client, "task_comment_add", task_id=task["id"], body=f"Comment {number}")
-    details = await call(client, "task_get", id=task["id"], comments_limit=2)
+    expected = [f"Comment {number}" for number in range(51)]
+    for body in expected:
+        await call(client, "task_comment_add", task_id=task["id"], body=body)
+    details = await call(client, "task_get", id=task["id"])
     assert details["body"] == "Description"
-    assert details["comments_total"] == 3 and details["comments_next_offset"] == 2
-    assert [item["body"] for item in details["comments"]] == ["Comment 0", "Comment 1"]
-    rest = await call(client, "task_comment_list", task_id=task["id"], offset=2)
-    assert rest["count"] == 3 and rest["next_offset"] is None
-    assert [item["body"] for item in rest["items"]] == ["Comment 2"]
+    assert [item["body"] for item in details["comments"]] == expected
+    history = await call(client, "task_comment_list", task_id=task["id"])
+    assert history["count"] == len(expected)
+    assert history["items"] == details["comments"]
     assert "comments" not in (await call(client, "task_list", full=True))["items"][0]
 
 

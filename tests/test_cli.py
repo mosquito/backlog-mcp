@@ -169,8 +169,8 @@ def test_show_renders_comments_separately(run: Runner) -> None:
     assert "comments and history (1)" in output
     assert "**comment**" not in output
     assert "comment #1" in output
-    code, output = run("comments", "1", "--limit", "1")
-    assert code == 0 and "1 of 1" in output
+    code, output = run("comments", "1")
+    assert code == 0 and "1 comments and history entries" in output
 
 
 def test_skills_are_listed_and_printed_in_full(run: Runner) -> None:
