@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import tempfile
+import contextlib
+import logging
+from collections import deque
 from dataclasses import asdict, dataclass, field
-from functools import cache
 from hashlib import sha256
 from pathlib import Path
-from threading import Lock, RLock
+from threading import Lock
 from typing import TYPE_CHECKING, Annotated, Literal
 from weakref import WeakKeyDictionary
-from zipfile import BadZipFile
 
 import aiosqlite
 import numpy as np
@@ -27,6 +25,7 @@ from . import backlog as scope
 from .backlog import Backlog
 from .database import Database
 from .models import Actor, CommentOut, NoteOut, ProjectOut, Status, TaskOut
+from .queries import QUERIES
 from .records import Comment, Note, Project, Task
 from .transaction import Transaction
 
@@ -47,7 +46,7 @@ class ModelUnavailable(RuntimeError):
 
 
 class Encoder:
-    """Load once from a local directory; serialize inference outside the event loop."""
+    """Load once from a local directory; run inference outside the event loop."""
 
     def __init__(self, path: Path = MODEL_PATH) -> None:
         self.path = path.resolve()
@@ -71,14 +70,14 @@ class Encoder:
                 if self.model.dim != DIMENSIONS:
                     self.model = None
                     raise ModelUnavailable(f"The bundled model must have {DIMENSIONS} dimensions")
-            values = np.asarray(
-                self.model.encode(texts, max_length=None, use_multiprocessing=False),
-                dtype=np.float32,
-            )
-            norms = np.linalg.norm(values, axis=1, keepdims=True)
-            normalized = np.zeros_like(values)
-            np.divide(values, norms, out=normalized, where=norms > 0)
-            return normalized
+        values = np.asarray(
+            self.model.encode(texts, max_length=None, use_multiprocessing=False),
+            dtype=np.float32,
+        )
+        norms = np.linalg.norm(values, axis=1, keepdims=True)
+        normalized = np.zeros_like(values)
+        np.divide(values, norms, out=normalized, where=norms > 0)
+        return normalized
 
 
 encoder = Encoder()
@@ -194,6 +193,7 @@ class VectorIndex:
 
     ids: list[int]
     vectors: NDArray[np.float32]
+    digests: dict[int, bytes] = field(default_factory=dict)
 
     def search(
         self, query: NDArray[np.float32], allowed: set[int], limit: int, min_score: float
@@ -212,117 +212,72 @@ class VectorIndex:
         return sorted(eligible, key=lambda item: (-item[1], item[0]))[:limit]
 
 
-@cache
-def model_digest(path: Path) -> str:
-    return sha256((path / "model.safetensors").read_bytes()).hexdigest()
+type Indexes = tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]
 
 
-@cache
-def cache_directory() -> tempfile.TemporaryDirectory[str]:
-    """One private directory per running process, created on first use and removed at exit.
-
-    Nothing is shared between processes, so no file lock; `INDEXING` serializes the threads of
-    this one. The cache holds the object, so its finalizer runs at exit and not before.
-    """
-    return tempfile.TemporaryDirectory(prefix="backlog-mcp-embeddings-")
+@dataclass(frozen=True)
+class Change:
+    kind: int
+    id: int
+    project_id: int
+    text: str | None
 
 
-def cache_root() -> Path:
-    return Path(cache_directory().name)
-
-
-#: Two stores on one database share a cache file; the second thread finds what the first wrote.
-INDEXING = RLock()
-
-
-def cached_indexes(
-    database: str,
-    tasks: list[tuple[int, str]],
-    notes: list[tuple[int, str]],
-    comments: list[tuple[int, str]],
-    projects: list[tuple[int, str]],
-) -> tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]:
-    """Load the ID/vector snapshot of this process, or build it and write it for the next call."""
-    digest = model_digest(encoder.path)
-    identity = sha256(f"{database}:{digest}".encode()).hexdigest()
-    signature = sha256(
-        json.dumps([tasks, notes, comments, projects], ensure_ascii=False).encode()
-    ).hexdigest()
-    directory = cache_root()
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path = directory / f"{identity}.npz"
-    with INDEXING:
-        return load_or_build(path, signature, tasks, notes, comments, projects)
-
-
-def load_or_build(
-    path: Path,
-    signature: str,
-    tasks: list[tuple[int, str]],
-    notes: list[tuple[int, str]],
-    comments: list[tuple[int, str]],
-    projects: list[tuple[int, str]],
-) -> tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]:
-    try:
-        with np.load(path, allow_pickle=False) as saved:
-            if str(saved["signature"].item()) == signature:
-                task_index = VectorIndex(saved["task_ids"].tolist(), saved["task_vectors"])
-                note_index = VectorIndex(saved["note_ids"].tolist(), saved["note_vectors"])
-                comment_index = VectorIndex(saved["comment_ids"].tolist(), saved["comment_vectors"])
-                project_index = VectorIndex(saved["project_ids"].tolist(), saved["project_vectors"])
-                if all(
-                    index.vectors.shape == (len(index.ids), DIMENSIONS)
-                    and np.isfinite(index.vectors).all()
-                    for index in (task_index, note_index, comment_index, project_index)
-                ):
-                    return task_index, note_index, comment_index, project_index
-    except OSError, ValueError, KeyError, EOFError, BadZipFile:
-        pass
-    texts = (
-        [text for _, text in tasks]
-        + [text for _, text in notes]
-        + [text for _, text in comments]
-        + [text for _, text in projects]
-    )
-    vectors = encoder.encode(texts) if texts else np.empty((0, DIMENSIONS), dtype=np.float32)
-    task_index = VectorIndex([item[0] for item in tasks], vectors[: len(tasks)])
-    note_index = VectorIndex(
-        [item[0] for item in notes], vectors[len(tasks) : len(tasks) + len(notes)]
-    )
-    comment_index = VectorIndex(
-        [item[0] for item in comments],
-        vectors[len(tasks) + len(notes) : len(tasks) + len(notes) + len(comments)],
-    )
-    project_index = VectorIndex(
-        [item[0] for item in projects], vectors[len(tasks) + len(notes) + len(comments) :]
-    )
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".npz", delete=False) as stream:
-            temporary = Path(stream.name)
-            np.savez_compressed(
-                stream,
-                signature=np.array(signature),
-                task_ids=np.asarray(task_index.ids, dtype=np.int64),
-                task_vectors=task_index.vectors,
-                note_ids=np.asarray(note_index.ids, dtype=np.int64),
-                note_vectors=note_index.vectors,
-                comment_ids=np.asarray(comment_index.ids, dtype=np.int64),
-                comment_vectors=comment_index.vectors,
-                project_ids=np.asarray(project_index.ids, dtype=np.int64),
-                project_vectors=project_index.vectors,
+def change(record: Task | Note | Comment | Project, *, deleted: bool = False) -> Change:
+    match record:
+        case Task():
+            kind, text = 0, document(record)
+        case Note():
+            kind, text = 1, document(record)
+        case Comment():
+            kind, text = 2, record.body
+        case Project():
+            return Change(
+                3,
+                record.id,
+                record.id,
+                None
+                if deleted or record.archived
+                else "\n".join((record.full_name, record.name, record.description)),
             )
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    return task_index, note_index, comment_index, project_index
+    return Change(kind, record.id, record.project_id, None if deleted else text)
 
 
-def database_key(backlog: Backlog) -> str:
-    if backlog.database.in_memory:
-        return f"memory:{os.getpid()}:{id(backlog.database)}:{backlog.principal}"
-    return f"{backlog.database.path.resolve()}:{backlog.principal}"
+def build_indexes(previous: Indexes | None, changes: list[Change], *, replace: bool) -> Indexes:
+    """Build a new snapshot in a worker thread; retain vectors for unchanged texts."""
+    indexes = []
+    for kind in range(4):
+        old = previous[kind] if previous is not None else None
+        vectors = dict(zip(old.ids, old.vectors, strict=True)) if old else {}
+        digests = dict(old.digests) if old else {}
+        updates = {item.id: item.text for item in changes if item.kind == kind}
+        if not replace and not updates and old is not None:
+            indexes.append(old)
+            continue
+        if replace:
+            vectors = {key: value for key, value in vectors.items() if key in updates}
+            digests = {key: value for key, value in digests.items() if key in updates}
+        texts = {}
+        for record_id, text in updates.items():
+            if text is None:
+                vectors.pop(record_id, None)
+                digests.pop(record_id, None)
+            else:
+                digest = sha256(text.encode()).digest()
+                if digests.get(record_id) != digest:
+                    texts[record_id] = text
+                    digests[record_id] = digest
+        if texts:
+            encoded = encoder.encode(list(texts.values()))
+            vectors.update(zip(texts, encoded, strict=True))
+        ids = sorted(vectors)
+        matrix = (
+            np.stack([vectors[key] for key in ids])
+            if ids
+            else np.empty((0, DIMENSIONS), dtype=np.float32)
+        )
+        indexes.append(VectorIndex(ids, matrix, digests))
+    return indexes[0], indexes[1], indexes[2], indexes[3]
 
 
 async def snapshot(
@@ -339,40 +294,141 @@ async def snapshot(
 
 @dataclass
 class IndexState:
+    backlog: Backlog
+    indexes: Indexes | None = None
+
+
+@dataclass
+class Indexer:
+    connection: aiosqlite.Connection
+    transaction: Transaction
+    pending: deque[Change | None] = field(default_factory=deque)
+    states: dict[str, IndexState] = field(default_factory=dict)
+    version: int | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    revision: tuple[object, int, int] | None = None
-    indexes: tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex] | None = None
+    worker: asyncio.Task[None] | None = None
+
+    async def refresh(self) -> None:
+        async with self.lock:
+            batch: list[Change | None] = []
+            try:
+                async with self.transaction.lock:
+                    version = await data_version(self.connection)
+                    states = list(self.states.values())
+                    if (
+                        version == self.version
+                        and not self.pending
+                        and all(state.indexes is not None for state in states)
+                    ):
+                        return
+                    batch = list(self.pending)
+                    self.pending.clear()
+                    replace = version != self.version or None in batch
+                    snapshots: list[tuple[IndexState, list[Change], bool]] = []
+                    while True:
+                        snapshots.clear()
+                        for state in states:
+                            full = replace or state.indexes is None
+                            if full:
+                                records = await snapshot(state.backlog, self.connection)
+                                updates = [change(item) for group in records for item in group]
+                            else:
+                                updates = []
+                                allowed = {
+                                    project_id: bool(
+                                        await QUERIES.membership(
+                                            self.connection,
+                                            project_id=project_id,
+                                            principal=state.backlog.principal,
+                                        )
+                                    )
+                                    for project_id in {
+                                        item.project_id for item in batch if item is not None
+                                    }
+                                }
+                                for item in batch:
+                                    if item is not None:
+                                        updates.append(
+                                            item
+                                            if allowed[item.project_id]
+                                            else Change(item.kind, item.id, item.project_id, None)
+                                        )
+                            snapshots.append((state, updates, full))
+                        after = await data_version(self.connection)
+                        if after == version:
+                            break
+                        # An external commit raced the reads. Take a fresh snapshot.
+                        version, replace = after, True
+                built = [
+                    (
+                        state,
+                        await asyncio.to_thread(
+                            build_indexes, state.indexes, updates, replace=full
+                        ),
+                    )
+                    for state, updates, full in snapshots
+                ]
+                # Publish complete snapshots together. Writes during encoding stay queued.
+                for state, indexes in built:
+                    state.indexes = indexes
+                self.version = version
+            except BaseException:
+                self.pending.extendleft(reversed(batch))
+                raise
+
+    async def run(self) -> None:
+        while True:
+            await asyncio.sleep(1)
+            try:
+                await self.refresh()
+            except Exception:
+                logging.getLogger(__name__).exception("Failed to update embeddings; will retry")
 
 
-states: WeakKeyDictionary[Database, dict[str, IndexState]] = WeakKeyDictionary()
+indexers: WeakKeyDictionary[Database, Indexer] = WeakKeyDictionary()
+
+
+def enqueue(
+    backlog: Backlog, *records: Task | Note | Comment | Project, deleted: bool = False
+) -> None:
+    """Queue committed records. Before the first search, the initial snapshot covers writes."""
+    if indexer := indexers.get(backlog.database):
+        indexer.pending.extend(change(record, deleted=deleted) for record in records)
+
+
+def invalidate(backlog: Backlog) -> None:
+    """Access changes or project deletion require a new scoped snapshot."""
+    if indexer := indexers.get(backlog.database):
+        indexer.pending.append(None)
+
+
+async def stop(database: Database) -> None:
+    if (indexer := indexers.pop(database, None)) and indexer.worker:
+        indexer.worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await indexer.worker
+
+
+async def data_version(connection: aiosqlite.Connection) -> int:
+    # Cache invalidation is an inline PRAGMA exception; data queries belong in queries.sql.
+    async with connection.execute("PRAGMA data_version") as cursor:
+        row = await cursor.fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 async def indexes(
     backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
-) -> tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]:
-    """Build lazily; local writes and external commits invalidate the cached snapshot."""
-    from . import server
-
-    state = states.setdefault(backlog.database, {}).setdefault(backlog.principal, IndexState())
-    async with state.lock:
-        version = await server.data_version(connection, backlog.actor)
-        revision = (connection, version, connection.total_changes)
-        if state.indexes is None or state.revision != revision:
-            async with transaction.lock:
-                tasks, notes, comments, projects = await snapshot(backlog, connection)
-            state.indexes = await asyncio.to_thread(
-                cached_indexes,
-                database_key(backlog),
-                [(item.id, document(item)) for item in tasks],
-                [(item.id, document(item)) for item in notes],
-                [(item.id, item.body) for item in comments],
-                [
-                    (item.id, "\n".join((item.full_name, item.name, item.description)))
-                    for item in projects
-                ],
-            )
-            state.revision = revision
-        return state.indexes
+) -> Indexes:
+    """Wait for the first index only; later searches use the last completed snapshot."""
+    indexer = indexers.setdefault(backlog.database, Indexer(connection, transaction))
+    state = indexer.states.setdefault(backlog.principal, IndexState(backlog))
+    if state.indexes is None:
+        await indexer.refresh()
+    if indexer.worker is None:
+        indexer.worker = asyncio.create_task(indexer.run(), name="embeddings-indexer")
+    assert state.indexes is not None
+    return state.indexes
 
 
 def match_ids(

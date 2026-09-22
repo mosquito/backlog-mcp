@@ -1,7 +1,6 @@
 import asyncio
 import json
 import sqlite3
-import sys
 import threading
 from collections.abc import AsyncIterator
 from hashlib import sha256
@@ -22,13 +21,6 @@ from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import application
 from backlog_mcp.models import Status
 from backlog_mcp.server import registry
-
-
-@pytest.fixture(autouse=True)
-def cache_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "embeddings"
-    monkeypatch.setattr(embeddings, "cache_root", lambda: path)
-    return path
 
 
 @pytest.fixture(params=["stdio", "http"])
@@ -102,7 +94,7 @@ async def test_inference_and_index_work_run_in_threads(
 ) -> None:
     loop_thread = threading.get_ident()
     original_encode = embeddings.encoder.encode
-    original_indexes = embeddings.cached_indexes
+    original_indexes = embeddings.build_indexes
     called: set[str] = set()
 
     def encode(texts: list[str]) -> Any:
@@ -110,13 +102,13 @@ async def test_inference_and_index_work_run_in_threads(
         called.add("encode")
         return original_encode(texts)
 
-    def indexes(*args: Any) -> Any:
+    def indexes(*args: Any, **kwargs: Any) -> Any:
         assert threading.get_ident() != loop_thread
         called.add("indexes")
-        return original_indexes(*args)
+        return original_indexes(*args, **kwargs)
 
     monkeypatch.setattr(embeddings.encoder, "encode", encode)
-    monkeypatch.setattr(embeddings, "cached_indexes", indexes)
+    monkeypatch.setattr(embeddings, "build_indexes", indexes)
     await embeddings.indexes(
         backlog, connection=await backlog.open(), transaction=backlog.transaction
     )
@@ -278,70 +270,44 @@ async def test_search_uses_default_semantic_floor_without_fts(
     assert result.tasks[0].match == "semantic"
 
 
-async def test_index_contains_only_ids_vectors_and_digest(
-    backlog: Backlog, cache_directory: Path, monkeypatch: pytest.MonkeyPatch
+async def test_index_retains_vectors_for_unchanged_text(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = await backlog.current()
+    connection = await backlog.open()
     task = await mutate(
         operations.add_task(
-            await backlog.open(), backlog.actor, project_id=project.id, title="Private task text"
+            connection, backlog.actor, project_id=project.id, title="Private task text"
         ),
         backlog.transaction,
     )
-    await embeddings.indexes(
-        backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    (path,) = cache_directory.glob("*.npz")
-    with np.load(path, allow_pickle=False) as saved:
-        assert set(saved.files) == {
-            "signature",
-            "task_ids",
-            "task_vectors",
-            "note_ids",
-            "note_vectors",
-            "comment_ids",
-            "comment_vectors",
-            "project_ids",
-            "project_vectors",
-        }
-        assert saved["task_ids"].tolist() == [task.id]
-        assert saved["task_vectors"].shape == (1, 512)
-    original_encode = embeddings.encoder.encode
-    calls: list[list[str]] = []
+    before = await embeddings.indexes(backlog, connection, backlog.transaction)
+    assert before[0].ids == [task.id]
+    assert before[0].vectors.shape == (1, 512)
+    assert before[0].digests == {task.id: sha256(embeddings.document(task).encode()).digest()}
+    original = embeddings.encoder.encode
+    calls = []
 
     def encode(texts: list[str]) -> Any:
-        calls.append(texts)
-        return original_encode(texts)
+        calls.extend(texts)
+        return original(texts)
 
     monkeypatch.setattr(embeddings.encoder, "encode", encode)
-    await embeddings.indexes(
-        backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
+    indexer = embeddings.indexers[backlog.database]
+    embeddings.enqueue(backlog, task)
+    await indexer.refresh()
     assert calls == []
-    await mutate(
-        operations.update_task(
-            await backlog.open(), backlog.actor, task.id, title="Updated task text"
-        ),
+    task = await mutate(
+        operations.update_task(connection, backlog.actor, task.id, title="Updated task text"),
         backlog.transaction,
     )
-    await embeddings.indexes(
-        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    assert task is not None
+    embeddings.enqueue(backlog, task)
+    assert (
+        await embeddings.indexes(backlog, connection, backlog.transaction) is before or calls == []
     )
-    assert len(calls) == 1
-    path.write_bytes(b"broken cache")
-    embeddings.states.pop(backlog.database)
-    await embeddings.indexes(
-        backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    assert len(calls) == 2
-    await mutate(
-        operations.delete_task(await backlog.open(), backlog.actor, task.id), backlog.transaction
-    )
-    await embeddings.indexes(
-        backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    with np.load(path, allow_pickle=False) as saved:
-        assert saved["task_ids"].tolist() == [task.id]
+    await indexer.refresh()
+    assert calls == [embeddings.document(task)]
 
 
 async def test_results_are_read_by_id_after_ranking(
@@ -373,161 +339,294 @@ async def test_results_are_read_by_id_after_ranking(
     assert result.tasks[0].body == "Latest body"
 
 
-async def test_concurrent_builds_of_one_index_encode_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    #: Two threads ask for the same index at once; the lock makes the second one a cache hit.
-    original = embeddings.encoder.encode
-    calls: list[int] = []
+async def test_concurrent_first_searches_build_once(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backlog.current()
+    original = embeddings.build_indexes
+    calls = []
 
-    def slow(texts: list[str]) -> Any:
-        calls.append(len(texts))
-        threading.Event().wait(0.05)
-        return original(texts)
+    def build(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(embeddings.encoder, "encode", slow)
-    tasks = [(1, "Reset password")]
-    notes = [(1, "Password policy")]
+    monkeypatch.setattr(embeddings, "build_indexes", build)
+    connection = await backlog.open()
     results = await asyncio.gather(
-        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, [], []),
-        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, [], []),
+        *(embeddings.indexes(backlog, connection, backlog.transaction) for _ in range(3))
     )
-    assert calls == [2]
-    assert results[0][0].ids == results[1][0].ids == [1]
-    assert np.array_equal(results[0][1].vectors, results[1][1].vectors)
+    assert len(calls) == 1
+    assert results[0] is results[1] is results[2]
 
 
-async def test_every_process_gets_its_own_cache_directory_and_removes_it() -> None:
-    #: Two processes index the same database at once; neither sees or waits for the other.
-    code = """
-import tempfile
-from pathlib import Path
-from backlog_mcp import embeddings
-root = embeddings.cache_root()
-assert root.is_dir() and root.parent == Path(tempfile.gettempdir())
-a, b, c, d = embeddings.cached_indexes(
-    'shared-db', [(1, 'Reset password')], [(1, 'Password policy')], [], []
-)
-assert a.ids == [1] and b.ids == [1]
-assert a.vectors.shape == b.vectors.shape == (1, 512)
-assert len(list(root.glob('*.npz'))) == 1 and not list(root.glob('*.lock'))
-print(root)
-"""
-    processes = [
-        await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-c",
-            code,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        for _ in range(2)
-    ]
-    roots: list[Path] = []
-    for process in processes:
-        output, error = await asyncio.wait_for(process.communicate(), timeout=30)
-        assert process.returncode == 0, error.decode()
-        roots.append(Path(output.decode().strip()))
-    assert roots[0] != roots[1]
-    #: The directory goes with the process.
-    assert not roots[0].exists() and not roots[1].exists()
+async def test_empty_tick_does_not_read_or_encode(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backlog.current()
+    connection = await backlog.open()
+    before = await embeddings.indexes(backlog, connection, backlog.transaction)
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("an unchanged index needs no snapshot or encoding")
+
+    monkeypatch.setattr(embeddings, "snapshot", forbidden)
+    monkeypatch.setattr(embeddings, "build_indexes", forbidden)
+    await embeddings.indexers[backlog.database].refresh()
+    assert await embeddings.indexes(backlog, connection, backlog.transaction) is before
 
 
-async def test_model_cache_is_lazy_and_invalidated_by_local_and_external_writes(
-    backlog: Backlog, cache_directory: Path, monkeypatch: pytest.MonkeyPatch
+async def test_local_queue_and_external_refresh(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = await backlog.current()
-    original = embeddings.cached_indexes
-    builds = 0
+    connection = await backlog.open()
+    await embeddings.indexes(backlog, connection, backlog.transaction)
+    indexer = embeddings.indexers[backlog.database]
+    original_snapshot = embeddings.snapshot
+    original_encode = embeddings.encoder.encode
+    snapshots, texts = [], []
 
-    def counted(*args: Any) -> Any:
-        nonlocal builds
-        builds += 1
-        return original(*args)
+    async def snapshot(*args: Any, **kwargs: Any) -> Any:
+        snapshots.append(1)
+        return await original_snapshot(*args, **kwargs)
 
-    monkeypatch.setattr(embeddings, "cached_indexes", counted)
+    def encode(items: list[str]) -> Any:
+        texts.extend(items)
+        return original_encode(items)
+
+    monkeypatch.setattr(embeddings, "snapshot", snapshot)
+    monkeypatch.setattr(embeddings.encoder, "encode", encode)
     task = await mutate(
-        operations.add_task(
-            await backlog.open(), backlog.actor, project_id=project.id, title="Reset the password"
-        ),
+        operations.add_task(connection, backlog.actor, project_id=project.id, title="Local task"),
         backlog.transaction,
     )
-    note = await mutate(
-        operations.add_note(
-            await backlog.open(), backlog.actor, project_id=project.id, title="Password policy"
-        ),
-        backlog.transaction,
-    )
-    assert builds == 0
-    assert not cache_directory.exists()
-    query = embeddings.Search(query="password", min_score=-1, kinds=["tasks", "memory", "comments"])
-    assert (
-        await embeddings.search(
-            query, backlog, connection=await backlog.open(), transaction=backlog.transaction
-        )
-    ).count == 2
-    assert builds == 1
-    await embeddings.search(
-        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    assert builds == 1
+    embeddings.enqueue(backlog, task)
+    await indexer.refresh()
+    assert snapshots == []
+    assert texts == [embeddings.document(task)]
+    texts.clear()
+    # Service writes change data_version without changing any indexed text.
+    with sqlite3.connect(backlog.database.path) as external:
+        external.execute("CREATE TABLE service_state (id INTEGER)")
+    await indexer.refresh()
+    assert len(snapshots) == 1
+    assert texts == []
+    # An external edit must supersede an older queued local value.
+    embeddings.enqueue(backlog, task)
+    with sqlite3.connect(backlog.database.path) as external:
+        external.execute("UPDATE tasks SET title = 'External task' WHERE id = ?", (task.id,))
+    await indexer.refresh()
+    assert len(snapshots) == 2
+    assert texts == ["External task\n\n"]
+    assert not indexer.pending
 
-    await mutate(
-        operations.update_task(await backlog.open(), backlog.actor, task.id, title="Bake a cake"),
-        backlog.transaction,
-    )
-    await mutate(
-        operations.update_note(await backlog.open(), backlog.actor, note.id, body="Updated policy"),
-        backlog.transaction,
-    )
-    assert builds == 1
-    result = await embeddings.search(
-        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    assert builds == 2
-    assert result.memory[0].body == "Updated policy"
-    await mutate(
-        operations.delete_task(await backlog.open(), backlog.actor, task.id), backlog.transaction
-    )
-    await mutate(
-        operations.delete_note(await backlog.open(), backlog.actor, note.id), backlog.transaction
-    )
-    assert builds == 2
-    assert (
-        await embeddings.search(
-            query, backlog, connection=await backlog.open(), transaction=backlog.transaction
-        )
-    ).count == 0
-    assert builds == 3
 
-    task = await mutate(
-        operations.add_task(
-            await backlog.open(), backlog.actor, project_id=project.id, title="A new password"
-        ),
-        backlog.transaction,
+async def test_worker_updates_after_one_second_and_stops(backlog: Backlog) -> None:
+    project, _ = await backlog.current()
+    connection = await backlog.open()
+    before = await embeddings.indexes(backlog, connection, backlog.transaction)
+    task = await operations.task_add(
+        operations.AddTask(title="Queued task"), backlog, connection, backlog.transaction
     )
-    await embeddings.search(
-        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    assert builds == 4
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-c",
-        "import sqlite3, sys; "
-        "db = sqlite3.connect(sys.argv[1]); "
-        "db.execute('UPDATE tasks SET title = ? WHERE id = ?', ('External change', sys.argv[2])); "
-        "db.commit(); db.close()",
-        str(backlog.database.path),
-        str(task.id),
-    )
-    assert await asyncio.wait_for(process.wait(), timeout=10) == 0
-    assert builds == 4
-    result = await embeddings.search(
-        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
-    )
-    assert builds == 5
-    assert result.tasks[0].title == "External change"
+    assert task.id not in before[0].ids
+    indexer = embeddings.indexers[backlog.database]
+    async with asyncio.timeout(3):
+        while (
+            task.id
+            not in (await embeddings.indexes(backlog, connection, backlog.transaction))[0].ids
+        ):
+            await asyncio.sleep(0.02)
+    worker = indexer.worker
+    assert worker is not None and not worker.done()
+    await backlog.close()
+    assert worker.done()
+    assert backlog.database not in embeddings.indexers
 
 
 async def test_startup_does_not_build_model_index(
-    embedding_client: BaseClient, cache_directory: Path
+    embedding_client: BaseClient, backlog: Backlog
 ) -> None:
-    assert not cache_directory.exists()
+    assert backlog.database not in embeddings.indexers
+
+
+async def test_search_uses_old_index_during_rebuild_and_keeps_new_queue(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backlog.current()
+    connection = await backlog.open()
+    task = await operations.task_add(
+        operations.AddTask(title="Reset password"), backlog, connection, backlog.transaction
+    )
+    old = await embeddings.indexes(backlog, connection, backlog.transaction)
+    indexer = embeddings.indexers[backlog.database]
+    entered, release = threading.Event(), threading.Event()
+    original = embeddings.build_indexes
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(embeddings, "build_indexes", slow)
+    with sqlite3.connect(backlog.database.path) as external:
+        external.execute("UPDATE tasks SET body = 'External body' WHERE id = ?", (task.id,))
+    refresh = asyncio.create_task(indexer.refresh())
+    try:
+        async with asyncio.timeout(3):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+        assert await embeddings.indexes(backlog, connection, backlog.transaction) is old
+        result = await asyncio.wait_for(
+            embeddings.search(
+                embeddings.Search(query="Reset password"), backlog, connection, backlog.transaction
+            ),
+            1,
+        )
+        assert result.tasks[0].body == "External body"
+        added = await operations.task_add(
+            operations.AddTask(title="New while rebuilding"),
+            backlog,
+            connection,
+            backlog.transaction,
+        )
+        assert indexer.pending
+    finally:
+        release.set()
+        await refresh
+    assert added.id not in indexer.states[backlog.principal].indexes[0].ids
+    assert indexer.pending
+    await indexer.refresh()
+    assert added.id in indexer.states[backlog.principal].indexes[0].ids
+    assert not indexer.pending
+
+
+async def test_failed_commit_does_not_enqueue(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backlog.current()
+    connection = await backlog.open()
+    await embeddings.indexes(backlog, connection, backlog.transaction)
+
+    async def fail() -> None:
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(connection, "commit", fail)
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await operations.task_add(
+            operations.AddTask(title="Rolled back"), backlog, connection, backlog.transaction
+        )
+    assert not embeddings.indexers[backlog.database].pending
+    assert await operations.read_tasks(connection, backlog.actor) == []
+
+
+async def test_failed_encoding_keeps_old_index_and_retries_batch(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backlog.current()
+    connection = await backlog.open()
+    old = await embeddings.indexes(backlog, connection, backlog.transaction)
+    task = await operations.task_add(
+        operations.AddTask(title="Retry me"), backlog, connection, backlog.transaction
+    )
+    indexer = embeddings.indexers[backlog.database]
+    original = embeddings.build_indexes
+
+    def fail(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("encoding failed")
+
+    monkeypatch.setattr(embeddings, "build_indexes", fail)
+    with pytest.raises(RuntimeError, match="encoding failed"):
+        await indexer.refresh()
+    assert await embeddings.indexes(backlog, connection, backlog.transaction) is old
+    assert indexer.pending
+    monkeypatch.setattr(embeddings, "build_indexes", original)
+    await indexer.refresh()
+    assert task.id in indexer.states[backlog.principal].indexes[0].ids
+    assert not indexer.pending
+
+
+async def test_writers_queue_notes_comments_and_history(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await backlog.current()
+    connection = await backlog.open()
+    task = await operations.task_add(
+        operations.AddTask(title="Work"), backlog, connection, backlog.transaction
+    )
+    await embeddings.indexes(backlog, connection, backlog.transaction)
+    indexer = embeddings.indexers[backlog.database]
+    texts = []
+    original = embeddings.encoder.encode
+
+    def encode(items: list[str]) -> Any:
+        texts.extend(items)
+        return original(items)
+
+    monkeypatch.setattr(embeddings.encoder, "encode", encode)
+    await operations.task_update(
+        operations.UpdateTask(id=task.id, status=Status.DOING),
+        backlog,
+        connection,
+        backlog.transaction,
+    )
+    await operations.task_claim(
+        operations.ClaimTask(task=task.id, expected=None, assigned="local@here:embeddings"),
+        backlog,
+        connection,
+        backlog.transaction,
+    )
+    comment = await operations.task_comment_add(
+        operations.AddComment(task_id=task.id, body="Progress"),
+        backlog,
+        connection,
+        backlog.transaction,
+    )
+    note = await operations.memory_save(
+        operations.SaveNote(title="Note", body="Remember this"),
+        backlog,
+        connection,
+        backlog.transaction,
+    )
+    await indexer.refresh()
+    assert "Work\n\n" not in texts
+    assert "Status changed: todo → doing" in texts
+    assert "Assignment changed: null → local@here:embeddings" in texts
+    assert "Progress" in texts
+    assert "Note\nRemember this\n" in texts
+    indexes = indexer.states[backlog.principal].indexes
+    assert comment.id in indexes[2].ids
+    assert note.id in indexes[1].ids
+    # Delete through the writer, after the note has reached the index.
+    await operations.memory_delete(
+        operations.NoteId(id=note.id), None, backlog, connection, backlog.transaction
+    )
+    await indexer.refresh()
+    assert note.id not in indexer.states[backlog.principal].indexes[1].ids
+
+
+async def test_query_encoding_does_not_wait_for_index_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encoder = embeddings.encoder
+    await asyncio.to_thread(encoder.encode, ["Warm model"])
+    assert encoder.model is not None
+    original = encoder.model.encode
+    entered, release = threading.Event(), threading.Event()
+
+    def slow(texts: list[str], **kwargs: Any) -> Any:
+        if texts == ["Index batch"]:
+            entered.set()
+            assert release.wait(5)
+        return original(texts, **kwargs)
+
+    monkeypatch.setattr(encoder.model, "encode", slow)
+    background = asyncio.create_task(asyncio.to_thread(encoder.encode, ["Index batch"]))
+    try:
+        async with asyncio.timeout(3):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+        query = await asyncio.wait_for(asyncio.to_thread(encoder.encode, ["Query"]), 1)
+        assert query.shape == (1, 512)
+    finally:
+        release.set()
+        await background

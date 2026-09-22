@@ -71,6 +71,9 @@ class Database:
             return connection
 
     async def close(self) -> None:
+        from .embeddings import stop
+
+        await stop(self)
         if self.connection is not None:
             await self.connection.close()
             self.connection = None

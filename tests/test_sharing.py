@@ -124,7 +124,8 @@ async def test_project_access_and_search_candidates(backlog: Backlog) -> None:
     assert [c.id for c in found.comments] == [comment.id]
     snapshot = await embeddings.snapshot(scoped, connection=await scoped.open())
     assert [t.id for t in snapshot[0]] == [visible.id]
-    assert embeddings.database_key(scoped) != embeddings.database_key(backlog)
+    indexer = embeddings.indexers[backlog.database]
+    assert indexer.states[scoped.principal].indexes[0].ids == [visible.id]
 
     for mutation in (
         mutate(
@@ -480,3 +481,48 @@ async def test_project_search_filters_acl_scope_and_archived_before_limit(backlo
         scope.delete_project(await alice.open(), alice.actor, visible.id), alice.transaction
     )
     assert await operations.search_projects(await bob.open(), bob.actor, "orchestration") == []
+
+
+async def test_background_index_follows_access_and_project_deletion(backlog: Backlog) -> None:
+    project, _ = await backlog.current()
+    connection = await backlog.open()
+    await mutate(
+        scope.register(connection, backlog.actor, user_identity("bob"), "Bob"), backlog.transaction
+    )
+    bob = backlog.view(principal=user_identity("bob"))
+    await embeddings.indexes(backlog, connection, backlog.transaction)
+    await embeddings.indexes(bob, connection, bob.transaction)
+    indexer = embeddings.indexers[backlog.database]
+    task = await operations.task_add(
+        operations.AddTask(title="Private password"), backlog, connection, backlog.transaction
+    )
+    await indexer.refresh()
+    assert task.id in indexer.states[backlog.principal].indexes[0].ids
+    assert task.id not in indexer.states[bob.principal].indexes[0].ids
+    await operations.project_share(
+        operations.ShareProject(project=project.full_name, principal="bob", role="reader"),
+        backlog,
+        connection,
+        backlog.transaction,
+    )
+    await indexer.refresh()
+    assert task.id in indexer.states[bob.principal].indexes[0].ids
+    # Even before the next refresh, revoked access must filter the old vectors.
+    with sqlite3.connect(backlog.database.path) as external:
+        external.execute(
+            "DELETE FROM project_members WHERE project_id = ? AND principal = ?",
+            (project.id, bob.principal),
+        )
+    result = await embeddings.search(
+        embeddings.Search(query="credentials", all_computers=True, min_score=-1),
+        bob,
+        connection,
+        bob.transaction,
+    )
+    assert result.tasks == []
+    await indexer.refresh()
+    assert task.id not in indexer.states[bob.principal].indexes[0].ids
+    await backlog.delete(project, connection, backlog.transaction)
+    await indexer.refresh()
+    assert task.id not in indexer.states[backlog.principal].indexes[0].ids
+    assert project.id not in indexer.states[backlog.principal].indexes[3].ids

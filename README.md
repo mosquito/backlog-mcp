@@ -241,12 +241,12 @@ after cloning. To reproduce the conversion from the pinned Hugging Face revision
 `uv run python scripts/prepare_model.py`. The directory includes provenance, model license
 (Apache-2.0), and the Model2Vec library citation (MIT).
 
-Each running process keeps its embedding cache in a private temporary directory
-(`backlog-mcp-embeddings-*` under the system temporary directory), created on the first search
-and removed when the process exits. It holds IDs, vectors and a content digest; SQLite remains
-the source of record text. SQLite change counters invalidate the cache after local writes or
-commits from other processes; the next search rebuilds it and reads results from SQLite by ID.
-Nothing is shared between processes, so there is no lock file.
+Each running process keeps its embedding index in memory, built on the first search.
+Writers queue changed records after commit. A background worker applies the queue once per
+second; searches use the last completed index while it updates. If SQLite `data_version`
+changes, the worker discards the old queue and rereads the database. Unchanged text retains
+its vector. New writes during a rebuild stay queued for the next pass. Search results are
+filtered by current access and read from SQLite by ID. Closing the database stops the worker.
 
 The `backlog-mcp/model2vec` extension also exposes `model2vec/encode` for normalized text
 embeddings. It uses the same local model. Ordinary `search` works on every supported

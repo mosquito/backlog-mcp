@@ -441,9 +441,6 @@ WHERE target.id = :task_id OR target.project_id = :project_id;
 -- name: notification_recipients(project_id)
 SELECT principal FROM project_members WHERE project_id = :project_id;
 
--- name: data_version()^
-PRAGMA data_version;
-
 -- name: board_summary(project_id, principal, prefix)^
 WITH candidates AS MATERIALIZED (
     SELECT t.id, t.title, t.status, t.priority, t.created_at, t.assigned,

@@ -223,6 +223,7 @@ async def test_external_comments_invalidate_semantic_cache(backlog: Backlog) -> 
             ),
         )
         comment_id = cursor.lastrowid
+    await embeddings.indexers[backlog.database].refresh()
     result = await embeddings.search(
         query, backlog, connection=await backlog.open(), transaction=backlog.transaction
     )

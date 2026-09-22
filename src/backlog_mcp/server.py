@@ -754,6 +754,7 @@ async def project_share(
     principal = user_identity(principal_user(args.principal))
     async with transaction:
         await share(connection, backlog.actor, project.id, principal, args.role)
+    embeddings.invalidate(backlog)
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
     return Members(
         items=await members(connection, backlog.actor, project.id),
@@ -1183,6 +1184,7 @@ async def task_add(
             priority=args.priority,
             tags=args.tags,
         )
+    embeddings.enqueue(backlog, task)
     await changed(task_event(task, Action.ADDED, computer=backlog.computer))
     return task_out(task)
 
@@ -1294,7 +1296,15 @@ async def task_claim(
         task, updated = await claim_task(
             connection, backlog.actor, args.task, expected=args.expected, assigned=args.assigned
         )
+        comments = (
+            await read_comments(
+                connection, backlog.actor, task_id=args.task, status=list(Status), limit=-1
+            )
+            if updated
+            else []
+        )
     if updated:
+        embeddings.enqueue(backlog, *comments)
         await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     return task_out(task)
 
@@ -1353,6 +1363,7 @@ async def task_comment_add(
     """
     async with transaction:
         comment = await add_comment(connection, backlog.actor, args.task_id, args.body)
+    embeddings.enqueue(backlog, comment)
     task = await read_task(connection, backlog.actor, args.task_id)
     assert task is not None
     await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
@@ -1398,8 +1409,12 @@ async def task_update(
             priority=args.priority,
             tags=args.tags,
         )
+        comments = await read_comments(
+            connection, backlog.actor, task_id=args.id, status=list(Status), limit=-1
+        )
     if task is None:
         raise LookupError(f"no task #{args.id}")
+    embeddings.enqueue(backlog, task, *comments)
     await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     if args.title is not None or args.status is not None:
         await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
@@ -1419,7 +1434,11 @@ async def task_move(
         return task_out(existing)
     async with transaction:
         task = await update_task(connection, backlog.actor, args.id, project_id=project.id)
+        comments = await read_comments(
+            connection, backlog.actor, task_id=args.id, status=list(Status), limit=-1
+        )
     assert task is not None
+    embeddings.enqueue(backlog, task, *comments)
     await changed(task_event(task, Action.MOVED, computer=backlog.computer))
     await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
     return task_out(task)
@@ -1481,7 +1500,11 @@ async def task_delete(
     if task.status != Status.DELETED:
         async with transaction:
             gone = await update_task(connection, backlog.actor, task.id, status=Status.DELETED)
+            comments = await read_comments(
+                connection, backlog.actor, task_id=task.id, status=list(Status), limit=-1
+            )
         assert gone is not None
+        embeddings.enqueue(backlog, gone, *comments)
         await changed(task_event(gone, Action.DELETED, computer=backlog.computer))
         await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
     return Deleted(
@@ -1519,6 +1542,7 @@ async def memory_save(
                     tags=args.tags or (),
                     shared=bool(args.shared),
                 )
+            embeddings.enqueue(backlog, saved)
             await changed(note_event(saved, Action.ADDED, computer=backlog.computer))
             return note_out(saved)
         args.id = existing.id
@@ -1534,6 +1558,7 @@ async def memory_save(
         )
     if updated is None:
         raise LookupError(f"no note #{args.id}")
+    embeddings.enqueue(backlog, updated)
     await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
     return note_out(updated)
 
@@ -1550,6 +1575,7 @@ async def memory_append(
         updated = await append_note(connection, backlog.actor, found.id, args.text)
     if updated is None:
         raise LookupError(f"no note #{found.id}")
+    embeddings.enqueue(backlog, updated)
     await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
     return note_out(updated)
 
@@ -1633,6 +1659,7 @@ async def memory_delete(
         return refusal
     async with transaction:
         deleted = await delete_note(connection, backlog.actor, args.id)
+    embeddings.enqueue(backlog, found, deleted=True)
     await changed(note_event(found, Action.DELETED, computer=backlog.computer))
     return Deleted(
         principal=backlog.principal,
@@ -2053,12 +2080,6 @@ async def notification_recipients(
         row["principal"]
         async for row in QUERIES.notification_recipients(connection, project_id=project_id)
     ]
-
-
-async def data_version(connection: aiosqlite.Connection, actor: Actor) -> int:
-    row = await QUERIES.data_version(connection)
-    assert row is not None
-    return int(row[0])
 
 
 async def task_links(

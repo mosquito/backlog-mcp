@@ -288,12 +288,14 @@ class Backlog:
         The directory must exist. A view of another computer cannot check that and takes the
         path as given.
         """
+        from .embeddings import enqueue
+
         connection = await self.open()
         if str(root) == "":
             label = name or "project"
             slug = await self.free_slug(slugify(label))
             async with self.transaction:
-                return await add_project(
+                created = await add_project(
                     connection,
                     self.actor,
                     slug=slug,
@@ -302,6 +304,8 @@ class Backlog:
                     computer=self.computer,
                     description=description,
                 )
+            enqueue(self, created)
+            return created
         path = self.absolute(root)
         existing = await project_by_root(connection, self.actor, path, computer=self.computer)
         if existing is not None:
@@ -320,6 +324,7 @@ class Backlog:
                 computer=self.computer,
                 description=description,
             )
+        enqueue(self, created)
         log.info("registered project %s at %s on %s", created.slug, path, self.computer)
         return created
 
@@ -336,6 +341,8 @@ class Backlog:
         preferred_language: str | None | Unset = Unset.VALUE,
     ) -> Project:
         """Register a project, or update the one named. Defaults to the working directory."""
+        from .embeddings import enqueue
+
         match reference, root:
             case None | "", None:
                 if self.remote:
@@ -377,6 +384,7 @@ class Backlog:
                 preferred_language=preferred_language,
             )
         assert updated is not None, "the project just updated is gone"
+        enqueue(self, updated)
         return updated
 
     async def delete(
@@ -391,9 +399,12 @@ class Backlog:
             raise ValueError(
                 f"project {project.slug!r} is fixed for this client; delete it from another one"
             )
+        from .embeddings import invalidate
+
         contents = await project_contents(connection, self.actor, project.id)
         async with transaction:
             await delete_project(connection, self.actor, project.id)
+        invalidate(self)
         log.info(
             "deleted project %s with %d tasks and %d notes",
             project.slug,
