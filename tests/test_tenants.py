@@ -235,8 +235,6 @@ async def test_http_without_authorizers_uses_user_default(
         [
             "--database",
             str(tmp_path / "http.sqlite3"),
-            "--state",
-            str(tmp_path / "state.json"),
             "mcp",
             "--protocol",
             "http",

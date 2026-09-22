@@ -29,8 +29,6 @@ class RemoteRunner:
         self.flags = [
             "--database",
             str(self.database),
-            "--state",
-            str(root.parent / "client-state.json"),
             "--root",
             str(root),
             "--computer",
@@ -290,8 +288,6 @@ def test_local_fallback_uses_a_child_and_closes_it(
         "",
         "--database",
         str(tmp_path / "db.sqlite3"),
-        "--state",
-        str(tmp_path / "state.json"),
         "--root",
         str(tmp_path),
     ]
@@ -325,8 +321,6 @@ def test_stdio_startup_failure_reaps_child(
             [
                 "--url",
                 "",
-                "--state",
-                str(tmp_path / "state.json"),
                 "--timeout",
                 "0.1",
                 "board",

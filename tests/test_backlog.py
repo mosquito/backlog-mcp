@@ -6,13 +6,11 @@ import pytest
 
 from backlog_mcp.backlog import Backlog, UnknownProject, checkout_root, slugify
 from backlog_mcp.models import Origin
-from backlog_mcp.state import State
 
 
 def instance(tmp_path: Path, cwd: Path, project: str | None = None) -> Backlog:
     return Backlog(
         tmp_path / "backlog.sqlite3",
-        State(tmp_path / "state.json"),
         cwd=cwd,
         project=project,
         computer="here",
@@ -65,7 +63,7 @@ async def test_a_second_directory_gets_its_own_slug(tmp_path: Path) -> None:
 
 
 async def test_nothing_but_the_directory_chooses(tmp_path: Path) -> None:
-    """Another registered project does not take over, and the state file holds no choice."""
+    """Another registered project does not take over the directory scope."""
     here = tmp_path / "here"
     there = tmp_path / "there"
     here.mkdir()
@@ -77,7 +75,6 @@ async def test_nothing_but_the_directory_chooses(tmp_path: Path) -> None:
     chosen, origin = await backlog.current()
     assert origin is Origin.DIRECTORY
     assert chosen.id == local.id
-    assert not set(backlog.state.read()) & {"pins", "last"}
     await backlog.close()
 
 

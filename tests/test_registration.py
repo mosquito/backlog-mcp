@@ -34,8 +34,6 @@ class RegistrationRunner:
             url,
             "--database",
             str(backlog.database.path),
-            "--state",
-            str(root.parent / "client-state.json"),
             "--computer",
             "client",
             "--root",
@@ -232,7 +230,7 @@ async def test_nested_directory_uses_checkout_root_as_default(
     assert project is not None and project.roots[0].root == str(registration.root)
 
 
-async def test_edit_all_fields_and_remember_computer(
+async def test_edit_all_fields_and_reuse_explicit_computer(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -252,11 +250,11 @@ async def test_edit_all_fields_and_remember_computer(
         await registration.backlog.open(), registration.backlog.actor, 1
     )
     assert task is not None and task.project_id == project.id
-    state = cli.State(registration.root.parent / "client-state.json")
-    assert state.computer == "laptop"
     monkeypatch.setattr(sys, "stdin", io.StringIO())
-    # An empty flag allows the saved computer name to take effect.
-    code, output = await registration("--computer", "", "--root", str(directory), "task", "list")
+    # Reusing the selected computer requires an explicit flag or configuration.
+    code, output = await registration(
+        "--computer", "laptop", "--root", str(directory), "task", "list"
+    )
     assert code == 0 and "Chosen task" in output
     assert "Input computer" not in output
 
@@ -299,16 +297,13 @@ async def test_edited_location_reuses_its_existing_binding(
     assert task is not None and task.project_id == existing.id
 
 
-async def test_cancel_does_not_remember_edited_computer(
+async def test_cancel_does_not_register_edited_computer(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = cli.State(registration.root.parent / "client-state.json")
-    state.update(computer="original")
     monkeypatch.setattr(sys, "stdin", TerminalInput("edited\n\n\nDescription\nn\n"))
     code, output = await registration("init")
     assert code == 1 and "registration cancelled" in output
-    assert state.computer == "original"
     assert (
         await scope.read_projects(
             await registration.backlog.open(), registration.backlog.actor, computer="edited"

@@ -23,15 +23,12 @@ class Runner:
         self.root = root
         self.capsys = capsys
         self.database = root.parent / "backlog.sqlite3"
-        self.state = root.parent / "state.json"
 
     def __call__(self, *argv: str) -> tuple[int, str]:
         code = cli.main(
             [
                 "--database",
                 str(self.database),
-                "--state",
-                str(self.state),
                 "--root",
                 str(self.root),
                 *argv,
@@ -50,7 +47,6 @@ def run(
     #: The machine running the tests may have its own configuration and environment.
     monkeypatch.setattr(cli.paths, "config_files", list)
     monkeypatch.setattr(cli.paths, "database_path", lambda: tmp_path / "default.sqlite3")
-    monkeypatch.setattr(cli.paths, "state_path", lambda: tmp_path / "default-state.json")
     monkeypatch.setattr(
         cli.Command,
         "registration",
@@ -242,8 +238,6 @@ async def test_an_empty_library_says_so(
             [
                 "--url",
                 str(server.make_url("/mcp")),
-                "--state",
-                str(tmp_path / "client.json"),
                 "skills",
             ],
         )
@@ -430,7 +424,7 @@ def test_generate_config_writes_the_global_options_and_reads_back(
     loaded = tomllib.loads(text)
     assert loaded["log_level"] == "debug"
     assert loaded["database"] == str(run.database)
-    assert loaded["state"] == str(run.state)
+    assert "state" not in loaded
     #: The subcommand was not parsed yet: its table holds commented-out defaults only.
     assert loaded["mcp"] == {"http": {}, "auth": {"jwt": {}}}
     assert "[mcp.http]" in text
@@ -899,7 +893,7 @@ async def test_watch_prints_each_event(
 
     async with TestServer(application(backlog, console=False)) as server:
         url = str(server.make_url(ENDPOINT_PATH))
-        flags = ["--database", str(tmp_path / "unused.sqlite3"), "--state", str(tmp_path / "s")]
+        flags = ["--database", str(tmp_path / "unused.sqlite3")]
         watching = asyncio.create_task(
             asyncio.to_thread(cli.main, [*flags, "-r", str(tmp_path), "watch", url, "-n", "1"])
         )
@@ -1057,3 +1051,27 @@ def test_board_explicit_project_does_not_register_checkout(run: Runner, tmp_path
     assert code == 0
     assert "unregistered" not in output
     assert "workspace" in output
+
+
+def test_computer_uses_config_environment_and_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text('computer = "configured-host"\n')
+    monkeypatch.delenv("BACKLOG_MCP_COMPUTER", raising=False)
+    monkeypatch.setattr("backlog_mcp.backlog.hostname", lambda: "current-host")
+
+    def computer(files: list[Path], args: list[str]) -> str:
+        options = cli.CLI(
+            config_files=files,
+            config_parser_class=argclass.TOMLDefaultsParser,
+            auto_env_var_prefix="BACKLOG_MCP_",
+        )
+        options.parse_args([*args, "mcp"])
+        return cli.build(options).computer
+
+    assert computer([], []) == "current-host"
+    assert computer([target], []) == "configured-host"
+    monkeypatch.setenv("BACKLOG_MCP_COMPUTER", "environment-host")
+    assert computer([target], []) == "environment-host"
+    assert computer([target], ["--computer", "explicit-host"]) == "explicit-host"

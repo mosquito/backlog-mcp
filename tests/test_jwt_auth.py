@@ -286,7 +286,7 @@ async def test_cli_sends_bearer_or_query_token(
         auth = [] if query else credentials.cli
         if query:
             endpoint = endpoint.update_query(credentials.query)
-        flags = ["--url", str(endpoint), "--state", str(tmp_path / "state.json"), *auth]
+        flags = ["--url", str(endpoint), *auth]
         assert await asyncio.to_thread(cli.main, [*flags, "task", "add", "CLI JWT task"]) == 0
         assert f"added #1 to {payload(result)['full_name']}" in capsys.readouterr().out
         if credentials.scheme == "Bearer":

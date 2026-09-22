@@ -1,4 +1,4 @@
-"""XDG base directories for the database, the state file and the config files.
+"""XDG base directories for the database and the config files.
 
 Environment overrides are not read here. `argclass` binds `BACKLOG_MCP_*` variables to the
 command-line arguments, so every override arrives through one path.
@@ -28,10 +28,6 @@ def data_home() -> Path:
     return base("XDG_DATA_HOME", ".local/share")
 
 
-def state_home() -> Path:
-    return base("XDG_STATE_HOME", ".local/state")
-
-
 def config_home() -> Path:
     return base("XDG_CONFIG_HOME", ".config")
 
@@ -39,11 +35,6 @@ def config_home() -> Path:
 def database_path() -> Path:
     """Where the tasks live."""
     return data_home() / APP / "backlog.sqlite3"
-
-
-def state_path() -> Path:
-    """Where the name of this computer is remembered."""
-    return state_home() / APP / "state.json"
 
 
 def config_files() -> list[Path]:
@@ -59,6 +50,4 @@ __all__ = [
     "config_home",
     "data_home",
     "database_path",
-    "state_home",
-    "state_path",
 ]

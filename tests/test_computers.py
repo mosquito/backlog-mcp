@@ -1,6 +1,5 @@
 """Several computers in one backlog: what each one sees, and what it is told about the others."""
 
-import json
 from pathlib import Path
 
 import pytest
@@ -14,7 +13,6 @@ from backlog_mcp import server as operations
 from backlog_mcp.backlog import Backlog, UnknownProject
 from backlog_mcp.computer import PATTERN, check, hostname
 from backlog_mcp.models import Origin
-from backlog_mcp.state import State
 
 
 def test_computer_names_are_one_plain_word() -> None:
@@ -26,29 +24,16 @@ def test_computer_names_are_one_plain_word() -> None:
     assert PATTERN.match(hostname())
 
 
-def test_the_host_name_is_remembered_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    state = State(tmp_path / "state.json")
-    #: An explicit name is used as given and changes nothing on disk.
-    assert state.computer_name(" laptop ") == "laptop"
-    assert state.computer is None
-    monkeypatch.setattr("backlog_mcp.state.hostname", lambda: "first-host")
-    assert state.computer_name() == "first-host"
-    monkeypatch.setattr("backlog_mcp.state.hostname", lambda: "renamed-host")
-    assert state.computer_name() == "first-host"
-    assert state.computer == "first-host"
-
-
-def test_legacy_pins_leave_the_state_on_the_next_write(tmp_path: Path) -> None:
-    path = tmp_path / "state.json"
-    path.write_text(
-        json.dumps(
-            {"version": 2, "computer": "desk", "pins": {"desk": "work"}, "last": {"desk": "work"}}
-        )
-    )
-    state = State(path)
-    assert state.computer_name() == "desk"
-    state.update(computer="desk")
-    assert set(state.read()) == {"version", "computer", "updated_at"}
+def test_computer_defaults_to_current_hostname(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "backlog.sqlite3"
+    monkeypatch.setattr("backlog_mcp.backlog.hostname", lambda: "first-host")
+    assert Backlog(database).computer == "first-host"
+    monkeypatch.setattr("backlog_mcp.backlog.hostname", lambda: "renamed-host")
+    assert Backlog(database).computer == "renamed-host"
+    assert Backlog(database, computer=" laptop ").computer == "laptop"
+    assert not list(tmp_path.iterdir())
 
 
 async def test_one_project_has_roots_on_several_computers(tmp_path: Path) -> None:
@@ -157,9 +142,7 @@ async def test_one_project_has_roots_on_several_computers(tmp_path: Path) -> Non
 async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_path: Path) -> None:
     root = tmp_path / "work"
     (root / ".git").mkdir(parents=True)
-    backlog = Backlog(
-        tmp_path / "backlog.sqlite3", State(tmp_path / "state.json"), cwd=root, computer="desk"
-    )
+    backlog = Backlog(tmp_path / "backlog.sqlite3", cwd=root, computer="desk")
     local, _ = await backlog.current()
     assert local.roots[0].computer == "desk"
 

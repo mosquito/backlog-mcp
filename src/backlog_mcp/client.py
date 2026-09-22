@@ -23,9 +23,9 @@ from yarl import URL
 
 from . import paths, skills
 from .backlog import checkout_root
+from .computer import check, hostname
 from .models import ProjectBoard, ProjectOut, Projects
 from .names import default_user
-from .state import State
 
 if TYPE_CHECKING:
     from .cli import CLI
@@ -81,7 +81,6 @@ class Connection:
         self.timeout = timeout
         self.root = root
         self.relocate: Callable[[str, Path], Awaitable[None]] | None = None
-        self.state: State | None = None
         self.project: str | None = None
 
     async def call[M: BaseModel](
@@ -171,7 +170,6 @@ def local_command(options: CLI, computer: str) -> list[str]:
     command = [sys.executable, "-m", "backlog_mcp", "--log-level", level]
     for flag, value in (
         ("--database", (options.database or paths.database_path()).expanduser().resolve()),
-        ("--state", (options.state or paths.state_path()).expanduser().resolve()),
         ("--root", (options.root or Path.cwd()).expanduser().resolve()),
         ("--computer", computer),
         ("--project", options.project),
@@ -196,7 +194,6 @@ def directory_project(computer: str, root: Path, projects: list[ProjectOut]) -> 
 async def bind_directory(connection: Connection, register: Registrar) -> ProjectOut:
     """Resolve a computer and directory before creating a binding through MCP."""
     root = connection.root
-    original_computer = connection.computer
     if not root.is_dir():
         raise ToolError(f"no such directory: {root}")
     projects = await connection.call(Projects, "project_list", archived=True)
@@ -227,8 +224,6 @@ async def bind_directory(connection: Connection, register: Registrar) -> Project
         connection.client.base_url = str(
             URL(connection.client.base_url).update_query(project=project.full_name)
         )
-    if connection.computer != original_computer and connection.state is not None:
-        connection.state.update(computer=connection.computer)
     return project
 
 
@@ -238,7 +233,6 @@ async def connect(
 ) -> AsyncIterator[Connection]:
     async with AsyncExitStack() as stack:
         connection = await stack.enter_async_context(transport(options, on_ask=on_ask))
-        connection.state = State(options.state or paths.state_path())
 
         async def relocate(computer: str, root: Path) -> None:
             await stack.aclose()
@@ -270,12 +264,10 @@ async def transport(options: CLI, *, on_ask: Elicitor) -> AsyncIterator[Connecti
     adapter = AdapterSet.default().by_version["2026-07-28"]
     if options.timeout <= 0:
         raise ValueError("--timeout must be greater than zero")
-    state = State(options.state or paths.state_path())
     root = (options.root or Path.cwd()).expanduser().resolve()
     endpoint = URL(options.url) if options.url else None
-    computer = state.computer_name(
-        options.computer or (endpoint.query.get("computer") if endpoint else None)
-    )
+    configured_computer = options.computer or (endpoint.query.get("computer") if endpoint else None)
+    computer = check(configured_computer) if configured_computer else hostname()
     if endpoint is not None:
         if endpoint.scheme not in {"http", "https"} or not endpoint.host:
             raise ValueError("--url must be an absolute HTTP or HTTPS MCP endpoint")

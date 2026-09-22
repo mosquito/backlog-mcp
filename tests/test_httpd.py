@@ -183,7 +183,7 @@ async def test_console_can_be_disabled(backlog: Backlog) -> None:
 
 async def test_http_binding_uses_application_backlog(backlog: Backlog) -> None:
     app = application(backlog, console=False)
-    unrelated = Backlog(backlog.database, backlog.state, project="not-registered")
+    unrelated = Backlog(backlog.database, project="not-registered")
     token = ACTIVE.set(unrelated)
     try:
         async with (

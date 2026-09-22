@@ -86,7 +86,6 @@ from .server import (
     registry,
     use,
 )
-from .state import State
 
 log = logging.getLogger("backlog_mcp")
 
@@ -162,8 +161,6 @@ class BasicAccountsAction(argparse.Action):
 
 def build(options: CLI) -> Backlog:
     """The backlog the global options describe."""
-    state = State(options.state or paths.state_path())
-    computer = state.computer_name(options.computer)
     principal = "local"
     auth = options.mcp.auth
     authorized_http = options.mcp.protocol == "http" and (
@@ -181,10 +178,9 @@ def build(options: CLI) -> Backlog:
         principal = user_identity(username)
     return Backlog(
         options.database or paths.database_path(),
-        state,
         cwd=options.root,
         project=options.project,
-        computer=computer,
+        computer=options.computer,
         principal=principal,
     )
 
@@ -1748,16 +1744,6 @@ class CLI(argclass.Parser):
             "(default: $XDG_DATA_HOME/backlog-mcp/backlog.sqlite3)"
         ),
     )
-    state: Path = argclass.Argument(
-        "-s",
-        "--state",
-        type=Path,
-        default=None,
-        help=(
-            "JSON file holding the name of this computer "
-            "(default: $XDG_STATE_HOME/backlog-mcp/state.json)"
-        ),
-    )
     root: Path = argclass.Argument(
         "-r",
         "--root",
@@ -1776,7 +1762,7 @@ class CLI(argclass.Parser):
         default=None,
         help=(
             "Name of this computer, the one the projects of this directory tree belong to "
-            "(default: the name remembered in the state file, else the short host name)"
+            "(default: the short host name)"
         ),
     )
     generate_config: str = argclass.Argument(

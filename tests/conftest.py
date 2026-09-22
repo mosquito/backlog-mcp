@@ -19,7 +19,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from backlog_mcp.auth import BasicAuthentication, JWTAuthentication
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.server import ACTIVE, registry
-from backlog_mcp.state import State
 
 
 @pytest.fixture
@@ -32,9 +31,7 @@ async def backlog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
     (root / ".git").mkdir()
     # A project root must exist: the tests register `../other` as a second project.
     (tmp_path / "other").mkdir()
-    instance = Backlog(
-        tmp_path / "backlog.sqlite3", State(tmp_path / "state.json"), cwd=root, computer="here"
-    )
+    instance = Backlog(tmp_path / "backlog.sqlite3", cwd=root, computer="here")
     token = ACTIVE.set(instance)
     try:
         yield instance

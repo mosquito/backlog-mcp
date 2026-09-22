@@ -12,14 +12,12 @@ from .cli import CLI, build, main, server_main
 from .database import Database
 from .models import Priority, Status
 from .server import VERSION, registry, use
-from .state import State
 
 __all__ = [
     "CLI",
     "VERSION",
     "Backlog",
     "Priority",
-    "State",
     "Status",
     "Database",
     "UnknownProject",

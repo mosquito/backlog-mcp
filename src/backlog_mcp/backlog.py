@@ -28,7 +28,6 @@ from .records import (
     Unset,
     to_project,
 )
-from .state import State
 from .transaction import Transaction
 
 log = logging.getLogger(__name__)
@@ -85,7 +84,7 @@ class Reach:
 
 
 class Backlog:
-    """The database, the state file and one working directory, as the tools see them.
+    """The database and one working directory, as the tools see them.
 
     Every handler asks this object which project it is working on. Resolution order:
     the project named on the command line or in the URL, then the deepest registered project of
@@ -96,7 +95,6 @@ class Backlog:
     def __init__(
         self,
         database: Database | Path | str,
-        state: State | None = None,
         *,
         principal: str = "local",
         cwd: Path | str | None = None,
@@ -106,13 +104,10 @@ class Backlog:
         self.auth_type: Literal["basic", "jwt", "none"] = "none"
         self.database = database if isinstance(database, Database) else Database(Path(database))
         self.principal = principal
-        self.state = state or State(self.database.path.with_suffix(".state.json"))
         self.cwd = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
         #: Named by `--project`, and so fixed for the life of the process.
         self.named = project or None
-        self.computer = (
-            state.computer_name(computer) if state else check(computer) if computer else hostname()
-        )
+        self.computer = check(computer) if computer else hostname()
         #: True for a view of another computer: its directories are not here, so nothing is
         #: read from the file system and nothing is registered from `cwd`.
         self.remote = False
@@ -124,13 +119,12 @@ class Backlog:
         project: str | None = None,
         principal: str | None = None,
     ) -> Backlog:
-        """The same database and state, seen from a computer, with a project fixed when given.
+        """The same database, seen from a computer, with a project fixed when given.
 
         One HTTP server answers for several computers: each request gets its own view.
         """
         seen = Backlog(
             self.database,
-            self.state,
             principal=principal or self.principal,
             cwd=self.cwd,
             project=project or self.named,

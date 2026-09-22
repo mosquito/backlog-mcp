@@ -42,7 +42,7 @@ and [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-refe
 
 CLI data operations always use MCP. With no endpoint configured, each command starts
 a local stdio server and stops it when the command finishes. The local server uses
-the configured database, state file, computer, and working directory.
+the configured database, computer, and working directory.
 
 To use a running HTTP server:
 
@@ -320,8 +320,8 @@ backlog projects delete other-project  # every task and note on that board goes 
 A logical project can bind directories on several computers. One database can hold
 all these boards, accessed through a shared HTTP server or a local stdio server.
 The computer name comes from `computer = "..."` in the config file or
-`--computer`; else it is the short host name, remembered in the state file on first use, so a
-renamed host keeps its projects.
+`--computer`; otherwise it is the short host name. Set `computer` in the config to keep a
+stable name when the host is renamed.
 
 ```bash
 backlog board                    # project context and registered roots
@@ -660,7 +660,6 @@ limit the duration of a watch subscription.
 | What | Path | Override |
 | --- | --- | --- |
 | Projects, tasks, comments, and notes | `$XDG_DATA_HOME/backlog-mcp/backlog.sqlite3` | `--database`, `BACKLOG_MCP_DATABASE` |
-| The computer name | `$XDG_STATE_HOME/backlog-mcp/state.json` | `--state`, `BACKLOG_MCP_STATE` |
 | Defaults | `/etc/backlog-mcp/config.toml`, `$XDG_CONFIG_HOME/backlog-mcp/config.toml`, `./.backlog-mcp.toml` | `--config` |
 
 Every global option, and every option of `backlog mcp`, can come from the command line, from
@@ -704,14 +703,13 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from backlog_mcp import Backlog, Priority, State, Status, use
+from backlog_mcp import Backlog, Priority, Status, use
 from backlog_mcp import server
 
 
 async def main(directory: Path) -> None:
     backlog = Backlog(
         directory / "backlog.sqlite3",
-        State(directory / "state.json"),
         cwd=directory,
     )
     use(backlog)
