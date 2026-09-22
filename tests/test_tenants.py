@@ -13,6 +13,7 @@ from aiohttp_tiny_mcp import Client
 from aiohttp_tiny_mcp.testing import pick
 from test_events import call, collect
 
+from backlog_mcp import backlog as scope
 from backlog_mcp import httpd
 from backlog_mcp.auth import BasicAuthentication, user_identity
 from backlog_mcp.backlog import Backlog
@@ -154,7 +155,7 @@ async def test_invalid_credentials_cannot_create_tenant_files(backlog: Backlog) 
                 "/mcp", headers={"Authorization": encode_basic_auth("../escape", "wrong")}
             )
         ).status == 401
-        assert await backlog.store.projects() == []
+        assert await scope.read_projects(await backlog.open(), backlog.actor) == []
 
 
 async def test_basic_and_jwt_with_the_same_subject_share_data(backlog: Backlog) -> None:
@@ -268,4 +269,4 @@ async def test_http_without_authorizers_uses_user_default(
                 collecting.cancel()
                 await asyncio.gather(collecting, return_exceptions=True)
     finally:
-        await instance.store.close()
+        await instance.close()

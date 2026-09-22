@@ -4,12 +4,14 @@ from typing import Any
 
 import pytest
 from aiohttp_tiny_mcp.client.base import BaseClient
+from helpers import mutate, rows
 from test_server import call, resource
 
+from backlog_mcp import backlog as scope
 from backlog_mcp import server
+from backlog_mcp import server as operations
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import RELATIONS, Relation, Status, relation
-from backlog_mcp.store import Store
 
 
 @pytest.mark.parametrize("kind", list(Relation))
@@ -23,7 +25,17 @@ def test_relation_pair(kind: Relation) -> None:
 async def tasks(backlog: Backlog, count: int = 3) -> list[int]:
     project, _ = await backlog.current()
     return [
-        (await backlog.store.add_task(project_id=project.id, title=f"Task {number}")).id
+        (
+            await mutate(
+                operations.add_task(
+                    await backlog.open(),
+                    backlog.actor,
+                    project_id=project.id,
+                    title=f"Task {number}",
+                ),
+                backlog.transaction,
+            )
+        ).id
         for number in range(count)
     ]
 
@@ -31,121 +43,236 @@ async def tasks(backlog: Backlog, count: int = 3) -> list[int]:
 @pytest.mark.parametrize("kind", list(Relation))
 async def test_pairs_are_idempotent_from_either_side(backlog: Backlog, kind: Relation) -> None:
     a, b = await tasks(backlog, 2)
-    store = backlog.store
+    store = backlog
     inverse = RELATIONS[kind]
-    assert await store.link_task(a, kind, b, reason="Explanation")
-    saved = await store.task(a)
-    assert not await store.link_task(b, inverse, a)
-    assert (await store.task(a)).updated_at == saved.updated_at
-    assert len(await store.rows("SELECT * FROM task_links")) == 2
-    assert [(x.task, x.relation, x.reason) for x in await store.task_links(a)] == [
-        (b, kind, "Explanation")
-    ]
-    assert [(x.task, x.relation) for x in await store.task_links(b)] == [(a, inverse)]
-    assert await store.link_task(b, inverse, a, reason="Revised")
-    assert (await store.task_links(a))[0].reason == "Revised"
-    assert await store.link_task(a, kind, b, reason="")
-    assert (await store.task_links(b))[0].reason == ""
-    assert await store.unlink_task(b, inverse, a)
-    assert not await store.unlink_task(a, kind, b)
-    assert await store.task_links(a) == await store.task_links(b) == []
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, a, kind, b, reason="Explanation"),
+        store.transaction,
+    )
+    saved = await operations.read_task(await store.open(), store.actor, a)
+    assert not await mutate(
+        operations.link_task(await store.open(), store.actor, b, inverse, a), store.transaction
+    )
+    assert (
+        await operations.read_task(await store.open(), store.actor, a)
+    ).updated_at == saved.updated_at
+    assert len(await rows(await store.open(), "SELECT * FROM task_links")) == 2
+    assert [
+        (x.task, x.relation, x.reason)
+        for x in await operations.task_links(await store.open(), store.actor, a)
+    ] == [(b, kind, "Explanation")]
+    assert [
+        (x.task, x.relation)
+        for x in await operations.task_links(await store.open(), store.actor, b)
+    ] == [(a, inverse)]
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, b, inverse, a, reason="Revised"),
+        store.transaction,
+    )
+    assert (await operations.task_links(await store.open(), store.actor, a))[0].reason == "Revised"
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, a, kind, b, reason=""),
+        store.transaction,
+    )
+    assert (await operations.task_links(await store.open(), store.actor, b))[0].reason == ""
+    assert await mutate(
+        operations.unlink_task(await store.open(), store.actor, b, inverse, a), store.transaction
+    )
+    assert not await mutate(
+        operations.unlink_task(await store.open(), store.actor, a, kind, b), store.transaction
+    )
+    assert (
+        await operations.task_links(await store.open(), store.actor, a)
+        == await operations.task_links(await store.open(), store.actor, b)
+        == []
+    )
 
 
 @pytest.mark.parametrize("kind", [Relation.DEPENDS_ON, Relation.PART_OF])
 async def test_cycles_and_self_links(backlog: Backlog, kind: Relation) -> None:
     a, b, c = await tasks(backlog)
-    store = backlog.store
-    await store.link_task(a, kind, b)
-    await store.link_task(b, kind, c)
+    store = backlog
+    await mutate(
+        operations.link_task(await store.open(), store.actor, a, kind, b), store.transaction
+    )
+    await mutate(
+        operations.link_task(await store.open(), store.actor, b, kind, c), store.transaction
+    )
     with pytest.raises(ValueError, match="cycle"):
-        await store.link_task(c, kind, a)
+        await mutate(
+            operations.link_task(await store.open(), store.actor, c, kind, a), store.transaction
+        )
     with pytest.raises(ValueError, match="cycle"):
-        await store.link_task(a, RELATIONS[kind], c)
+        await mutate(
+            operations.link_task(await store.open(), store.actor, a, RELATIONS[kind], c),
+            store.transaction,
+        )
     with pytest.raises(ValueError, match="itself"):
-        await store.link_task(a, Relation.RELATED_TO, a)
+        await mutate(
+            operations.link_task(await store.open(), store.actor, a, Relation.RELATED_TO, a),
+            store.transaction,
+        )
     # Different relation families do not form a dependency cycle together.
-    assert await store.link_task(c, Relation.CAUSED_BY, a)
-    assert await store.link_task(a, Relation.CAUSED_BY, c)
-    assert await store.link_task(a, Relation.RELATED_TO, b)
-    await store.unlink_task(a, Relation.RELATED_TO, b)
-    assert (await store.task_links(a))[0].task in (b, c)
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, c, Relation.CAUSED_BY, a),
+        store.transaction,
+    )
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, a, Relation.CAUSED_BY, c),
+        store.transaction,
+    )
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, a, Relation.RELATED_TO, b),
+        store.transaction,
+    )
+    await mutate(
+        operations.unlink_task(await store.open(), store.actor, a, Relation.RELATED_TO, b),
+        store.transaction,
+    )
+    assert (await operations.task_links(await store.open(), store.actor, a))[0].task in (b, c)
 
 
 async def test_failed_second_insert_rolls_back_pair_and_timestamps(backlog: Backlog) -> None:
     a, b = await tasks(backlog, 2)
-    store = backlog.store
-    before = await store.task(a)
+    store = backlog
+    before = await operations.read_task(await store.open(), store.actor, a)
     connection = await store.open()
     await connection.execute(
         "CREATE TRIGGER fail_reverse BEFORE INSERT ON task_links "
         "WHEN new.relation = 'blocks' BEGIN SELECT RAISE(ABORT, 'reverse failed'); END"
     )
     with pytest.raises(sqlite3.IntegrityError, match="reverse failed"):
-        await store.link_task(a, Relation.DEPENDS_ON, b)
-    assert await store.rows("SELECT * FROM task_links") == []
-    assert (await store.task(a)).updated_at == before.updated_at
+        await mutate(
+            operations.link_task(await store.open(), store.actor, a, Relation.DEPENDS_ON, b),
+            store.transaction,
+        )
+    assert await rows(await store.open(), "SELECT * FROM task_links") == []
+    assert (
+        await operations.read_task(await store.open(), store.actor, a)
+    ).updated_at == before.updated_at
 
 
 async def test_concurrent_connections_cannot_create_cycle(backlog: Backlog) -> None:
     a, b = await tasks(backlog, 2)
-    other = Store(backlog.store.path, principal=backlog.store.principal, computer="second")
+    other = Backlog(backlog.database.path, principal=backlog.principal, computer="second")
     await other.open()
     try:
         results = await asyncio.gather(
-            backlog.store.link_task(a, Relation.DEPENDS_ON, b),
-            other.link_task(b, Relation.DEPENDS_ON, a),
+            mutate(
+                operations.link_task(
+                    await backlog.open(), backlog.actor, a, Relation.DEPENDS_ON, b
+                ),
+                backlog.transaction,
+            ),
+            mutate(
+                operations.link_task(await other.open(), other.actor, b, Relation.DEPENDS_ON, a),
+                other.transaction,
+            ),
             return_exceptions=True,
         )
         assert results.count(True) == 1
         assert sum(isinstance(result, ValueError) for result in results) == 1
-        assert len(await backlog.store.rows("SELECT * FROM task_links")) == 2
+        assert len(await rows(await backlog.open(), "SELECT * FROM task_links")) == 2
     finally:
         await other.close()
 
 
 async def test_access_and_task_lifecycle(backlog: Backlog) -> None:
     a, b = await tasks(backlog, 2)
-    store = backlog.store
+    store = backlog
     project, _ = await backlog.current()
     other = await backlog.create(backlog.cwd.parent / "other")
-    await store.update_task(b, project_id=other.id)
-    await store.register("reader", "reader")
+    await mutate(
+        operations.update_task(await store.open(), store.actor, b, project_id=other.id),
+        store.transaction,
+    )
+    await mutate(
+        scope.register(await store.open(), store.actor, "reader", "reader"), store.transaction
+    )
     reader = store.view(principal="reader")
-    await store.share(project.id, "reader", "editor")
-    await store.link_task(a, Relation.DEPENDS_ON, b)
-    assert await reader.task_links(a) == []
+    await mutate(
+        scope.share(await store.open(), store.actor, project.id, "reader", "editor"),
+        store.transaction,
+    )
+    await mutate(
+        operations.link_task(await store.open(), store.actor, a, Relation.DEPENDS_ON, b),
+        store.transaction,
+    )
+    assert await operations.task_links(await reader.open(), reader.actor, a) == []
     with pytest.raises(LookupError):
-        await reader.link_task(a, Relation.CAUSED_BY, b)
-    await store.share(other.id, "reader", "reader")
-    assert (await reader.task_links(a))[0].task == b
+        await mutate(
+            operations.link_task(await reader.open(), reader.actor, a, Relation.CAUSED_BY, b),
+            reader.transaction,
+        )
+    await mutate(
+        scope.share(await store.open(), store.actor, other.id, "reader", "reader"),
+        store.transaction,
+    )
+    assert (await operations.task_links(await reader.open(), reader.actor, a))[0].task == b
     with pytest.raises(PermissionError):
-        await reader.unlink_task(a, Relation.DEPENDS_ON, b)
-    await store.share(other.id, "reader", "editor")
-    assert await reader.link_task(a, Relation.CAUSED_BY, b)
-    await store.update_task(b, title="Renamed", status=Status.DONE)
-    assert (await store.task_links(a))[0].title == "Renamed"
-    await store.delete_task(b)
-    assert all(link.status == Status.DELETED for link in await store.task_links(a))
-    await store.delete_project(other.id)
-    assert await store.task_links(a) == []
+        await mutate(
+            operations.unlink_task(await reader.open(), reader.actor, a, Relation.DEPENDS_ON, b),
+            reader.transaction,
+        )
+    await mutate(
+        scope.share(await store.open(), store.actor, other.id, "reader", "editor"),
+        store.transaction,
+    )
+    assert await mutate(
+        operations.link_task(await reader.open(), reader.actor, a, Relation.CAUSED_BY, b),
+        reader.transaction,
+    )
+    await mutate(
+        operations.update_task(
+            await store.open(), store.actor, b, title="Renamed", status=Status.DONE
+        ),
+        store.transaction,
+    )
+    assert (await operations.task_links(await store.open(), store.actor, a))[0].title == "Renamed"
+    await mutate(operations.delete_task(await store.open(), store.actor, b), store.transaction)
+    assert all(
+        link.status == Status.DELETED
+        for link in await operations.task_links(await store.open(), store.actor, a)
+    )
+    await mutate(scope.delete_project(await store.open(), store.actor, other.id), store.transaction)
+    assert await operations.task_links(await store.open(), store.actor, a) == []
     with pytest.raises(LookupError):
-        await store.link_task(a, Relation.RELATED_TO, 99999)
+        await mutate(
+            operations.link_task(await store.open(), store.actor, a, Relation.RELATED_TO, 99999),
+            store.transaction,
+        )
 
 
 async def test_missing_inverse_and_conflicting_reasons(backlog: Backlog) -> None:
     a, b = await tasks(backlog, 2)
-    store = backlog.store
-    await store.link_task(a, Relation.DEPENDS_ON, b, reason="Keep this")
+    store = backlog
+    await mutate(
+        operations.link_task(
+            await store.open(), store.actor, a, Relation.DEPENDS_ON, b, reason="Keep this"
+        ),
+        store.transaction,
+    )
     connection = await store.open()
     await connection.execute("DELETE FROM task_links WHERE task_id = ?", (b,))
     await connection.commit()
-    assert await store.link_task(b, Relation.BLOCKS, a)
-    assert (await store.task_links(b))[0].reason == "Keep this"
+    assert await mutate(
+        operations.link_task(await store.open(), store.actor, b, Relation.BLOCKS, a),
+        store.transaction,
+    )
+    assert (await operations.task_links(await store.open(), store.actor, b))[
+        0
+    ].reason == "Keep this"
     await connection.execute("UPDATE task_links SET reason = 'Conflict' WHERE task_id = ?", (b,))
     await connection.commit()
     with pytest.raises(ValueError, match="conflicting"):
-        await store.link_task(a, Relation.DEPENDS_ON, b)
-    assert await store.unlink_task(a, Relation.DEPENDS_ON, b)
+        await mutate(
+            operations.link_task(await store.open(), store.actor, a, Relation.DEPENDS_ON, b),
+            store.transaction,
+        )
+    assert await mutate(
+        operations.unlink_task(await store.open(), store.actor, a, Relation.DEPENDS_ON, b),
+        store.transaction,
+    )
 
 
 async def test_mcp_tools_and_resource(client: BaseClient) -> None:
@@ -183,31 +310,51 @@ async def test_notifications_and_neighbor_invalidation(
     monkeypatch.setattr(server, "changed", changed)
     monkeypatch.setattr(server, "stale", stale)
     args = server.LinkTask(task=a, relation=Relation.DEPENDS_ON, target=b)
-    await server.task_link(args, backlog)
+    await server.task_link(
+        args, backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert events == [a, b]
     events.clear()
-    await server.task_link(args, backlog)
+    await server.task_link(
+        args, backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert events == []
-    before = await backlog.store.task(a)
-    await server.task_update(server.UpdateTask(id=b, title="New provider"), backlog)
+    before = await operations.read_task(await backlog.open(), backlog.actor, a)
+    await server.task_update(
+        server.UpdateTask(id=b, title="New provider"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     assert events == [b] and invalidated == [f"backlog://tasks/{a}"]
-    assert (await backlog.store.task(a)).updated_at == before.updated_at
+    assert (
+        await operations.read_task(await backlog.open(), backlog.actor, a)
+    ).updated_at == before.updated_at
 
 
 async def test_existing_schema_is_registered_without_changing_links(backlog: Backlog) -> None:
     a, b = await tasks(backlog, 2)
-    await backlog.store.link_task(a, Relation.PART_OF, b, reason="Keep this")
-    path = backlog.store.path
-    await backlog.store.close()
+    await mutate(
+        operations.link_task(
+            await backlog.open(), backlog.actor, a, Relation.PART_OF, b, reason="Keep this"
+        ),
+        backlog.transaction,
+    )
+    path = backlog.database.path
+    await backlog.close()
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE migrations")
         connection.execute("DROP INDEX tasks_by_assigned")
         connection.execute("ALTER TABLE tasks DROP COLUMN assigned")
-    assert (await backlog.store.task(a)).title == "Task 0"
-    assert (await backlog.store.task_links(b))[0].reason == "Keep this"
-    assert len(await backlog.store.rows("SELECT * FROM migrations")) == 2
-    await backlog.store.close()
-    assert (await backlog.store.task_links(b))[0].relation == Relation.CONTAINS
+    assert (await operations.read_task(await backlog.open(), backlog.actor, a)).title == "Task 0"
+    assert (await operations.task_links(await backlog.open(), backlog.actor, b))[
+        0
+    ].reason == "Keep this"
+    assert len(await rows(await backlog.open(), "SELECT * FROM migrations")) == 2
+    await backlog.close()
+    assert (await operations.task_links(await backlog.open(), backlog.actor, b))[
+        0
+    ].relation == Relation.CONTAINS
 
 
 async def test_resource_subscribers_receive_both_directions(backlog: Backlog) -> None:
@@ -247,21 +394,39 @@ async def test_neighbor_notifications_do_not_reveal_private_targets(
     a, b = await tasks(backlog, 2)
     project, _ = await backlog.current()
     other = await backlog.create(backlog.cwd.parent / "other")
-    store = backlog.store
-    await store.register("reader", "Reader")
-    await store.share(project.id, "reader", "reader")
+    store = backlog
+    await mutate(
+        scope.register(await store.open(), store.actor, "reader", "Reader"), store.transaction
+    )
+    await mutate(
+        scope.share(await store.open(), store.actor, project.id, "reader", "reader"),
+        store.transaction,
+    )
     reader = store.view(principal="reader")
-    await store.link_task(a, Relation.DEPENDS_ON, b)
-    assert len(await reader.task_links(a)) == 1
+    await mutate(
+        operations.link_task(await store.open(), store.actor, a, Relation.DEPENDS_ON, b),
+        store.transaction,
+    )
+    assert len(await operations.task_links(await reader.open(), reader.actor, a)) == 1
     seen: list[tuple[Any, list[str], Any]] = []
 
     async def stale(uris: list[str], event: Any) -> None:
         seen.append((namespace.get(), uris, event.model_dump()))
 
     monkeypatch.setattr(server, "stale", stale)
-    await server.task_move(server.MoveTask(id=b, project=other.full_name), backlog)
-    assert await reader.task_links(a) == []
-    await server.task_update(server.UpdateTask(id=b, title="Private target"), backlog)
+    await server.task_move(
+        server.MoveTask(id=b, project=other.full_name),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
+    assert await operations.task_links(await reader.open(), reader.actor, a) == []
+    await server.task_update(
+        server.UpdateTask(id=b, title="Private target"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     reader_events = [(uris, event) for identity, uris, event in seen if identity == "reader"]
     assert reader_events
     assert all(uris == [f"backlog://tasks/{a}"] for uris, _ in reader_events)

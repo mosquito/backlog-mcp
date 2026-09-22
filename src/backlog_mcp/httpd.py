@@ -16,7 +16,7 @@ from aiohttp_tiny_mcp.storage.namespaces import namespace
 from aiohttp_tiny_mcp.storage.sqlite import SqliteStorage
 
 from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, user_identity
-from .backlog import Backlog
+from .backlog import Backlog, register
 from .server import ACTIVE_REGISTRY, VERSION, persistent_registry, use
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ def bind(backlog: Backlog, configured: Registry | None = None) -> Middleware:
 
     @web.middleware
     async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
+        connection = await backlog.open()
         computer = request.query.get("computer") or None
         project = request.query.get("project") or None
         try:
@@ -54,9 +55,13 @@ def bind(backlog: Backlog, configured: Registry | None = None) -> Middleware:
                 principal = request[PRINCIPAL]
                 identity = principal.namespace
                 assert identity, "authenticated users must have a storage identity"
-                await backlog.store.register(
-                    identity, principal.subject or principal.client_id or identity
-                )
+                async with backlog.transaction:
+                    await register(
+                        connection,
+                        backlog.actor,
+                        identity,
+                        principal.subject or principal.client_id or identity,
+                    )
             view = backlog.view(computer=computer, project=project, principal=identity)
             if identity is not None:
                 jwt = any(
@@ -160,15 +165,16 @@ def application(
         page.setup(app, CONSOLE_PATH)
 
     async def lifespan(app: web.Application) -> AsyncIterator[None]:
-        await backlog.store.open()
+        connection = await backlog.open()
         try:
             for user, _password in accounts:
-                await backlog.store.register(user_identity(user), user)
-            log.info("database %s", backlog.store.path)
+                async with backlog.transaction:
+                    await register(connection, backlog.actor, user_identity(user), user)
+            log.info("database %s", backlog.database.path)
             async for _ in storage.cleanup_ctx(app):
                 yield
         finally:
-            await backlog.store.close()
+            await backlog.close()
 
     app.cleanup_ctx.append(lifespan)
     return app

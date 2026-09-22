@@ -398,19 +398,21 @@ def board_panel(board: ProjectBoard) -> Panel:
         ("claimed", Text(str(board.tasks.claimed))),
         ("unclaimed", Text(str(board.tasks.unclaimed))),
         ("blocked", Text(str(board.tasks.blocked))),
+        ("done", Text(str(board.tasks.done))),
+        ("cancelled", Text(str(board.tasks.cancelled))),
+        ("deleted", Text(str(board.tasks.deleted))),
         ("memory", Text(str(board.memory))),
     ]
     if project.archived:
         rows.append(("archived", Text("yes")))
-    tasks = Table("id", "priority", "status", "title", title="unclaimed · top 10")
-    for task in board.unclaimed:
-        tasks.add_row(
-            str(task.id), priority_text(task.priority), status_text(task.status), Text(task.title)
-        )
     parts: list[RenderableType] = [fields(rows)]
     if project.description:
         parts.append(Markdown(project.description))
-    parts.append(tasks)
+    for name, section in (("ready", board.ready), ("claimed", board.claimed)):
+        tasks = Table("id", "title", title=f"{name} · {section.count} total · top 10")
+        for task in section.items:
+            tasks.add_row(str(task.id), Text(task.title))
+        parts.append(tasks)
     return Panel(Group(*parts), title=Text(project.name), width=width(), padding=(1, 2))
 
 

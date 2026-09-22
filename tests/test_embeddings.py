@@ -14,8 +14,10 @@ from aiohttp.test_utils import TestServer
 from aiohttp_tiny_mcp import Client
 from aiohttp_tiny_mcp.client.base import BaseClient, ClientError
 from aiohttp_tiny_mcp.testing import connect, pick
+from helpers import mutate
 
 from backlog_mcp import embeddings
+from backlog_mcp import server as operations
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import application
 from backlog_mcp.models import Status
@@ -115,37 +117,93 @@ async def test_inference_and_index_work_run_in_threads(
 
     monkeypatch.setattr(embeddings.encoder, "encode", encode)
     monkeypatch.setattr(embeddings, "cached_indexes", indexes)
-    await embeddings.indexes(backlog)
+    await embeddings.indexes(
+        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     await embeddings.encode_texts(embeddings.EncodeTexts(texts=["Hello"]))
-    await embeddings.search(embeddings.Search(query="Hello"), backlog)
+    await embeddings.search(
+        embeddings.Search(query="Hello"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     assert called == {"encode", "indexes"}
 
 
 async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog) -> None:
     current, _ = await backlog.current()
     other = await backlog.create(backlog.cwd.parent / "other")
-    task = await backlog.store.add_task(
-        project_id=current.id, title="Сбросить пароль", status=Status.DONE, tags=["auth"]
+    task = await mutate(
+        operations.add_task(
+            await backlog.open(),
+            backlog.actor,
+            project_id=current.id,
+            title="Сбросить пароль",
+            status=Status.DONE,
+            tags=["auth"],
+        ),
+        backlog.transaction,
     )
-    await backlog.store.add_task(project_id=current.id, title="Bake a chocolate cake")
-    await backlog.store.add_task(project_id=other.id, title="Reset the password")
-    note = await backlog.store.add_note(
-        project_id=other.id, title="Сбросить пароль", shared=True, tags=["auth"]
+    await mutate(
+        operations.add_task(
+            await backlog.open(),
+            backlog.actor,
+            project_id=current.id,
+            title="Bake a chocolate cake",
+        ),
+        backlog.transaction,
     )
-    await backlog.store.add_note(project_id=other.id, title="Private password", shared=False)
-    result = await embeddings.search(embeddings.Search(query="Сбросить пароль", limit=1), backlog)
+    await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=other.id, title="Reset the password"
+        ),
+        backlog.transaction,
+    )
+    note = await mutate(
+        operations.add_note(
+            await backlog.open(),
+            backlog.actor,
+            project_id=other.id,
+            title="Сбросить пароль",
+            shared=True,
+            tags=["auth"],
+        ),
+        backlog.transaction,
+    )
+    await mutate(
+        operations.add_note(
+            await backlog.open(),
+            backlog.actor,
+            project_id=other.id,
+            title="Private password",
+            shared=False,
+        ),
+        backlog.transaction,
+    )
+    result = await embeddings.search(
+        embeddings.Search(query="Сбросить пароль", limit=1),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     assert result.tasks[0].id == task.id
     assert result.tasks[0].title == task.title
     assert result.memory[0].id == note.id
     assert result.memory[0].shared
     assert result.count == 2
     filtered = await embeddings.search(
-        embeddings.Search(query="Сбросить пароль", status=[Status.TODO], tag="auth"), backlog
+        embeddings.Search(query="Сбросить пароль", status=[Status.TODO], tag="auth"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
     )
     assert filtered.tasks == []
     assert [item.id for item in filtered.memory] == [note.id]
     global_result = await embeddings.search(
-        embeddings.Search(query="password", all_projects=True, min_score=-1), backlog
+        embeddings.Search(query="password", all_projects=True, min_score=-1),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
     )
     assert len(global_result.tasks) == 2
     assert len(global_result.memory) == 2
@@ -155,8 +213,18 @@ async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
     backlog: Backlog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = await backlog.current()
-    lexical = await backlog.store.add_task(project_id=project.id, title="Needle in a haystack")
-    semantic = await backlog.store.add_task(project_id=project.id, title="Related work")
+    lexical = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Needle in a haystack"
+        ),
+        backlog.transaction,
+    )
+    semantic = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Related work"
+        ),
+        backlog.transaction,
+    )
     scores: list[float] = []
 
     def matches(
@@ -166,7 +234,12 @@ async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
         return [(lexical.id, 0.8), (semantic.id, 0.3)], [], [], []
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
-    result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
+    result = await embeddings.search(
+        embeddings.Search(query="Needle"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
 
     assert scores == [embeddings.FTS_MIN_SCORE]
     assert [(item.id, item.match) for item in result.tasks] == [
@@ -179,7 +252,12 @@ async def test_search_uses_default_semantic_floor_without_fts(
     backlog: Backlog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = await backlog.current()
-    task = await backlog.store.add_task(project_id=project.id, title="Related work")
+    task = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Related work"
+        ),
+        backlog.transaction,
+    )
     scores: list[float] = []
 
     def matches(
@@ -189,7 +267,12 @@ async def test_search_uses_default_semantic_floor_without_fts(
         return [(task.id, 0.3)], [], [], []
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
-    result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
+    result = await embeddings.search(
+        embeddings.Search(query="Needle"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
 
     assert scores == [embeddings.DEFAULT_MIN_SCORE]
     assert result.tasks[0].match == "semantic"
@@ -199,8 +282,15 @@ async def test_index_contains_only_ids_vectors_and_digest(
     backlog: Backlog, cache_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = await backlog.current()
-    task = await backlog.store.add_task(project_id=project.id, title="Private task text")
-    await embeddings.indexes(backlog)
+    task = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Private task text"
+        ),
+        backlog.transaction,
+    )
+    await embeddings.indexes(
+        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     (path,) = cache_directory.glob("*.npz")
     with np.load(path, allow_pickle=False) as saved:
         assert set(saved.files) == {
@@ -224,17 +314,32 @@ async def test_index_contains_only_ids_vectors_and_digest(
         return original_encode(texts)
 
     monkeypatch.setattr(embeddings.encoder, "encode", encode)
-    await embeddings.indexes(backlog)
+    await embeddings.indexes(
+        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert calls == []
-    await backlog.store.update_task(task.id, title="Updated task text")
-    await embeddings.indexes(backlog)
+    await mutate(
+        operations.update_task(
+            await backlog.open(), backlog.actor, task.id, title="Updated task text"
+        ),
+        backlog.transaction,
+    )
+    await embeddings.indexes(
+        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert len(calls) == 1
     path.write_bytes(b"broken cache")
-    embeddings.states.pop(backlog.store)
-    await embeddings.indexes(backlog)
+    embeddings.states.pop(backlog.database)
+    await embeddings.indexes(
+        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert len(calls) == 2
-    await backlog.store.delete_task(task.id)
-    await embeddings.indexes(backlog)
+    await mutate(
+        operations.delete_task(await backlog.open(), backlog.actor, task.id), backlog.transaction
+    )
+    await embeddings.indexes(
+        backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     with np.load(path, allow_pickle=False) as saved:
         assert saved["task_ids"].tolist() == [task.id]
 
@@ -243,17 +348,27 @@ async def test_results_are_read_by_id_after_ranking(
     backlog: Backlog, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project, _ = await backlog.current()
-    task = await backlog.store.add_task(project_id=project.id, title="Reset the password")
+    task = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Reset the password"
+        ),
+        backlog.transaction,
+    )
     original = embeddings.match_ids
 
     def changed(*args: Any) -> Any:
         ids = original(*args)
-        with sqlite3.connect(backlog.store.path) as connection:
+        with sqlite3.connect(backlog.database.path) as connection:
             connection.execute("UPDATE tasks SET body = ? WHERE id = ?", ("Latest body", task.id))
         return ids
 
     monkeypatch.setattr(embeddings, "match_ids", changed)
-    result = await embeddings.search(embeddings.Search(query="Reset the password"), backlog)
+    result = await embeddings.search(
+        embeddings.Search(query="Reset the password"),
+        backlog,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     assert result.tasks[0].id == task.id
     assert result.tasks[0].body == "Latest body"
 
@@ -329,30 +444,69 @@ async def test_model_cache_is_lazy_and_invalidated_by_local_and_external_writes(
         return original(*args)
 
     monkeypatch.setattr(embeddings, "cached_indexes", counted)
-    task = await backlog.store.add_task(project_id=project.id, title="Reset the password")
-    note = await backlog.store.add_note(project_id=project.id, title="Password policy")
+    task = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Reset the password"
+        ),
+        backlog.transaction,
+    )
+    note = await mutate(
+        operations.add_note(
+            await backlog.open(), backlog.actor, project_id=project.id, title="Password policy"
+        ),
+        backlog.transaction,
+    )
     assert builds == 0
     assert not cache_directory.exists()
     query = embeddings.Search(query="password", min_score=-1, kinds=["tasks", "memory", "comments"])
-    assert (await embeddings.search(query, backlog)).count == 2
+    assert (
+        await embeddings.search(
+            query, backlog, connection=await backlog.open(), transaction=backlog.transaction
+        )
+    ).count == 2
     assert builds == 1
-    await embeddings.search(query, backlog)
+    await embeddings.search(
+        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert builds == 1
 
-    await backlog.store.update_task(task.id, title="Bake a cake")
-    await backlog.store.update_note(note.id, body="Updated policy")
+    await mutate(
+        operations.update_task(await backlog.open(), backlog.actor, task.id, title="Bake a cake"),
+        backlog.transaction,
+    )
+    await mutate(
+        operations.update_note(await backlog.open(), backlog.actor, note.id, body="Updated policy"),
+        backlog.transaction,
+    )
     assert builds == 1
-    result = await embeddings.search(query, backlog)
+    result = await embeddings.search(
+        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert builds == 2
     assert result.memory[0].body == "Updated policy"
-    await backlog.store.delete_task(task.id)
-    await backlog.store.delete_note(note.id)
+    await mutate(
+        operations.delete_task(await backlog.open(), backlog.actor, task.id), backlog.transaction
+    )
+    await mutate(
+        operations.delete_note(await backlog.open(), backlog.actor, note.id), backlog.transaction
+    )
     assert builds == 2
-    assert (await embeddings.search(query, backlog)).count == 0
+    assert (
+        await embeddings.search(
+            query, backlog, connection=await backlog.open(), transaction=backlog.transaction
+        )
+    ).count == 0
     assert builds == 3
 
-    task = await backlog.store.add_task(project_id=project.id, title="A new password")
-    await embeddings.search(query, backlog)
+    task = await mutate(
+        operations.add_task(
+            await backlog.open(), backlog.actor, project_id=project.id, title="A new password"
+        ),
+        backlog.transaction,
+    )
+    await embeddings.search(
+        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert builds == 4
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -361,12 +515,14 @@ async def test_model_cache_is_lazy_and_invalidated_by_local_and_external_writes(
         "db = sqlite3.connect(sys.argv[1]); "
         "db.execute('UPDATE tasks SET title = ? WHERE id = ?', ('External change', sys.argv[2])); "
         "db.commit(); db.close()",
-        str(backlog.store.path),
+        str(backlog.database.path),
         str(task.id),
     )
     assert await asyncio.wait_for(process.wait(), timeout=10) == 0
     assert builds == 4
-    result = await embeddings.search(query, backlog)
+    result = await embeddings.search(
+        query, backlog, connection=await backlog.open(), transaction=backlog.transaction
+    )
     assert builds == 5
     assert result.tasks[0].title == "External change"
 

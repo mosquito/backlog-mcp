@@ -6,9 +6,12 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from helpers import mutate
 
+from backlog_mcp import backlog as scope
+from backlog_mcp import server as operations
 from backlog_mcp.auth import user_identity
-from backlog_mcp.store import Store
+from backlog_mcp.backlog import Backlog
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "migrate_db_from_0.1.py"
 spec = importlib.util.spec_from_file_location("import_01", SCRIPT)
@@ -52,27 +55,48 @@ async def test_import_preserves_records_and_assigns_owner(source: Path, tmp_path
     )
     assert counts == {"projects": 1, "tasks": 1, "memory": 1, "comments": 1}
     assert source.read_bytes() == original
-    store = Store(target)
+    store = Backlog(target)
     alice = store.view(principal=user_identity("alice"), computer="old-host")
     try:
-        project = await alice.project(7)
+        project = await scope.read_project(await alice.open(), alice.actor, 7)
         assert project and project.full_name == "alice/infra" and project.role == "owner"
         assert project.roots[0].root == "/work"
-        task = await alice.task(12)
+        task = await operations.read_task(await alice.open(), alice.actor, 12)
         assert task and task.body == "Original history" and task.updated_at == 22
         assert task.closed_at == 22 and task.created_at == 11
         assert task.created_by and task.created_by.principal == alice.principal
-        assert [item.id for item in await alice.search("needle")] == [12]
-        assert [item.id for item in await alice.search_notes("needle")] == [8]
-        assert [item.id for item in await alice.comments(query="needle")] == [9]
-        assert [item.id for item in await alice.search_projects("orchestration")] == [7]
-        assert (await alice.add_task(project_id=7, title="Next")).id == 100
+        assert [
+            item.id
+            for item in await operations.search_tasks(await alice.open(), alice.actor, "needle")
+        ] == [12]
+        assert [
+            item.id
+            for item in await operations.search_notes(await alice.open(), alice.actor, "needle")
+        ] == [8]
+        assert [
+            item.id
+            for item in await operations.read_comments(
+                await alice.open(), alice.actor, query="needle"
+            )
+        ] == [9]
+        assert [
+            item.id
+            for item in await operations.search_projects(
+                await alice.open(), alice.actor, "orchestration"
+            )
+        ] == [7]
+        assert (
+            await mutate(
+                operations.add_task(await alice.open(), alice.actor, project_id=7, title="Next"),
+                alice.transaction,
+            )
+        ).id == 100
         bob = store.view(principal=user_identity("bob"), computer="old-host")
-        assert await bob.projects() == []
-        assert await bob.search("needle") == []
-        assert await bob.search_notes("needle") == []
-        assert await bob.comments(query="needle") == []
-        assert await bob.search_projects("orchestration") == []
+        assert await scope.read_projects(await bob.open(), bob.actor) == []
+        assert await operations.search_tasks(await bob.open(), bob.actor, "needle") == []
+        assert await operations.search_notes(await bob.open(), bob.actor, "needle") == []
+        assert await operations.read_comments(await bob.open(), bob.actor, query="needle") == []
+        assert await operations.search_projects(await bob.open(), bob.actor, "orchestration") == []
     finally:
         await store.close()
 
@@ -132,19 +156,26 @@ async def test_import_extracts_updates_and_preserves_existing_comment_ids(
     counts = await asyncio.to_thread(migration.migrate, source, target, user="alice")
     assert counts["comments"] == 3
     assert source.read_bytes() == original
-    store = Store(target)
+    store = Backlog(target)
     alice = store.view(principal=user_identity("alice"), computer="unknown")
     try:
-        task = await alice.task(12)
+        task = await operations.read_task(await alice.open(), alice.actor, 12)
         assert task and task.body.endswith("Example\n```\n") and task.updated_at == 22
-        comments = await alice.comments(task_id=12)
+        comments = await operations.read_comments(await alice.open(), alice.actor, task_id=12)
         assert [item.id for item in comments] == [9, 41, 42]
         assert comments[1].body == "Status changed: todo → doing\n\nFirst progress\n"
         assert comments[2].body == "Second progress\n"
         assert comments[1].created_at == 1789870242
         assert comments[2].created_at == 1789992094
-        assert await alice.search("Second progress") == []
-        assert [item.id for item in await alice.comments(query="Second progress")] == [42]
+        assert (
+            await operations.search_tasks(await alice.open(), alice.actor, "Second progress") == []
+        )
+        assert [
+            item.id
+            for item in await operations.read_comments(
+                await alice.open(), alice.actor, query="Second progress"
+            )
+        ] == [42]
     finally:
         await store.close()
 

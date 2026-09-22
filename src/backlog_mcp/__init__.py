@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from .backlog import Backlog, UnknownProject
 from .cli import CLI, build, main, server_main
+from .database import Database
 from .models import Priority, Status
 from .server import VERSION, registry, use
 from .state import State
-from .store import Store
 
 __all__ = [
     "CLI",
@@ -21,7 +21,7 @@ __all__ = [
     "Priority",
     "State",
     "Status",
-    "Store",
+    "Database",
     "UnknownProject",
     "build",
     "main",

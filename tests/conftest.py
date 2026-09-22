@@ -20,7 +20,6 @@ from backlog_mcp.auth import BasicAuthentication, JWTAuthentication
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.server import ACTIVE, registry
 from backlog_mcp.state import State
-from backlog_mcp.store import Store
 
 
 @pytest.fixture
@@ -34,17 +33,14 @@ async def backlog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
     # A project root must exist: the tests register `../other` as a second project.
     (tmp_path / "other").mkdir()
     instance = Backlog(
-        Store(tmp_path / "backlog.sqlite3"),
-        State(tmp_path / "state.json"),
-        cwd=root,
-        computer="here",
+        tmp_path / "backlog.sqlite3", State(tmp_path / "state.json"), cwd=root, computer="here"
     )
     token = ACTIVE.set(instance)
     try:
         yield instance
     finally:
         ACTIVE.reset(token)
-        await instance.store.close()
+        await instance.close()
 
 
 @pytest.fixture(params=AdapterSet.default().versions)

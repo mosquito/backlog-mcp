@@ -437,22 +437,29 @@ class BoardCounts(BaseModel):
     open: int
     claimed: int = Field(description="Open tasks with an assignment.")
     unclaimed: int = Field(description="Open tasks without an assignment.")
-    blocked: int
+    blocked: int = Field(description="Open tasks blocked by status or dependencies.")
+    done: int
+    cancelled: int
+    deleted: int
 
 
 class BoardTask(BaseModel):
     id: int
     title: str
-    status: Status
-    priority: Priority
+
+
+class BoardSection(BaseModel):
+    count: int
+    items: list[BoardTask]
 
 
 class ProjectBoard(Actor):
     project: BoardProject
     tasks: BoardCounts
     memory: int = Field(description="Project memory plus accessible shared memory.")
-    unclaimed: list[BoardTask] = Field(
-        description="Up to ten open unassigned tasks, ordered by priority."
+    ready: BoardSection = Field(description="Unassigned, unblocked tasks; up to ten by priority.")
+    claimed: BoardSection = Field(
+        description="Open tasks assigned to this principal and computer, across all markers."
     )
 
 

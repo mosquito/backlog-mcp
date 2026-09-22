@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
-from collections.abc import Sequence
+import time
+from collections.abc import Iterable, Sequence
 from contextvars import ContextVar
 from typing import Any, Literal
 
+import aiosqlite
 from aiohttp_tiny_mcp import Authentication, Exchange, Extension, Hint, NeedInput, Registry, elicit
 from aiohttp_tiny_mcp.protocol.models import CompleteParams, TextResourceContents
 from aiohttp_tiny_mcp.storage.hub import NOTIFICATIONS, topic
@@ -15,17 +18,32 @@ from aiohttp_tiny_mcp.storage.sqlite import SqliteHub, SqliteSessionStore, Sqlit
 from pydantic import BaseModel, Field, field_serializer
 
 from . import embeddings, skills
-from .backlog import Backlog, Reach, UnknownProject
+from .backlog import (
+    Backlog,
+    Reach,
+    UnknownProject,
+    attach_roots,
+    computers,
+    members,
+    project_contents,
+    read_project,
+    read_projects,
+    require,
+    share,
+    slugs,
+)
+from .computer import hostname
 from .models import (
     CLOSED_STATUSES,
     EVENT_KEY,
     OPEN_STATUSES,
     PRIORITIES,
+    RANKS,
     Action,
     Actor,
     BoardCounts,
     BoardProject,
-    BoardTask,
+    BoardSection,
     CommentOut,
     Comments,
     Deleted,
@@ -50,12 +68,33 @@ from .models import (
     Stats,
     Status,
     TaskDetails,
+    TaskLinkOut,
     TaskListItem,
     TaskOut,
     Tasks,
+    check_assignment,
+    relation,
 )
 from .names import owner_name, principal_label, principal_user
-from .store import NOTE_LIMIT, Comment, Note, Project, Task, Unset
+from .queries import QUERIES
+from .records import (
+    NOTE_LIMIT,
+    AssignmentConflict,
+    Comment,
+    Note,
+    Project,
+    Task,
+    Unset,
+    assignment_pattern,
+    check_note,
+    join_tags,
+    match_query,
+    split_tags,
+    to_note,
+    to_project,
+    to_task,
+)
+from .transaction import Transaction
 from .version import VERSION
 
 log = logging.getLogger(__name__)
@@ -74,7 +113,7 @@ workspace. Use `all_computers=true` to find an existing logical project on anoth
 For HTTP connections, the server cwd is not the local cwd. If the local binding is missing
 or wrong, call `project_save(project=<existing full_name>, root=<absolute local project root>)`.
 Create a project only if no matching logical project exists. Leave correct bindings unchanged.
-Read `project_board(project=<full_name>)` for project context, counts and ten unclaimed tasks.
+Read `project_board(project=<full_name>)` for project context, counts and ready/claimed tasks.
 Registration and reading a board do not select a project for an unscoped HTTP connection;
 pass `project=` explicitly when needed.
 
@@ -112,7 +151,8 @@ in the conversation and save them when access returns. Do not claim a write succ
 unless the tool confirmed it.
 
 Scope. `project_board(project=...)` requires an explicit existing project. It returns project
-context, task counts, accessible memory count and up to ten open unclaimed tasks by priority.
+context, task counts, accessible memory count and up to ten ready tasks and ten tasks claimed
+by this principal on this computer.
 It never creates a project or changes connection scope. Read a task before claiming it;
 another agent can claim it after the board was read.
 Other project-scoped tools use their explicit `project`, then the connection project
@@ -250,7 +290,19 @@ async def active(ex: Exchange) -> Backlog:
     return ACTIVE.get()
 
 
+async def active_connection(ex: Exchange) -> aiosqlite.Connection:
+    return await ACTIVE.get().open()
+
+
+async def active_transaction(ex: Exchange) -> Transaction:
+    backlog = ACTIVE.get()
+    await backlog.open()
+    return backlog.transaction
+
+
 registry.provide(Backlog, active)
+registry.provide(aiosqlite.Connection, active_connection)
+registry.provide(Transaction, active_transaction)
 registry.extension(embeddings.extension)
 
 #: The extension that carries the change notifications; see `changed`.
@@ -275,7 +327,7 @@ def persistent_registry(
     backlog: Backlog, policies: Sequence[Authentication] = ()
 ) -> tuple[Registry, SqliteStorage]:
     """Use the application database for protocol sessions and notification events."""
-    storage = SqliteStorage(backlog.store.path)
+    storage = SqliteStorage(backlog.database.path)
     configured = Registry(
         "backlog",
         VERSION,
@@ -386,11 +438,12 @@ def comment_out(comment: Comment) -> CommentOut:
 
 
 async def task_details(task: Task, backlog: Backlog) -> TaskDetails:
-    comments = await backlog.store.comments(task_id=task.id)
+    connection = await backlog.open()
+    comments = await read_comments(connection, backlog.actor, task_id=task.id)
     return TaskDetails(
         **task_out(task).model_dump(),
         comments=[comment_out(item) for item in comments],
-        links=await backlog.store.task_links(task.id),
+        links=await task_links(connection, backlog.actor, task.id),
     )
 
 
@@ -447,13 +500,18 @@ def note_list_item(note: Note) -> NoteListItem:
 
 async def stats_of(backlog: Backlog, reach: Reach) -> Stats:
     """Counts for one project, for one computer, or for everything."""
+    connection = await backlog.open()
     project_id, computer = reach.project_id, reach.computer
-    by_priority = await backlog.store.group("priority", project_id=project_id, computer=computer)
-    by_status = await backlog.store.group("status", project_id=project_id, computer=computer)
+    by_priority = await group(
+        connection, backlog.actor, "priority", project_id=project_id, computer=computer
+    )
+    by_status = await group(
+        connection, backlog.actor, "status", project_id=project_id, computer=computer
+    )
     return Stats(
         project=reach.slug,
         computer=reach.scope_computer,
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         this_computer=backlog.computer,
         total=sum(by_status.values()),
         open=sum(by_status.get(status.value, 0) for status in OPEN_STATUSES),
@@ -464,8 +522,10 @@ async def stats_of(backlog: Backlog, reach: Reach) -> Stats:
             for rank, count in by_priority.items()
             if int(rank) in PRIORITIES
         },
-        tags=await backlog.store.tags(project_id=project_id, computer=computer),
-        memory=await backlog.store.count_notes(project_id=project_id, computer=computer),
+        tags=await read_tags(connection, backlog.actor, project_id=project_id, computer=computer),
+        memory=await count_notes(
+            connection, backlog.actor, project_id=project_id, computer=computer
+        ),
     )
 
 
@@ -522,17 +582,19 @@ async def changed(event: Event, *, recipients: list[str] | None = None) -> None:
     """Publish only to the current members of the affected project."""
     from aiohttp_tiny_mcp.storage.namespaces import namespace
 
-    store = bound().store
-    event.principal = store.principal
+    backlog = bound()
+    connection = await backlog.open()
+    event.principal = backlog.principal
     if recipients is None:
-        recipients = [store.principal]
+        recipients = [backlog.principal]
         if event.project_id is not None:
             with contextlib.suppress(LookupError):
                 recipients = [
-                    member["principal"] for member in await store.members(event.project_id)
+                    member["principal"]
+                    for member in await members(connection, backlog.actor, event.project_id)
                 ]
     for identity in recipients:
-        anonymous_default = ACTIVE_REGISTRY.get().auth is None and identity == store.principal
+        anonymous_default = ACTIVE_REGISTRY.get().auth is None and identity == backlog.principal
         token = namespace.set(None if anonymous_default else identity)
         try:
             await publish_change(event)
@@ -544,7 +606,10 @@ async def linked_tasks(
     backlog: Backlog, *, task_id: int | None = None, project_id: int | None = None
 ) -> list[Task]:
     """Find resource dependents for notification routing, never for a public response."""
-    return await backlog.store.linked_tasks(task_id=task_id, project_id=project_id)
+    connection = await backlog.open()
+    return await read_linked_tasks(
+        connection, backlog.actor, task_id=task_id, project_id=project_id
+    )
 
 
 async def invalidate_linked_tasks(tasks: list[Task], backlog: Backlog) -> None:
@@ -553,13 +618,14 @@ async def invalidate_linked_tasks(tasks: list[Task], backlog: Backlog) -> None:
     Each recipient receives only metadata from their own accessible task. A link may cross
     project boundaries, so the source event must not be copied into the neighbor's namespace.
     """
+    connection = await backlog.open()
     from aiohttp_tiny_mcp.storage.namespaces import namespace
 
     for task in tasks:
-        recipients = await backlog.store.notification_recipients(task.project_id)
+        recipients = await notification_recipients(connection, backlog.actor, task.project_id)
         event = task_event(task, Action.UPDATED, computer=backlog.computer)
         for identity in recipients:
-            anonymous = ACTIVE_REGISTRY.get().auth is None and identity == backlog.store.principal
+            anonymous = ACTIVE_REGISTRY.get().auth is None and identity == backlog.principal
             token = namespace.set(None if anonymous else identity)
             try:
                 await stale([f"backlog://tasks/{task.id}"], event)
@@ -578,7 +644,7 @@ def task_event(task: Task, action: Action, *, computer: str) -> Event:
         status=task.status,
         priority=task.priority,
         computer=computer,
-        principal=bound().store.principal,
+        principal=bound().principal,
     )
 
 
@@ -591,7 +657,7 @@ def note_event(note: Note, action: Action, *, computer: str) -> Event:
         project_id=note.project_id,
         title=note.title,
         computer=computer,
-        principal=bound().store.principal,
+        principal=bound().principal,
     )
 
 
@@ -604,7 +670,7 @@ def project_event(project: Project, action: Action, *, computer: str) -> Event:
         project_id=project.id,
         title=project.name,
         computer=computer,
-        principal=bound().store.principal,
+        principal=bound().principal,
     )
 
 
@@ -616,17 +682,22 @@ async def note_of(
     A title is looked up in the resolved project first, then among the shared notes of the other
     projects, so a shared note reads from anywhere and only its own project can replace it.
     """
+    connection = await backlog.open()
     if note_id is not None:
-        found = await backlog.store.note(note_id)
+        found = await read_note(connection, backlog.actor, note_id)
         if found is None:
             raise LookupError(f"no note #{note_id}")
         return found
     if not title:
         raise ValueError("name the note by id or by title")
     owner = await backlog.resolve(project)
-    found = await backlog.store.note_by_title(title, project_id=owner.id)
+    found = await note_by_title(connection, backlog.actor, title, project_id=owner.id)
     if found is None:
-        shared = [item for item in await backlog.store.notes(shared=True) if item.title == title]
+        shared = [
+            item
+            for item in await read_notes(connection, backlog.actor, shared=True)
+            if item.title == title
+        ]
         found = shared[0] if shared else None
     if found is None:
         raise LookupError(f"no note {title!r} in {owner.full_name}")
@@ -660,28 +731,33 @@ class Members(Actor):
 
 
 @registry.tool()
-async def project_members(args: ProjectRef, backlog: Backlog) -> Members:
+async def project_members(
+    args: ProjectRef, backlog: Backlog, connection: aiosqlite.Connection
+) -> Members:
     """List principals with access to a project and their roles."""
     project = await backlog.resolve(args.project)
     return Members(
-        items=await backlog.store.members(project.id),
-        principal=backlog.store.principal,
+        items=await members(connection, backlog.actor, project.id),
+        principal=backlog.principal,
         computer=backlog.computer,
     )
 
 
 @registry.tool()
-async def project_share(args: ShareProject, backlog: Backlog) -> Members:
+async def project_share(
+    args: ShareProject, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> Members:
     """Grant read or edit access to a registered principal. Only the owner can share."""
     from .auth import user_identity
 
     project = await backlog.resolve(args.project)
     principal = user_identity(principal_user(args.principal))
-    await backlog.store.share(project.id, principal, args.role)
+    async with transaction:
+        await share(connection, backlog.actor, project.id, principal, args.role)
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
     return Members(
-        items=await backlog.store.members(project.id),
-        principal=backlog.store.principal,
+        items=await members(connection, backlog.actor, project.id),
+        principal=backlog.principal,
         computer=backlog.computer,
     )
 
@@ -911,7 +987,7 @@ class StatsOf(BaseModel):
 
 
 @registry.tool(title="Current identity", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def whoami(args: Nothing, backlog: Backlog) -> Identity:
+async def whoami(args: Nothing, backlog: Backlog, connection: aiosqlite.Connection) -> Identity:
     """Report principal as user@computer, auth type and owner handle without selecting a project.
 
     Stdio and HTTP without authorizers use --default-user (default: $USER), with the same
@@ -919,12 +995,14 @@ async def whoami(args: Nothing, backlog: Backlog) -> Identity:
     verified identity. Computer is context, not identity.
     """
     return Identity(
-        principal=backlog.store.principal,
-        handle=owner_name(backlog.store.principal),
+        principal=backlog.principal,
+        handle=owner_name(backlog.principal),
         auth_type=backlog.auth_type,
         computer=backlog.computer,
-        assigned_tasks=await backlog.store.count_assigned(
-            principal_label(backlog.store.principal, backlog.computer) + ":"
+        assigned_tasks=await count_assigned(
+            connection,
+            backlog.actor,
+            principal_label(backlog.principal, backlog.computer) + ":",
         ),
     )
 
@@ -937,44 +1015,53 @@ class ReadBoard(BaseModel):
 
 
 @registry.tool(title="Project board", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def project_board(args: ReadBoard, backlog: Backlog) -> ProjectBoard:
-    """Start here for an existing project's context, counts and ten unclaimed tasks.
+async def project_board(
+    args: ReadBoard, backlog: Backlog, connection: aiosqlite.Connection
+) -> ProjectBoard:
+    """Start here for an existing project's context, counts and ready/claimed tasks.
 
     Project is required; this read never creates a project or changes connection scope.
-    Claimed and unclaimed counts cover open tasks. The top ten are open, unassigned tasks
-    ordered by priority, then age and id. Read task_get before claiming one with task_claim.
+    Ready tasks are unassigned todo/doing tasks with all direct dependencies closed
+    (done/cancelled/deleted). Inaccessible dependencies prevent readiness.
+    Claimed lists open tasks assigned to this principal and computer, across all markers.
+    Each section has a full count and up to ten {id, title} items ordered by priority, age and id.
+    Task counters cover the whole project; blocked includes status and dependency blockers.
+    Read task_get before claiming one with task_claim; the board is not a reservation.
     Memory counts include accessible shared memory; search it for relevant agreements.
     Follow project.preferred_language when writing tasks and progress updates.
     """
     project = await backlog.lookup(args.project)
-    shown = project_out(project, computer=backlog.computer, principal=backlog.store.principal)
-    counts, tasks = await backlog.store.board(project.id)
+    shown = project_out(project, computer=backlog.computer, principal=backlog.principal)
+    counts, ready, claimed = await board(connection, backlog.actor, project.id)
     return ProjectBoard(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         project=BoardProject(**shown.model_dump()),
         tasks=BoardCounts(**counts),
-        memory=await backlog.store.count_notes(project_id=project.id),
-        unclaimed=[
-            BoardTask(id=t.id, title=t.title, status=t.status, priority=t.priority) for t in tasks
-        ],
+        memory=await count_notes(connection, backlog.actor, project_id=project.id),
+        ready=ready,
+        claimed=claimed,
     )
 
 
 @registry.tool(title="List projects", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def project_list(args: ListProjects, backlog: Backlog) -> Projects:
+async def project_list(
+    args: ListProjects, backlog: Backlog, connection: aiosqlite.Connection
+) -> Projects:
     """List registered projects with open and total task counts.
 
     `computer` lists another computer's projects, `all_computers` every project there is."""
     reach = await backlog.reach(
         all_projects=True, computer=args.computer, all_computers=args.all_computers
     )
-    found = await backlog.store.projects(archived=args.archived, computer=reach.computer)
+    found = await read_projects(
+        connection, backlog.actor, archived=args.archived, computer=reach.computer
+    )
     return Projects(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         items=[
-            project_out(item, computer=backlog.computer, principal=backlog.store.principal)
+            project_out(item, computer=backlog.computer, principal=backlog.principal)
             for item in found
         ],
         count=len(found),
@@ -982,13 +1069,17 @@ async def project_list(args: ListProjects, backlog: Backlog) -> Projects:
 
 
 @registry.tool(title="Register or update a project", annotations=Hint.IDEMPOTENT)
-async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
+async def project_save(
+    args: SaveProject, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> ProjectOut:
     """Register a project or update its name, description, language, or archive status.
 
     `preferred_language` sets the language for project work and task text. Omit it to keep
     the current value, or send null to clear it. New projects default to null.
     """
     project = await backlog.save(
+        connection,
+        transaction,
         reference=args.project,
         root=args.root,
         name=args.name,
@@ -1001,11 +1092,17 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
         ),
     )
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
-    return project_out(project, computer=backlog.computer, principal=backlog.store.principal)
+    return project_out(project, computer=backlog.computer, principal=backlog.principal)
 
 
 @registry.tool(title="Delete a project", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
-async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) -> ProjectDeleted:
+async def project_delete(
+    args: DeleteProject,
+    ex: Exchange,
+    backlog: Backlog,
+    connection: aiosqlite.Connection,
+    transaction: Transaction,
+) -> ProjectDeleted:
     """Delete a project with every task and note on its board, and free its directories.
 
     DESTRUCTIVE and irreversible. Call it only when the user asked to delete this project in so
@@ -1014,10 +1111,10 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
     confirm. A client that cannot ask is refused; the terminal command `backlog projects delete`
     asks there instead."""
     project = await backlog.lookup(args.project)
-    await backlog.store.require(project.id, role="owner")
-    contents = await backlog.store.project_contents(project.id)
+    await require(connection, backlog.actor, project.id, role="owner")
+    contents = await project_contents(connection, backlog.actor, project.id)
     found = ProjectDeleted(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         id=project.id,
         slug=project.slug,
@@ -1051,9 +1148,11 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
     if not answer.get("ok"):
         found.detail = "cancelled"
         return found
-    recipients = [member["principal"] for member in await backlog.store.members(project.id)]
+    recipients = [
+        member["principal"] for member in await members(connection, backlog.actor, project.id)
+    ]
     neighbors = await linked_tasks(backlog, project_id=project.id)
-    await backlog.delete(project)
+    await backlog.delete(project, connection, transaction)
     await invalidate_linked_tasks(
         [task for task in neighbors if task.project_id != project.id], backlog
     )
@@ -1065,26 +1164,33 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
 
 
 @registry.tool(title="Add a task")
-async def task_add(args: AddTask, backlog: Backlog) -> TaskOut:
+async def task_add(
+    args: AddTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> TaskOut:
     """Always work through tasks: create a task to track work on the board before doing it.
 
     Deconstruct user requests into discrete, verifiable tasks. Search for existing work first
     to avoid duplicates. Returns the created task with its id."""
     project = await backlog.resolve(args.project)
-    task = await backlog.store.add_task(
-        project_id=project.id,
-        title=args.title,
-        body=args.body,
-        status=args.status,
-        priority=args.priority,
-        tags=args.tags,
-    )
+    async with transaction:
+        task = await add_task(
+            connection,
+            backlog.actor,
+            project_id=project.id,
+            title=args.title,
+            body=args.body,
+            status=args.status,
+            priority=args.priority,
+            tags=args.tags,
+        )
     await changed(task_event(task, Action.ADDED, computer=backlog.computer))
     return task_out(task)
 
 
 @registry.tool(title="List tasks", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
+async def task_list(
+    args: ListTasks, backlog: Backlog, connection: aiosqlite.Connection
+) -> Tasks | FullTasks:
     """List tasks to review current work, inspect open items, or pick the next task to work on.
 
     Always work through tasks. Defaults to open tasks (todo, doing, blocked) ordered by priority.
@@ -1095,7 +1201,9 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
         computer=args.computer,
         all_computers=args.all_computers,
     )
-    found = await backlog.store.tasks(
+    found = await read_tasks(
+        connection,
+        backlog.actor,
         project_id=reach.project_id,
         computer=reach.computer,
         status=statuses(args.status),
@@ -1105,7 +1213,9 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
         limit=args.limit,
         offset=args.offset,
     )
-    total = await backlog.store.count_tasks(
+    total = await count_tasks(
+        connection,
+        backlog.actor,
         project_id=reach.project_id,
         computer=reach.computer,
         status=statuses(args.status),
@@ -1118,33 +1228,35 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
             count=total,
             project=reach.slug,
             computer=reach.scope_computer,
-            principal=backlog.store.principal,
+            principal=backlog.principal,
         )
     return Tasks(
         items=[task_list_item(item) for item in found],
         count=total,
         project=reach.slug,
         computer=reach.scope_computer,
-        principal=backlog.store.principal,
+        principal=backlog.principal,
     )
 
 
 @registry.tool(title="Read a task", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_get(args: TaskId, backlog: Backlog) -> TaskDetails:
+async def task_get(args: TaskId, backlog: Backlog, connection: aiosqlite.Connection) -> TaskDetails:
     """Read a task with its direct links, comments and history.
 
     The body is only the description. Comments are chronological. Links use relation types
     relative to this task and include current target titles and statuses, without nested links.
     Links to tasks you cannot access are omitted.
     """
-    task = await backlog.store.task(args.id)
+    task = await read_task(connection, backlog.actor, args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
     return await task_details(task, backlog)
 
 
 @registry.tool(title="List assigned tasks", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_assigned(args: AssignedTasks, backlog: Backlog) -> Tasks:
+async def task_assigned(
+    args: AssignedTasks, backlog: Backlog, connection: aiosqlite.Connection
+) -> Tasks:
     """Find assignments by literal prefix across all accessible projects and statuses.
 
     Null or omitted prefix selects the current principal. Use username@computer: for a
@@ -1154,18 +1266,22 @@ async def task_assigned(args: AssignedTasks, backlog: Backlog) -> Tasks:
     """
     prefix = args.prefix
     if prefix is None:
-        prefix = principal_label(backlog.store.principal, backlog.computer) + ":"
-    tasks = await backlog.store.assigned_tasks(prefix, limit=args.limit, offset=args.offset)
+        prefix = principal_label(backlog.principal, backlog.computer) + ":"
+    tasks = await assigned_tasks(
+        connection, backlog.actor, prefix, limit=args.limit, offset=args.offset
+    )
     return Tasks(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         items=[task_list_item(task) for task in tasks],
-        count=await backlog.store.count_assigned(prefix),
+        count=await count_assigned(connection, backlog.actor, prefix),
     )
 
 
 @registry.tool(title="Claim a task")
-async def task_claim(args: ClaimTask, backlog: Backlog) -> TaskOut:
+async def task_claim(
+    args: ClaimTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> TaskOut:
     """Atomically replace assigned only if its current value equals expected.
 
     Both nullable arguments are required. A mismatch is an error with the current assignment,
@@ -1174,72 +1290,86 @@ async def task_claim(args: ClaimTask, backlog: Backlog) -> TaskOut:
     across reconnects. Claim before starting work; on conflict do not start the task.
     Use assigned=null to release. Status is independent; closing does not release ownership.
     """
-    task, updated = await backlog.store.claim_task(
-        args.task, expected=args.expected, assigned=args.assigned
-    )
+    async with transaction:
+        task, updated = await claim_task(
+            connection, backlog.actor, args.task, expected=args.expected, assigned=args.assigned
+        )
     if updated:
         await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     return task_out(task)
 
 
 @registry.tool(title="Link tasks", annotations=Hint.IDEMPOTENT)
-async def task_link(args: LinkTask, backlog: Backlog) -> LinkChange:
+async def task_link(
+    args: LinkTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> LinkChange:
     """Add a typed relation and its inverse atomically, or update their reason.
 
     Read links through task_get. Requires editor access to both tasks. Self-links and cycles
     in part_of or depends_on are rejected. Repeated calls are safe, including from the inverse
     direction. Links do not change task statuses. Closing or soft-deleting tasks keeps links.
     """
-    updated = await backlog.store.link_task(
-        args.task, args.relation, args.target, reason=args.reason
-    )
+    async with transaction:
+        updated = await link_task(
+            connection, backlog.actor, args.task, args.relation, args.target, reason=args.reason
+        )
     if updated:
         for task_id in (args.task, args.target):
-            task = await backlog.store.task(task_id)
+            task = await read_task(connection, backlog.actor, task_id)
             assert task is not None
             await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     return LinkChange(task=args.task, relation=args.relation, target=args.target, changed=updated)
 
 
 @registry.tool(title="Unlink tasks", annotations=Hint.IDEMPOTENT)
-async def task_unlink(args: UnlinkTask, backlog: Backlog) -> LinkChange:
+async def task_unlink(
+    args: UnlinkTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> LinkChange:
     """Remove a relation and its inverse atomically, from either direction.
 
     Requires editor access to both tasks. A missing link is a safe no-op. Other relation types
     between the same tasks are preserved.
     """
-    updated = await backlog.store.unlink_task(args.task, args.relation, args.target)
+    async with transaction:
+        updated = await unlink_task(
+            connection, backlog.actor, args.task, args.relation, args.target
+        )
     if updated:
         for task_id in (args.task, args.target):
-            task = await backlog.store.task(task_id)
+            task = await read_task(connection, backlog.actor, task_id)
             assert task is not None
             await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     return LinkChange(task=args.task, relation=args.relation, target=args.target, changed=updated)
 
 
 @registry.tool(title="Add a task comment", annotations=Hint.OPEN_WORLD)
-async def task_comment_add(args: AddComment, backlog: Backlog) -> CommentOut:
+async def task_comment_add(
+    args: AddComment, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> CommentOut:
     """Record progress, findings, blockers, or verification as a separate Markdown comment.
 
     Use this for routine updates. Follow the project's preferred_language. Task descriptions
     change only through task_update. Repeated calls create separate comments.
     """
-    comment = await backlog.store.add_comment(args.task_id, args.body)
-    task = await backlog.store.task(args.task_id)
+    async with transaction:
+        comment = await add_comment(connection, backlog.actor, args.task_id, args.body)
+    task = await read_task(connection, backlog.actor, args.task_id)
     assert task is not None
     await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
     return comment_out(comment)
 
 
 @registry.tool(title="List task comments", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def task_comment_list(args: ListComments, backlog: Backlog) -> Comments:
+async def task_comment_list(
+    args: ListComments, backlog: Backlog, connection: aiosqlite.Connection
+) -> Comments:
     """Read comments and history in creation-time order, with id as a stable tie-breaker."""
-    task = await backlog.store.task(args.task_id)
+    task = await read_task(connection, backlog.actor, args.task_id)
     if task is None:
         raise LookupError(f"no task #{args.task_id}")
     details = await task_details(task, backlog)
     return Comments(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         items=details.comments,
         task_id=task.id,
@@ -1248,21 +1378,26 @@ async def task_comment_list(args: ListComments, backlog: Backlog) -> Comments:
 
 
 @registry.tool(title="Update a task", annotations=Hint.IDEMPOTENT)
-async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
+async def task_update(
+    args: UpdateTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> TaskOut:
     """Edit task fields. A supplied body replaces the description; an empty string clears it.
 
     Use task_comment_add for progress, findings, and verification. Status transitions create
     separate history entries. Mark active work doing and completed work done or cancelled.
     Closing stamps the closing time; reopening clears it.
     """
-    task = await backlog.store.update_task(
-        args.id,
-        title=args.title,
-        body=args.body,
-        status=args.status,
-        priority=args.priority,
-        tags=args.tags,
-    )
+    async with transaction:
+        task = await update_task(
+            connection,
+            backlog.actor,
+            args.id,
+            title=args.title,
+            body=args.body,
+            status=args.status,
+            priority=args.priority,
+            tags=args.tags,
+        )
     if task is None:
         raise LookupError(f"no task #{args.id}")
     await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
@@ -1272,18 +1407,18 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
 
 
 @registry.tool(title="Move a task", annotations=Hint.IDEMPOTENT)
-async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
+async def task_move(
+    args: MoveTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> TaskOut:
     """Move a task to another project board and record the move in its history."""
     project = await backlog.lookup(args.project)
-    existing = await backlog.store.task(args.id)
+    existing = await read_task(connection, backlog.actor, args.id)
     if existing is None:
         raise LookupError(f"no task #{args.id}")
     if existing.project_id == project.id:
         return task_out(existing)
-    task = await backlog.store.update_task(
-        args.id,
-        project_id=project.id,
-    )
+    async with transaction:
+        task = await update_task(connection, backlog.actor, args.id, project_id=project.id)
     assert task is not None
     await changed(task_event(task, Action.MOVED, computer=backlog.computer))
     await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
@@ -1306,7 +1441,7 @@ async def confirm_cross_project_delete(
         if answer.get("ok"):
             return None
         return Deleted(
-            principal=backlog.store.principal,
+            principal=backlog.principal,
             computer=backlog.computer,
             id=record.id,
             title=record.title,
@@ -1334,20 +1469,23 @@ async def confirm_cross_project_delete(
 
 
 @registry.tool(title="Delete a task", annotations=Hint.IDEMPOTENT)
-async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
+async def task_delete(
+    args: TaskId, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> Deleted:
     """Delete a task. Marks its status as `deleted` without removing the record.
 
     Keeps history intact and allows recovery. Works across projects without confirmation."""
-    task = await backlog.store.task(args.id)
+    task = await read_task(connection, backlog.actor, args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
     if task.status != Status.DELETED:
-        gone = await backlog.store.update_task(task.id, status=Status.DELETED)
+        async with transaction:
+            gone = await update_task(connection, backlog.actor, task.id, status=Status.DELETED)
         assert gone is not None
         await changed(task_event(gone, Action.DELETED, computer=backlog.computer))
         await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
     return Deleted(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         id=args.id,
         title=task.title,
@@ -1356,7 +1494,9 @@ async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
 
 
 @registry.tool(title="Save a note", annotations=Hint.IDEMPOTENT)
-async def memory_save(args: SaveNote, backlog: Backlog) -> NoteOut:
+async def memory_save(
+    args: SaveNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> NoteOut:
     """Save lasting user context: preferences, agreements, architectural invariants, or constraints.
 
     Proactively save useful new knowledge as soon as the user supplies it; do not wait.
@@ -1367,21 +1507,31 @@ async def memory_save(args: SaveNote, backlog: Backlog) -> NoteOut:
         if not args.title:
             raise ValueError("a new note needs a title")
         project = await backlog.resolve(args.project)
-        existing = await backlog.store.note_by_title(args.title, project_id=project.id)
+        existing = await note_by_title(connection, backlog.actor, args.title, project_id=project.id)
         if existing is None:
-            saved = await backlog.store.add_note(
-                project_id=project.id,
-                title=args.title,
-                body=args.body or "",
-                tags=args.tags or (),
-                shared=bool(args.shared),
-            )
+            async with transaction:
+                saved = await add_note(
+                    connection,
+                    backlog.actor,
+                    project_id=project.id,
+                    title=args.title,
+                    body=args.body or "",
+                    tags=args.tags or (),
+                    shared=bool(args.shared),
+                )
             await changed(note_event(saved, Action.ADDED, computer=backlog.computer))
             return note_out(saved)
         args.id = existing.id
-    updated = await backlog.store.update_note(
-        args.id, title=args.title, body=args.body, tags=args.tags, shared=args.shared
-    )
+    async with transaction:
+        updated = await update_note(
+            connection,
+            backlog.actor,
+            args.id,
+            title=args.title,
+            body=args.body,
+            tags=args.tags,
+            shared=args.shared,
+        )
     if updated is None:
         raise LookupError(f"no note #{args.id}")
     await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
@@ -1389,12 +1539,15 @@ async def memory_save(args: SaveNote, backlog: Backlog) -> NoteOut:
 
 
 @registry.tool(title="Append to a note")
-async def memory_append(args: AppendNote, backlog: Backlog) -> NoteOut:
+async def memory_append(
+    args: AppendNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> NoteOut:
     """Append a related fact, preference, or constraint to lasting user context.
 
     Find the note with `search` first. Use `memory_save` to correct or replace existing content."""
     found = await note_of(backlog, args.id, args.title, args.project)
-    updated = await backlog.store.append_note(found.id, args.text)
+    async with transaction:
+        updated = await append_note(connection, backlog.actor, found.id, args.text)
     if updated is None:
         raise LookupError(f"no note #{found.id}")
     await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
@@ -1412,7 +1565,9 @@ async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
 
 
 @registry.tool(title="List notes", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def memory_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
+async def memory_list(
+    args: ListNotes, backlog: Backlog, connection: aiosqlite.Connection
+) -> Notes | FullNotes:
     """List persistent notes containing user context, preferences, and agreements.
 
     Browse notes whenever you lack direction, are unsure how to proceed, or need rules.
@@ -1423,7 +1578,9 @@ async def memory_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
         computer=args.computer,
         all_computers=args.all_computers,
     )
-    found = await backlog.store.notes(
+    found = await read_notes(
+        connection,
+        backlog.actor,
         project_id=reach.project_id,
         computer=reach.computer,
         tag=args.tag,
@@ -1431,8 +1588,13 @@ async def memory_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
         limit=args.limit,
         offset=args.offset,
     )
-    total = await backlog.store.count_notes(
-        project_id=reach.project_id, computer=reach.computer, tag=args.tag, shared=args.shared
+    total = await count_notes(
+        connection,
+        backlog.actor,
+        project_id=reach.project_id,
+        computer=reach.computer,
+        tag=args.tag,
+        shared=args.shared,
     )
     if args.full:
         return FullNotes(
@@ -1440,33 +1602,40 @@ async def memory_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
             count=total,
             project=reach.slug,
             computer=reach.scope_computer,
-            principal=backlog.store.principal,
+            principal=backlog.principal,
         )
     return Notes(
         items=[note_list_item(item) for item in found],
         count=total,
         project=reach.slug,
         computer=reach.scope_computer,
-        principal=backlog.store.principal,
+        principal=backlog.principal,
     )
 
 
 @registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
-async def memory_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
+async def memory_delete(
+    args: NoteId,
+    ex: Exchange,
+    backlog: Backlog,
+    connection: aiosqlite.Connection,
+    transaction: Transaction,
+) -> Deleted:
     """Delete a note permanently. DESTRUCTIVE: call it only when the user asked for exactly that.
 
     Never delete a note on your own initiative. A note of the current project goes at once. A
     note of another project, or any note when no project is chosen, goes only after the user
     confirms; a client that cannot ask is refused."""
-    found = await backlog.store.note(args.id)
+    found = await read_note(connection, backlog.actor, args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
     if refusal := await confirm_cross_project_delete(found, ex, backlog):
         return refusal
-    deleted = await backlog.store.delete_note(args.id)
+    async with transaction:
+        deleted = await delete_note(connection, backlog.actor, args.id)
     await changed(note_event(found, Action.DELETED, computer=backlog.computer))
     return Deleted(
-        principal=backlog.store.principal,
+        principal=backlog.principal,
         computer=backlog.computer,
         id=args.id,
         title=found.title,
@@ -1475,7 +1644,12 @@ async def memory_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted
 
 
 @registry.tool(title="Search the backlog", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def search(args: embeddings.Search, backlog: Backlog) -> embeddings.Matches:
+async def search(
+    args: embeddings.Search,
+    backlog: Backlog,
+    connection: aiosqlite.Connection,
+    transaction: Transaction,
+) -> embeddings.Matches:
     """Primary discovery tool. ALWAYS search first before investigating or deciding.
 
     Use frequently: at session start, before choosing an approach, before asking questions, and
@@ -1483,7 +1657,7 @@ async def search(args: embeddings.Search, backlog: Backlog) -> embeddings.Matche
     matching and multilingual semantic search (FTS matches first).
     Prefer targeted search over full listings. Read individual matches with `memory_get` or
     `task_get` only when detail is needed."""
-    return await embeddings.search(args, backlog)
+    return await embeddings.search(args, backlog, connection, transaction)
 
 
 @registry.tool(title="Backlog statistics", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
@@ -1505,9 +1679,9 @@ async def current_project(args: Nothing, backlog: Backlog) -> dict[str, Any]:
     """The project the tools work on, or `null` with origin `none` when there is none."""
     project, origin = await backlog.scope()
     shown = (
-        project_out(
-            project, computer=backlog.computer, principal=backlog.store.principal
-        ).model_dump(mode="json")
+        project_out(project, computer=backlog.computer, principal=backlog.principal).model_dump(
+            mode="json"
+        )
         if project
         else None
     )
@@ -1515,11 +1689,13 @@ async def current_project(args: Nothing, backlog: Backlog) -> dict[str, Any]:
 
 
 @registry.resource("backlog://projects", mime_type="application/json")
-async def all_projects(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
+async def all_projects(
+    args: Nothing, backlog: Backlog, connection: aiosqlite.Connection
+) -> list[dict[str, Any]]:
     """Every registered project of this computer."""
-    found = await backlog.store.projects(computer=backlog.computer)
+    found = await read_projects(connection, backlog.actor, computer=backlog.computer)
     return [
-        project_out(item, computer=backlog.computer, principal=backlog.store.principal).model_dump(
+        project_out(item, computer=backlog.computer, principal=backlog.principal).model_dump(
             mode="json"
         )
         for item in found
@@ -1527,10 +1703,14 @@ async def all_projects(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
 
 
 @registry.resource("backlog://tasks", mime_type="application/json")
-async def open_tasks(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
+async def open_tasks(
+    args: Nothing, backlog: Backlog, connection: aiosqlite.Connection
+) -> list[dict[str, Any]]:
     """Open tasks of the current project, most important first."""
     project = await backlog.resolve(None)
-    found = await backlog.store.tasks(project_id=project.id, status=list(OPEN_STATUSES), limit=200)
+    found = await read_tasks(
+        connection, backlog.actor, project_id=project.id, status=list(OPEN_STATUSES), limit=200
+    )
     return [task_out(item).model_dump(mode="json") for item in found]
 
 
@@ -1539,30 +1719,36 @@ class TaskUri(BaseModel):
 
 
 @registry.resource("backlog://tasks/{id}", name="task", mime_type="application/json")
-async def one_task(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
+async def one_task(
+    args: TaskUri, backlog: Backlog, connection: aiosqlite.Connection
+) -> dict[str, Any]:
     """One task by id."""
     if not args.id.isdigit():
         return {"error": f"invalid task id {args.id!r}"}
-    task = await backlog.store.task(int(args.id))
+    task = await read_task(connection, backlog.actor, int(args.id))
     if task is None:
         return {"error": f"no task #{args.id}"}
     return (await task_details(task, backlog)).model_dump(mode="json")
 
 
 @registry.resource("backlog://memory", mime_type="application/json")
-async def known_notes(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
+async def known_notes(
+    args: Nothing, backlog: Backlog, connection: aiosqlite.Connection
+) -> list[dict[str, Any]]:
     """Notes of the current project plus every shared note, most recently changed first."""
     project = await backlog.resolve(None)
-    found = await backlog.store.notes(project_id=project.id, limit=200)
+    found = await read_notes(connection, backlog.actor, project_id=project.id, limit=200)
     return [note_out(item).model_dump(mode="json") for item in found]
 
 
 @registry.resource("backlog://memory/{id}", name="note", mime_type="application/json")
-async def one_note(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
+async def one_note(
+    args: TaskUri, backlog: Backlog, connection: aiosqlite.Connection
+) -> dict[str, Any]:
     """One note by id."""
     if not args.id.isdigit():
         return {"error": f"invalid note id {args.id!r}"}
-    found = await backlog.store.note(int(args.id))
+    found = await read_note(connection, backlog.actor, int(args.id))
     if found is None:
         return {"error": f"no note #{args.id}"}
     return note_out(found).model_dump(mode="json")
@@ -1623,7 +1809,7 @@ class Standup(BaseModel):
 
 
 @registry.prompt
-async def standup(args: Standup, backlog: Backlog) -> str:
+async def standup(args: Standup, backlog: Backlog, connection: aiosqlite.Connection) -> str:
     """Draft a standup update from what closed recently and what is still open."""
     reach = await backlog.reach(
         args.project,
@@ -1631,14 +1817,18 @@ async def standup(args: Standup, backlog: Backlog) -> str:
         computer=args.computer,
         all_computers=args.all_computers,
     )
-    done = await backlog.store.tasks(
+    done = await read_tasks(
+        connection,
+        backlog.actor,
         project_id=reach.project_id,
         computer=reach.computer,
         status=[Status.DONE],
         order="recent",
         limit=10,
     )
-    open_ = await backlog.store.tasks(
+    open_ = await read_tasks(
+        connection,
+        backlog.actor,
         project_id=reach.project_id,
         computer=reach.computer,
         status=list(OPEN_STATUSES),
@@ -1659,11 +1849,15 @@ class Groom(BaseModel):
 
 
 @registry.prompt
-async def groom(args: Groom, backlog: Backlog) -> str:
+async def groom(args: Groom, backlog: Backlog, connection: aiosqlite.Connection) -> str:
     """Ask for a review of the open backlog: order, duplicates and missing detail."""
     project = await backlog.resolve(args.project)
-    found = await backlog.store.tasks(
-        project_id=project.id, status=list(OPEN_STATUSES), limit=args.limit
+    found = await read_tasks(
+        connection,
+        backlog.actor,
+        project_id=project.id,
+        status=list(OPEN_STATUSES),
+        limit=args.limit,
     )
     lines = [
         f"- #{item.id} [{item.priority.value}/{item.status.value}] {item.title}"
@@ -1679,7 +1873,9 @@ async def groom(args: Groom, backlog: Backlog) -> str:
 
 
 @registry.completions
-async def complete(args: CompleteParams, backlog: Backlog) -> list[str]:
+async def complete(
+    args: CompleteParams, backlog: Backlog, connection: aiosqlite.Connection
+) -> list[str]:
     """Complete owner-qualified project names, tags, statuses, priorities, task ids and note ids."""
     value = args.argument.value
     #: The task and the note templates both call their argument `id`; the URI tells them apart.
@@ -1688,14 +1884,18 @@ async def complete(args: CompleteParams, backlog: Backlog) -> list[str]:
         case "project", _:
             return [
                 name
-                for name in await backlog.store.slugs()
+                for name in await slugs(connection, backlog.actor)
                 if name.startswith(value) or name.split("/", 1)[1].startswith(value)
             ]
         case "computer", _:
-            return [name for name in await backlog.store.computers() if name.startswith(value)]
+            return [
+                name
+                for name in await computers(connection, backlog.actor)
+                if name.startswith(value)
+            ]
         case "tag", _:
             project, _origin = await backlog.current()
-            tags = await backlog.store.tags(project_id=project.id)
+            tags = await read_tags(connection, backlog.actor, project_id=project.id)
             return [tag for tag in tags if tag.startswith(value)]
         case "status", _:
             return [item.value for item in Status if item.value.startswith(value)]
@@ -1703,14 +1903,762 @@ async def complete(args: CompleteParams, backlog: Backlog) -> list[str]:
             return [item.value for item in Priority if item.value.startswith(value)]
         case "id", "ref/resource" if about_notes:
             project, _origin = await backlog.current()
-            notes = await backlog.store.notes(project_id=project.id, limit=200)
+            notes = await read_notes(connection, backlog.actor, project_id=project.id, limit=200)
             return [str(item.id) for item in notes if str(item.id).startswith(value)]
         case "id", "ref/resource":
             project, _origin = await backlog.current()
-            found = await backlog.store.tasks(project_id=project.id, limit=200)
+            found = await read_tasks(connection, backlog.actor, project_id=project.id, limit=200)
             return [str(item.id) for item in found if str(item.id).startswith(value)]
         case _:
             return []
 
 
 __all__ = ["INSTRUCTIONS", "VERSION", "UnknownProject", "bound", "registry", "use"]
+
+
+async def search_projects(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    query: str,
+    *,
+    project_id: int | None = None,
+    computer: str | None = None,
+    limit: int = 20,
+) -> list[Project]:
+    match = match_query(query)
+    if not match:
+        return []
+    rows = QUERIES.search_projects(
+        connection,
+        match=match,
+        project_id=project_id,
+        computer=computer,
+        principal=actor.principal,
+        limit=limit,
+    )
+    return await attach_roots(connection, actor, [to_project(row) async for row in rows])
+
+
+async def board(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int
+) -> tuple[dict[str, int], BoardSection, BoardSection]:
+    await require(connection, actor, project_id)
+    row = await QUERIES.board_summary(
+        connection,
+        project_id=project_id,
+        principal=actor.principal,
+        prefix=principal_label(actor.principal, actor.computer) + ":",
+    )
+    assert row is not None
+    counts = dict(row)
+    sections = [
+        BoardSection(
+            count=counts.pop(f"{name}_count"),
+            items=json.loads(counts.pop(f"{name}_items")),
+        )
+        for name in ("ready", "claimed")
+    ]
+    return counts, sections[0], sections[1]
+
+
+async def assigned_tasks(
+    connection: aiosqlite.Connection, actor: Actor, prefix: str, *, limit: int = 50, offset: int = 0
+) -> list[Task]:
+    rows = QUERIES.assigned_tasks(
+        connection,
+        prefix=prefix,
+        pattern=assignment_pattern(prefix),
+        principal=actor.principal,
+        limit=limit,
+        offset=offset,
+    )
+    return [to_task(row) async for row in rows]
+
+
+async def count_assigned(connection: aiosqlite.Connection, actor: Actor, prefix: str) -> int:
+    row = await QUERIES.count_assigned(
+        connection,
+        prefix=prefix,
+        pattern=assignment_pattern(prefix),
+        principal=actor.principal,
+    )
+    assert row is not None
+    return int(row[0])
+
+
+async def claim_task(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    task_id: int,
+    *,
+    expected: str | None,
+    assigned: str | None,
+) -> tuple[Task, bool]:
+    """Compare and replace an assignment under a database writer lock."""
+    if expected is not None:
+        check_assignment(expected)
+    if assigned is not None:
+        check_assignment(assigned)
+        principal = principal_label(actor.principal, actor.computer or hostname())
+        if assigned.rsplit(":", 1)[0] != principal:
+            raise PermissionError(f"assigned must belong to the current principal {principal!r}")
+
+    task = await read_task(connection, actor, task_id)
+    if task is None:
+        raise LookupError(f"no task #{task_id}")
+    await require(connection, actor, task.project_id, role="editor")
+    if task.assigned != expected:
+        raise AssignmentConflict(task_id, expected, task.assigned)
+    if expected == assigned:
+        return task, False
+    now = time.time()
+    await QUERIES.claim_task(
+        connection,
+        task_id=task_id,
+        expected=expected,
+        assigned=assigned,
+        now=now,
+        principal=actor.principal,
+        computer=actor.computer or hostname(),
+    )
+    await QUERIES.add_comment(
+        connection,
+        task_id=task_id,
+        body=f"Assignment changed: {expected or 'null'} → {assigned or 'null'}",
+        created_at=now,
+        principal=actor.principal,
+        computer=actor.computer or hostname(),
+    )
+    saved = await read_task(connection, actor, task_id)
+    assert saved is not None
+    return saved, True
+
+
+async def read_linked_tasks(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    task_id: int | None = None,
+    project_id: int | None = None,
+) -> list[Task]:
+    """Resource dependents for internal routing, never for a public response."""
+    rows = QUERIES.linked_tasks(connection, task_id=task_id, project_id=project_id)
+    return [to_task(row) async for row in rows]
+
+
+async def notification_recipients(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int
+) -> list[str]:
+    return [
+        row["principal"]
+        async for row in QUERIES.notification_recipients(connection, project_id=project_id)
+    ]
+
+
+async def data_version(connection: aiosqlite.Connection, actor: Actor) -> int:
+    row = await QUERIES.data_version(connection)
+    assert row is not None
+    return int(row[0])
+
+
+async def task_links(
+    connection: aiosqlite.Connection, actor: Actor, task_id: int
+) -> list[TaskLinkOut]:
+    if await read_task(connection, actor, task_id) is None:
+        raise LookupError(f"no task #{task_id}")
+    rows = QUERIES.task_links(connection, task_id=task_id, principal=actor.principal)
+    return [TaskLinkOut(**dict(row)) async for row in rows]
+
+
+async def link_task(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    task_id: int,
+    kind: Relation,
+    target_id: int,
+    *,
+    reason: str | None = None,
+) -> bool:
+    """Write both directions under one SQLite writer lock, including cycle checks."""
+    return await _task_link(
+        connection, actor, task_id, kind, target_id, reason=reason, remove=False
+    )
+
+
+async def unlink_task(
+    connection: aiosqlite.Connection, actor: Actor, task_id: int, kind: Relation, target_id: int
+) -> bool:
+    return await _task_link(connection, actor, task_id, kind, target_id, reason=None, remove=True)
+
+
+async def _task_link(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    task_id: int,
+    kind: Relation,
+    target_id: int,
+    *,
+    reason: str | None,
+    remove: bool,
+) -> bool:
+    if task_id == target_id:
+        raise ValueError("a task cannot link to itself")
+    forward, inverse = relation(kind)
+
+    for record_id in (task_id, target_id):
+        task = await read_task(connection, actor, record_id)
+        if task is None:
+            raise LookupError(f"no task #{record_id}")
+        await require(connection, actor, task.project_id, role="editor")
+    pair = {
+        "task_id": task_id,
+        "target_id": target_id,
+        "relation": forward.value,
+        "inverse": inverse.value,
+    }
+    existing = [row async for row in QUERIES.link_pair(connection, **pair)]
+    if remove:
+        if not existing:
+            return False
+        await QUERIES.unlink_tasks(connection, **pair)
+    else:
+        reasons = {row["reason"] for row in existing}
+        if len(reasons) > 1:
+            raise ValueError("inverse links have conflicting reasons; unlink them first")
+        saved_reason = reason if reason is not None else next(iter(reasons), "")
+        if len(existing) == 2 and reasons == {saved_reason}:
+            return False
+        # Inspect only one orientation; reverse rows must not create false cycles.
+        source, target, directed = task_id, target_id, forward
+        if forward in (Relation.CONTAINS, Relation.BLOCKS):
+            source, target, directed = target_id, task_id, inverse
+        if directed in (Relation.PART_OF, Relation.DEPENDS_ON):
+            cycle = await QUERIES.link_cycle(
+                connection, source=source, target=target, relation=directed.value
+            )
+            if cycle:
+                raise ValueError(f"{directed.value} would create a cycle")
+        now = time.time()
+        await QUERIES.link_tasks(
+            connection,
+            **pair,
+            reason=saved_reason,
+            now=now,
+            principal=actor.principal,
+            computer=actor.computer or hostname(),
+        )
+    await QUERIES.touch_link_tasks(
+        connection,
+        task_id=task_id,
+        target_id=target_id,
+        now=time.time(),
+        principal=actor.principal,
+        computer=actor.computer or hostname(),
+    )
+    return True
+
+
+async def read_task(connection: aiosqlite.Connection, actor: Actor, task_id: int) -> Task | None:
+    row = await QUERIES.task(connection, task_id=task_id, principal=actor.principal)
+    return to_task(row) if row else None
+
+
+async def add_task(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int,
+    title: str,
+    body: str = "",
+    status: Status = Status.TODO,
+    priority: Priority = Priority.NORMAL,
+    tags: Iterable[str] = (),
+) -> Task:
+    await require(connection, actor, project_id, role="editor")
+
+    now = time.time()
+    closed = now if status in CLOSED_STATUSES else None
+    inserted_id = await QUERIES.add_task(
+        connection,
+        project_id=project_id,
+        title=title,
+        body=body,
+        status=status.value,
+        priority=RANKS[priority],
+        tags=join_tags(tags),
+        created_at=now,
+        updated_at=now,
+        closed_at=closed,
+        created_principal=actor.principal,
+        created_computer=actor.computer or hostname(),
+        updated_principal=actor.principal,
+        updated_computer=actor.computer or hostname(),
+    )
+    created = await read_task(connection, actor, inserted_id or 0)
+    assert created is not None, "the task just written is not there"
+    return created
+
+
+async def update_task(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    task_id: int,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+    status: Status | None = None,
+    priority: Priority | None = None,
+    tags: Iterable[str] | None = None,
+    project_id: int | None = None,
+) -> Task | None:
+
+    existing = await read_task(connection, actor, task_id)
+    if existing is None:
+        return None
+    await require(connection, actor, existing.project_id, role="editor")
+    changes: dict[str, Any] = {}
+    now = time.time()
+    if title is not None:
+        changes["title"] = title
+    if body is not None:
+        changes["body"] = body
+    if status is not None and status != existing.status:
+        changes["status"] = status.value
+        changes["closed_at"] = now if status in CLOSED_STATUSES else None
+    if priority is not None:
+        changes["priority"] = RANKS[priority]
+    if tags is not None:
+        changes["tags"] = join_tags(tags)
+    if project_id is not None and project_id != existing.project_id:
+        await require(connection, actor, project_id, role="editor")
+        destination = await read_project(connection, actor, project_id)
+        if destination is None:
+            raise ValueError(f"no project #{project_id}")
+        changes["project_id"] = project_id
+    if changes:
+        changes["updated_principal"] = actor.principal
+        changes["updated_computer"] = actor.computer or hostname()
+        changes["updated_at"] = now
+        await QUERIES.update_task(connection, task_id=task_id, changes=json.dumps(changes))
+    return await read_task(connection, actor, task_id)
+
+
+async def delete_task(connection: aiosqlite.Connection, actor: Actor, task_id: int) -> bool:
+    task = await read_task(connection, actor, task_id)
+    if task is None or task.status == Status.DELETED:
+        return False
+    return await update_task(connection, actor, task_id, status=Status.DELETED) is not None
+
+
+async def read_comment(
+    connection: aiosqlite.Connection, actor: Actor, comment_id: int
+) -> Comment | None:
+    row = await QUERIES.comment(connection, comment_id=comment_id, principal=actor.principal)
+    return Comment(**dict(row)) if row else None
+
+
+async def add_comment(
+    connection: aiosqlite.Connection, actor: Actor, task_id: int, body: str
+) -> Comment:
+    if not body.strip():
+        raise ValueError("a comment must not be empty")
+
+    task = await read_task(connection, actor, task_id)
+    if task is None:
+        raise LookupError(f"no task #{task_id}")
+    await require(connection, actor, task.project_id, role="editor")
+    now = time.time()
+    inserted_id = await QUERIES.add_comment(
+        connection,
+        task_id=task_id,
+        body=body,
+        created_at=now,
+        principal=actor.principal,
+        computer=actor.computer or hostname(),
+    )
+    saved = await read_comment(connection, actor, inserted_id or 0)
+    assert saved is not None
+    return saved
+
+
+async def count_comments(connection: aiosqlite.Connection, actor: Actor, task_id: int) -> int:
+    if await read_task(connection, actor, task_id) is None:
+        return 0
+    row = await QUERIES.count_comments(connection, task_id=task_id)
+    return int(row[0]) if row else 0
+
+
+async def read_comments(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    task_id: int | None = None,
+    project_id: int | None = None,
+    computer: str | None = None,
+    status: Sequence[Status] | None = None,
+    tag: str | None = None,
+    query: str | None = None,
+    limit: int = -1,
+) -> list[Comment]:
+    parameters = filters(
+        connection,
+        actor,
+        project_id=project_id,
+        computer=computer,
+        status=status,
+        tag=tag,
+        priority=None,
+    )
+    parameters.update(task_id=task_id, exclude_deleted=task_id is None and not status, limit=limit)
+    if query is not None:
+        match = match_query(query)
+        if not match:
+            return []
+        rows = QUERIES.search_comments(connection, match=match, **parameters)
+    else:
+        rows = QUERIES.comments(connection, **parameters)
+    return [Comment(**dict(row)) async for row in rows]
+
+
+def filters(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None,
+    status: Sequence[Status] | None,
+    tag: str | None,
+    priority: Priority | None,
+    computer: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "principal": actor.principal,
+        "project_id": project_id,
+        "computer": computer,
+        "statuses": json.dumps([item.value for item in status]) if status else None,
+        "tag": f"%,{tag.strip().lower()},%" if tag else None,
+        "priority": RANKS[priority] if priority is not None else None,
+    }
+
+
+async def read_tasks(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None = None,
+    status: Sequence[Status] | None = None,
+    tag: str | None = None,
+    priority: Priority | None = None,
+    computer: str | None = None,
+    order: str = "backlog",
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Task]:
+    if order not in {"backlog", "recent"}:
+        raise KeyError(order)
+    parameters = filters(
+        connection,
+        actor,
+        project_id=project_id,
+        status=status,
+        tag=tag,
+        priority=priority,
+        computer=computer,
+    )
+    rows = QUERIES.tasks(connection, **parameters, ordering=order, limit=limit, offset=offset)
+    return [to_task(row) async for row in rows]
+
+
+async def count_tasks(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None = None,
+    status: Sequence[Status] | None = None,
+    tag: str | None = None,
+    priority: Priority | None = None,
+    computer: str | None = None,
+) -> int:
+    parameters = filters(
+        connection,
+        actor,
+        project_id=project_id,
+        status=status,
+        tag=tag,
+        priority=priority,
+        computer=computer,
+    )
+    row = await QUERIES.count_tasks(connection, **parameters)
+    return int(row["found"]) if row else 0
+
+
+async def search_tasks(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    query: str,
+    *,
+    project_id: int | None = None,
+    status: Sequence[Status] | None = None,
+    tag: str | None = None,
+    computer: str | None = None,
+    limit: int = 20,
+) -> list[Task]:
+    match = match_query(query)
+    if not match:
+        return []
+    parameters = filters(
+        connection,
+        actor,
+        project_id=project_id,
+        status=status,
+        tag=tag,
+        priority=None,
+        computer=computer,
+    )
+    rows = QUERIES.search_tasks(
+        connection,
+        **parameters,
+        match=match,
+        exclude_deleted=status is None,
+        limit=limit,
+    )
+    return [to_task(row) async for row in rows]
+
+
+async def read_tags(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None = None,
+    computer: str | None = None,
+) -> list[str]:
+    parameters = filters(
+        connection,
+        actor,
+        project_id=project_id,
+        status=None,
+        tag=None,
+        priority=None,
+        computer=computer,
+    )
+    rows = QUERIES.tags(connection, **parameters)
+    found: set[str] = set()
+    async for row in rows:
+        found.update(split_tags(row["tags"]))
+    return sorted(found)
+
+
+async def group(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    column: str,
+    *,
+    project_id: int | None = None,
+    computer: str | None = None,
+) -> dict[str, int]:
+    if column not in {"status", "priority"}:
+        raise ValueError("unsupported grouping column")
+    parameters = filters(
+        connection,
+        actor,
+        project_id=project_id,
+        status=None,
+        tag=None,
+        priority=None,
+        computer=computer,
+    )
+    rows = QUERIES.group_tasks(connection, column=column, **parameters)
+    return {str(row["key"]): int(row["found"]) async for row in rows}
+
+
+async def read_note(connection: aiosqlite.Connection, actor: Actor, note_id: int) -> Note | None:
+    row = await QUERIES.note(connection, note_id=note_id, principal=actor.principal)
+    return to_note(row) if row else None
+
+
+async def note_by_title(
+    connection: aiosqlite.Connection, actor: Actor, title: str, *, project_id: int
+) -> Note | None:
+    row = await QUERIES.note_by_title(
+        connection, project_id=project_id, title=title, principal=actor.principal
+    )
+    return to_note(row) if row else None
+
+
+async def add_note(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int,
+    title: str,
+    body: str = "",
+    tags: Iterable[str] = (),
+    shared: bool = False,
+) -> Note:
+    check_note(body)
+    await require(connection, actor, project_id, role="editor")
+
+    now = time.time()
+    inserted_id = await QUERIES.add_note(
+        connection,
+        project_id=project_id,
+        title=title,
+        body=body,
+        tags=join_tags(tags),
+        shared=int(shared),
+        created_at=now,
+        updated_at=now,
+        created_principal=actor.principal,
+        created_computer=actor.computer or hostname(),
+        updated_principal=actor.principal,
+        updated_computer=actor.computer or hostname(),
+    )
+    created = await read_note(connection, actor, inserted_id or 0)
+    assert created is not None, "the note just written is not there"
+    return created
+
+
+async def update_note(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    note_id: int,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+    tags: Iterable[str] | None = None,
+    shared: bool | None = None,
+    project_id: int | None = None,
+) -> Note | None:
+    existing = await read_note(connection, actor, note_id)
+    if existing is None:
+        return None
+    await require(connection, actor, existing.project_id, role="editor")
+    if project_id is not None:
+        await require(connection, actor, project_id, role="editor")
+    changes: dict[str, Any] = {}
+    if title is not None:
+        changes["title"] = title
+    if body is not None:
+        check_note(body)
+        changes["body"] = body
+    if tags is not None:
+        changes["tags"] = join_tags(tags)
+    if shared is not None:
+        changes["shared"] = int(shared)
+    if project_id is not None:
+        changes["project_id"] = project_id
+    if changes:
+        changes["updated_principal"] = actor.principal
+        changes["updated_computer"] = actor.computer or hostname()
+        changes["updated_at"] = time.time()
+
+        await QUERIES.update_note(connection, note_id=note_id, changes=json.dumps(changes))
+    return await read_note(connection, actor, note_id)
+
+
+async def append_note(
+    connection: aiosqlite.Connection, actor: Actor, note_id: int, text: str
+) -> Note | None:
+    """Add a paragraph at the end of a note.
+
+    One statement writes the whole body, so the FTS triggers see the final text once. The
+    result must fit `NOTE_LIMIT` like any other body; a note that would overflow is untouched.
+    """
+    existing = await read_note(connection, actor, note_id)
+    if existing is None:
+        return None
+    await require(connection, actor, existing.project_id, role="editor")
+    check_note(f"{existing.body}\n\n{text}" if existing.body else text)
+
+    await QUERIES.append_note(
+        connection,
+        text=text,
+        suffix=f"\n\n{text}",
+        now=time.time(),
+        principal=actor.principal,
+        computer=actor.computer or hostname(),
+        note_id=note_id,
+    )
+    return await read_note(connection, actor, note_id)
+
+
+async def delete_note(connection: aiosqlite.Connection, actor: Actor, note_id: int) -> bool:
+    existing = await read_note(connection, actor, note_id)
+    if existing is None:
+        return False
+    await require(connection, actor, existing.project_id, role="editor")
+
+    removed = await QUERIES.delete_note(connection, note_id=note_id)
+    return bool(removed)
+
+
+def note_filters(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None,
+    tag: str | None,
+    shared: bool | None,
+    computer: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "principal": actor.principal,
+        "project_id": project_id,
+        "computer": computer,
+        "shared": shared,
+        "tag": f"%,{tag.strip().lower()},%" if tag else None,
+    }
+
+
+async def read_notes(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None = None,
+    tag: str | None = None,
+    shared: bool | None = None,
+    computer: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[Note]:
+    parameters = note_filters(
+        connection, actor, project_id=project_id, tag=tag, shared=shared, computer=computer
+    )
+    rows = QUERIES.notes(connection, **parameters, limit=limit, offset=offset)
+    return [to_note(row) async for row in rows]
+
+
+async def count_notes(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    project_id: int | None = None,
+    tag: str | None = None,
+    shared: bool | None = None,
+    computer: str | None = None,
+) -> int:
+    parameters = note_filters(
+        connection, actor, project_id=project_id, tag=tag, shared=shared, computer=computer
+    )
+    row = await QUERIES.count_notes(connection, **parameters)
+    return int(row["found"]) if row else 0
+
+
+async def search_notes(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    query: str,
+    *,
+    project_id: int | None = None,
+    tag: str | None = None,
+    shared: bool | None = None,
+    computer: str | None = None,
+    limit: int = 20,
+) -> list[Note]:
+    match = match_query(query)
+    if not match:
+        return []
+    parameters = note_filters(
+        connection, actor, project_id=project_id, tag=tag, shared=shared, computer=computer
+    )
+    rows = QUERIES.search_notes(connection, **parameters, match=match, limit=limit)
+    return [to_note(row) async for row in rows]

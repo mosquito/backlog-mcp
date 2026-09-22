@@ -11,7 +11,7 @@ ends, and whenever the board disagrees with the code.
 ## 1. See where you are
 
 Check the local project binding with `whoami` and `project_list`.
-Read `project_board(project=<full_name>)` for context, counts and the top ten unclaimed tasks.
+Read `project_board(project=<full_name>)` for context, counts and ready and claimed tasks.
 Use `stats` for detailed counts by status and priority and the tags in use.
 Several agents can work on different claimed tasks. Use `task_assigned` to inspect ownership;
 status alone does not identify who is working.

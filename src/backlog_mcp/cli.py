@@ -56,6 +56,7 @@ from .models import (
     Stats as StatsOut,
 )
 from .names import default_user, principal_label
+from .records import NOTE_LIMIT, Note, Task, check_note
 from .render import (
     board_panel,
     comment_panel,
@@ -86,7 +87,6 @@ from .server import (
     use,
 )
 from .state import State
-from .store import NOTE_LIMIT, Note, Store, Task, check_note
 
 log = logging.getLogger("backlog_mcp")
 
@@ -179,8 +179,14 @@ def build(options: CLI) -> Backlog:
     if not authorized_http:
         username = default_user(configured_user)
         principal = user_identity(username)
-    store = Store(options.database or paths.database_path(), computer=computer, principal=principal)
-    return Backlog(store, state, cwd=options.root, project=options.project, computer=computer)
+    return Backlog(
+        options.database or paths.database_path(),
+        state,
+        cwd=options.root,
+        project=options.project,
+        computer=computer,
+        principal=principal,
+    )
 
 
 def editor() -> list[str]:
@@ -477,7 +483,7 @@ class Serve(Command):
         from .server import ACTIVE_REGISTRY, persistent_registry
 
         backlog = self.backlog
-        log.info("serving %s on stdio, database %s", registry.info.name, backlog.store.path)
+        log.info("serving %s on stdio, database %s", registry.info.name, backlog.database.path)
 
         configured, storage = persistent_registry(backlog)
         token = ACTIVE_REGISTRY.set(configured)
@@ -529,7 +535,7 @@ class Whoami(Command):
 
 
 class Board(Command):
-    """Show project context, counts and the next unclaimed tasks."""
+    """Show project context, counts and ready/claimed tasks."""
 
     project: str | None = argclass.Argument(
         "project",
@@ -1803,7 +1809,7 @@ class CLI(argclass.Parser):
         config_parser_class=argclass.TOMLDefaultsParser,
     )
     whoami = Whoami(aliases=["wi"], help="Show the current principal and computer")
-    board = Board(aliases=["bo"], help="Show a project board and its unclaimed tasks")
+    board = Board(aliases=["bo"], help="Show a project board with ready and claimed tasks")
     init = Init(
         aliases=["in"],
         help="Register this checkout or bind it to an existing project",
@@ -1895,10 +1901,10 @@ class CLI(argclass.Parser):
                 backlog = build(self)
                 use(backlog)
                 try:
-                    await backlog.store.open()
+                    await backlog.open()
                     return await command()
                 finally:
-                    await backlog.store.close()
+                    await backlog.close()
             if isinstance(command, (Install, Notes, TaskCommands)):
                 return await command()
             if isinstance(command, Watch):

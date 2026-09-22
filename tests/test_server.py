@@ -6,7 +6,10 @@ import pytest
 from aiohttp_tiny_mcp.client.base import BaseClient
 from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextResourceContents
 from aiohttp_tiny_mcp.testing import connect
+from helpers import mutate
 
+from backlog_mcp import backlog as scope
+from backlog_mcp import server as operations
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 from backlog_mcp.server import ACTIVE, registry
@@ -464,7 +467,9 @@ async def test_delete_asks_only_across_projects(
         expected = not cross_project or answer == {"ok": True}
         assert deleted["deleted"] is expected
         assert deleted["title"] == "Delete candidate"
-        assert (await backlog.store.note(saved["id"]) is None) is expected
+        assert (
+            await operations.read_note(await backlog.open(), backlog.actor, saved["id"]) is None
+        ) is expected
         if expected:
             assert (await call(client, "search", query="candidate", all_projects=True))[
                 "count"
@@ -475,7 +480,7 @@ async def test_delete_without_elicitation(client: BaseClient, backlog: Backlog) 
     saved = await call(client, "task_add", title="Delete me")
     result = await call(client, "task_delete", id=saved["id"])
     assert result["deleted"] is True
-    task = await backlog.store.task(saved["id"])
+    task = await operations.read_task(await backlog.open(), backlog.actor, saved["id"])
     assert task is not None
     assert task.status == Status.DELETED
 
@@ -611,7 +616,9 @@ async def test_note_delete_asks_only_across_projects(
         expected = not cross_project or answer == {"ok": True}
         assert deleted["deleted"] is expected
         assert deleted["title"] == "Delete candidate"
-        assert (await backlog.store.note(saved["id"]) is None) is expected
+        assert (
+            await operations.read_note(await backlog.open(), backlog.actor, saved["id"]) is None
+        ) is expected
         if expected:
             assert (await call(client, "search", query="candidate", all_projects=True))[
                 "count"
@@ -635,7 +642,9 @@ async def test_project_delete_asks_the_user(
         assert result["deleted"] is expected
         assert (result["slug"], result["tasks"], result["memory"]) == (other["slug"], 1, 0)
         assert result["detail"] == ("" if expected else "cancelled")
-        assert (await backlog.store.task(task["id"]) is None) is expected
+        assert (
+            await operations.read_task(await backlog.open(), backlog.actor, task["id"]) is None
+        ) is expected
         assert (await call(client, "project_list"))["count"] == (1 if expected else 2)
 
 
@@ -668,9 +677,11 @@ async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
         assert deleted["deleted"] is True
         assert (deleted["slug"], deleted["tasks"], deleted["memory"]) == (other["slug"], 1, 2)
         assert (await call(client, "project_list"))["count"] == 1
-        assert await backlog.store.task(task["id"]) is None
-        assert await backlog.store.note(shared["id"]) is None
-        assert await backlog.store.note(private["id"]) is None
+        assert await operations.read_task(await backlog.open(), backlog.actor, task["id"]) is None
+        assert await operations.read_note(await backlog.open(), backlog.actor, shared["id"]) is None
+        assert (
+            await operations.read_note(await backlog.open(), backlog.actor, private["id"]) is None
+        )
         assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
         #: The directory still decides.
         assert (await backlog.scope())[1].value == "directory"
@@ -680,18 +691,20 @@ async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
 
 
 async def test_project_delete_keeps_the_fixed_project(backlog: Backlog) -> None:
-    project = await backlog.save(root=".")
+    project = await backlog.save(
+        root=".", connection=await backlog.open(), transaction=backlog.transaction
+    )
     fixed = backlog.view(project=project.slug)
     with pytest.raises(ValueError, match="fixed for this client"):
-        await fixed.delete(project)
-    assert await backlog.store.project(project.id) is not None
+        await fixed.delete(project, await fixed.open(), fixed.transaction)
+    assert await scope.read_project(await backlog.open(), backlog.actor, project.id) is not None
 
 
 async def test_note_delete_without_elicitation(client: BaseClient, backlog: Backlog) -> None:
     saved = await call(client, "memory_save", title="Delete me")
     result = await call(client, "memory_delete", id=saved["id"])
     assert result["deleted"] is True
-    assert await backlog.store.note(saved["id"]) is None
+    assert await operations.read_note(await backlog.open(), backlog.actor, saved["id"]) is None
 
 
 async def test_search_combines_prefix_and_semantic_matches(client: BaseClient) -> None:
@@ -726,7 +739,7 @@ async def test_cross_project_delete_requires_capable_client(backlog: Backlog, en
         if entity == "task":
             result = await call(client, "task_delete", id=saved["id"])
             assert result["deleted"] is True
-            task = await backlog.store.task(saved["id"])
+            task = await operations.read_task(await backlog.open(), backlog.actor, saved["id"])
             assert task is not None
             assert task.status == Status.DELETED
         else:
@@ -748,7 +761,10 @@ async def test_note_delete_with_no_project_chosen_needs_a_question(backlog: Back
             refused = await client.call_tool("memory_delete", {"id": saved["id"]})
             assert isinstance(refused, CallToolResult) and refused.is_error
             assert "cannot ask" in str(refused.content)
-            assert await backlog.store.note(saved["id"]) is not None
+            assert (
+                await operations.read_note(await backlog.open(), backlog.actor, saved["id"])
+                is not None
+            )
     finally:
         ACTIVE.reset(token)
 
@@ -766,7 +782,9 @@ async def test_note_delete_with_no_project_chosen_asks(
             saved = await call(client, "memory_save", title="Nowhere", project=app["slug"])
             deleted = await call(client, "memory_delete", id=saved["id"])
             assert deleted["deleted"] is answer["ok"]
-            assert (await backlog.store.note(saved["id"]) is None) is answer["ok"]
+            assert (
+                await operations.read_note(await backlog.open(), backlog.actor, saved["id"]) is None
+            ) is answer["ok"]
     finally:
         ACTIVE.reset(token)
 
@@ -786,7 +804,7 @@ async def test_note_bodies_are_limited_to_1024_characters(client: BaseClient) ->
 
 
 async def test_whoami_does_not_create_a_project(client: BaseClient, backlog: Backlog) -> None:
-    from backlog_mcp.store import LOCAL_PRINCIPAL
+    from backlog_mcp.records import LOCAL_PRINCIPAL
 
     result = await client.call_tool("whoami", {})
     assert not result.is_error
@@ -796,14 +814,14 @@ async def test_whoami_does_not_create_a_project(client: BaseClient, backlog: Bac
         "auth_type": "none",
         "assigned_tasks": 0,
     }
-    assert await backlog.store.projects() == []
+    assert await scope.read_projects(await backlog.open(), backlog.actor) == []
 
 
 async def test_output_formats_principals_roots_and_seconds(
     client: BaseClient, backlog: Backlog
 ) -> None:
     task = await call(client, "task_add", title="Rounded timestamps")
-    connection = await backlog.store.open()
+    connection = await backlog.open()
     await connection.execute(
         "UPDATE tasks SET created_at=?, updated_at=? WHERE id=?",
         (1700000000.4, 1700000001.6, task["id"]),
@@ -813,7 +831,7 @@ async def test_output_formats_principals_roots_and_seconds(
     assert shown["created_at"] == 1700000000 and type(shown["created_at"]) is int
     assert shown["updated_at"] == 1700000002 and type(shown["updated_at"]) is int
     assert shown["created_by"] == "local@here"
-    stored = await backlog.store.task(task["id"])
+    stored = await operations.read_task(await backlog.open(), backlog.actor, task["id"])
     assert stored and stored.created_at == 1700000000.4 and stored.updated_at == 1700000001.6
     assert await resource(client, f"backlog://tasks/{task['id']}") == shown
     project = (await call(client, "project_list"))["items"][0]
@@ -824,7 +842,10 @@ async def test_output_formats_principals_roots_and_seconds(
     assert comment["principal"] == "local@here" and type(comment["created_at"]) is int
     memory = await call(client, "memory_save", title="A rule", body="A fact")
     assert type(memory["created_at"]) is int and type(memory["updated_at"]) is int
-    await backlog.store.register("alice@example.org", "Alice")
+    await mutate(
+        scope.register(await backlog.open(), backlog.actor, "alice@example.org", "Alice"),
+        backlog.transaction,
+    )
     shared = await call(client, "project_share", principal="alice%40example.org@laptop")
     assert any(item["principal"] == "alice%40example.org@unknown" for item in shared["items"])
 

@@ -12,9 +12,11 @@ from pathlib import Path
 
 import aiosqlite
 
-from .queries import QUERIES
-from .transaction import transaction
+from .transaction import Transaction
 
+# Migration setup and bookkeeping are inline SQL exceptions: the migrator must not
+# depend on application queries.sql. Application queries belong in queries.sql;
+# application schema changes belong in migrations/*.sql.
 MIGRATIONS = Path(__file__).with_name("migrations")
 APPLICATION_ID = 1112296275
 log = logging.getLogger(__name__)
@@ -37,10 +39,16 @@ def candidates(directory: Path) -> dict[Path, str]:
 
 
 async def applied(connection: aiosqlite.Connection, directory: Path) -> dict[Path, str]:
-    return {directory / row[0]: row[1] async for row in QUERIES.applied_migrations(connection)}
+    rows = await connection.execute_fetchall("SELECT filename, sha256 FROM migrations")
+    return {directory / row[0]: row[1] for row in rows}
 
 
-async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS) -> None:
+async def migrate(
+    connection: aiosqlite.Connection,
+    directory: Path = MIGRATIONS,
+    *,
+    transaction: Transaction | None = None,
+) -> None:
     """Apply each pending file and record it in the same transaction.
 
     SQL files contain statements, without BEGIN/COMMIT. complete_statement preserves trigger
@@ -48,15 +56,24 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
     """
     current = "migration setup"
     try:
-        async with transaction(connection):
-            row = await QUERIES.application_id(connection)
+        async with transaction or Transaction(connection, asyncio.Lock()):
+            async with connection.execute("PRAGMA application_id") as cursor:
+                row = await cursor.fetchone()
             assert row is not None
             marker = row[0]
             if marker != APPLICATION_ID:
-                tables = [row async for row in QUERIES.application_tables(connection)]
+                tables = await connection.execute_fetchall(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'mcp_%'"
+                )
                 if marker or tables:
                     raise ValueError("Unsupported database schema. Import old data separately.")
-            await QUERIES.create_migrations(connection)
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS migrations (
+                    filename TEXT PRIMARY KEY,
+                    sha256 TEXT NOT NULL,
+                    applied_at REAL NOT NULL
+                )
+            """)
             files, previous = await asyncio.gather(
                 asyncio.to_thread(candidates, directory),
                 applied(connection, directory),
@@ -83,8 +100,9 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
                         statement = ""
                 if statement.strip():
                     await connection.execute(statement)
-                await QUERIES.record_migration(
-                    connection, filename=path.name, sha256=checksum, applied_at=time.time()
+                await connection.execute(
+                    "INSERT INTO migrations(filename, sha256, applied_at) VALUES (?, ?, ?)",
+                    (path.name, checksum, time.time()),
                 )
             current = "migration commit"
     except BaseException:

@@ -7,12 +7,11 @@ import pytest
 from backlog_mcp.backlog import Backlog, UnknownProject, checkout_root, slugify
 from backlog_mcp.models import Origin
 from backlog_mcp.state import State
-from backlog_mcp.store import Store
 
 
 def instance(tmp_path: Path, cwd: Path, project: str | None = None) -> Backlog:
     return Backlog(
-        Store(tmp_path / "backlog.sqlite3"),
+        tmp_path / "backlog.sqlite3",
         State(tmp_path / "state.json"),
         cwd=cwd,
         project=project,
@@ -48,7 +47,7 @@ async def test_the_directory_decides_and_the_project_is_made_once(tmp_path: Path
     again, origin = await backlog.current()
     assert origin is Origin.DIRECTORY
     assert again.id == project.id
-    await backlog.store.close()
+    await backlog.close()
 
 
 async def test_a_second_directory_gets_its_own_slug(tmp_path: Path) -> None:
@@ -62,7 +61,7 @@ async def test_a_second_directory_gets_its_own_slug(tmp_path: Path) -> None:
     backlog.cwd = second
     two, _ = await backlog.current()
     assert (one.slug, two.slug) == ("work", "work-2")
-    await backlog.store.close()
+    await backlog.close()
 
 
 async def test_nothing_but_the_directory_chooses(tmp_path: Path) -> None:
@@ -79,7 +78,7 @@ async def test_nothing_but_the_directory_chooses(tmp_path: Path) -> None:
     assert origin is Origin.DIRECTORY
     assert chosen.id == local.id
     assert not set(backlog.state.read()) & {"pins", "last"}
-    await backlog.store.close()
+    await backlog.close()
 
 
 async def test_the_named_project_beats_everything(tmp_path: Path) -> None:
@@ -95,7 +94,7 @@ async def test_the_named_project_beats_everything(tmp_path: Path) -> None:
     chosen, origin = await backlog.current()
     assert origin is Origin.ARGUMENT
     assert chosen.id == other.id
-    await backlog.store.close()
+    await backlog.close()
 
 
 async def test_lookup_takes_a_slug_or_any_path_inside(tmp_path: Path) -> None:
@@ -112,7 +111,7 @@ async def test_lookup_takes_a_slug_or_any_path_inside(tmp_path: Path) -> None:
         await backlog.lookup("missing")
     with pytest.raises(UnknownProject):
         await backlog.lookup(str(tmp_path / "elsewhere"))
-    await backlog.store.close()
+    await backlog.close()
 
 
 async def test_save_registers_the_directory_a_root_or_updates_a_name(tmp_path: Path) -> None:
@@ -122,30 +121,56 @@ async def test_save_registers_the_directory_a_root_or_updates_a_name(tmp_path: P
     other.mkdir()
     backlog = instance(tmp_path, root)
 
-    here = await backlog.save()
+    here = await backlog.save(connection=await backlog.open(), transaction=backlog.transaction)
     assert here.roots[0].root == str(root)
-    assert (await backlog.save()).id == here.id
+    assert (
+        await backlog.save(connection=await backlog.open(), transaction=backlog.transaction)
+    ).id == here.id
 
-    added = await backlog.save(root="../other", name="Other", description="Second board")
+    added = await backlog.save(
+        root="../other",
+        name="Other",
+        description="Second board",
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     assert added.roots[0].root == str(other)
     assert added.description == "Second board"
 
-    renamed = await backlog.save(reference=here.slug, name="Renamed", archived=True)
+    renamed = await backlog.save(
+        reference=here.slug,
+        name="Renamed",
+        archived=True,
+        connection=await backlog.open(),
+        transaction=backlog.transaction,
+    )
     assert renamed.id == here.id
     assert renamed.name == "Renamed"
     assert renamed.archived is True
-    await backlog.store.close()
+    await backlog.close()
 
 
 async def test_save_binds_an_existing_project_on_another_computer(tmp_path: Path) -> None:
     root = tmp_path / "work"
     root.mkdir()
     backlog = instance(tmp_path, root)
-    project = await backlog.save(name="Work")
+    project = await backlog.save(
+        name="Work", connection=await backlog.open(), transaction=backlog.transaction
+    )
 
     remote = backlog.view(computer="laptop")
-    bound = await remote.save(reference=project.slug, root="/srv/work")
-    contextual = await remote.save(reference=project.slug, root="")
+    bound = await remote.save(
+        reference=project.slug,
+        root="/srv/work",
+        connection=await remote.open(),
+        transaction=remote.transaction,
+    )
+    contextual = await remote.save(
+        reference=project.slug,
+        root="",
+        connection=await remote.open(),
+        transaction=remote.transaction,
+    )
 
     assert bound.id == project.id == contextual.id
     assert {(item.computer, item.root) for item in contextual.roots} == {
@@ -153,4 +178,4 @@ async def test_save_binds_an_existing_project_on_another_computer(tmp_path: Path
         ("laptop", ""),
         ("laptop", "/srv/work"),
     }
-    await backlog.store.close()
+    await backlog.close()

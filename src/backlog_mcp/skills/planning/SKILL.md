@@ -12,7 +12,7 @@ whose cause is not known yet.
 
 Use `whoami` and `project_list` to check the local project binding.
 Use `all_computers=true` to find an existing project before registering another checkout.
-Read `project_board(project=<full_name>)` for project context, counts and unclaimed tasks.
+Read `project_board(project=<full_name>)` for project context, counts and ready/claimed tasks.
 Pass `project` explicitly to calls over an unscoped HTTP connection.
 
 ## 2. Search for relevant context and consult notes

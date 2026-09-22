@@ -7,10 +7,11 @@ from pathlib import Path
 
 import aiosqlite
 import pytest
+from helpers import rows
 
 from backlog_mcp import migrate as migration
+from backlog_mcp.backlog import Backlog
 from backlog_mcp.migrate import APPLICATION_ID, MIGRATIONS, migrate
-from backlog_mcp.store import Store
 
 
 async def test_fresh_schema_and_repeat() -> None:
@@ -113,21 +114,21 @@ async def test_duplicate_numbers_are_rejected(tmp_path: Path) -> None:
 
 
 async def test_memory_database_uses_same_connection() -> None:
-    store = Store(Path(":memory:"))
+    store = Backlog(Path(":memory:"))
     try:
         await store.open()
-        assert len(await store.rows("SELECT * FROM migrations")) == 2
-        assert await store.rows("SELECT * FROM task_links") == []
+        assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 2
+        assert await rows(await store.open(), "SELECT * FROM task_links") == []
     finally:
         await store.close()
 
 
 async def test_concurrent_startups(tmp_path: Path) -> None:
-    stores = [Store(tmp_path / "shared.sqlite3") for _ in range(3)]
+    stores = [Backlog(tmp_path / "shared.sqlite3") for _ in range(3)]
     try:
         await asyncio.gather(*(store.open() for store in stores))
         for store in stores:
-            assert len(await store.rows("SELECT * FROM migrations")) == 2
+            assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 2
     finally:
         await asyncio.gather(*(store.close() for store in stores))
 

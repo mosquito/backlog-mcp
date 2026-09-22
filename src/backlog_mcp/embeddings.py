@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Literal
 from weakref import WeakKeyDictionary
 from zipfile import BadZipFile
 
+import aiosqlite
 import numpy as np
 from aiohttp_tiny_mcp import Extension
 from aiohttp_tiny_mcp.protocol.core import Failure, FailureKind, Rejected
@@ -22,9 +23,12 @@ from aiohttp_tiny_mcp.protocol.models import ResultModel
 from numpy.typing import NDArray
 from pydantic import BaseModel, Field, StringConstraints
 
+from . import backlog as scope
 from .backlog import Backlog
+from .database import Database
 from .models import Actor, CommentOut, NoteOut, ProjectOut, Status, TaskOut
-from .store import Comment, Note, Project, Store, Task
+from .records import Comment, Note, Project, Task
+from .transaction import Transaction
 
 if TYPE_CHECKING:
     from model2vec import StaticModel
@@ -316,16 +320,20 @@ def load_or_build(
 
 
 def database_key(backlog: Backlog) -> str:
-    if backlog.store.in_memory:
-        return f"memory:{os.getpid()}:{id(backlog.store.database)}:{backlog.store.principal}"
-    return f"{backlog.store.path.resolve()}:{backlog.store.principal}"
+    if backlog.database.in_memory:
+        return f"memory:{os.getpid()}:{id(backlog.database)}:{backlog.principal}"
+    return f"{backlog.database.path.resolve()}:{backlog.principal}"
 
 
-async def snapshot(backlog: Backlog) -> tuple[list[Task], list[Note], list[Comment], list[Project]]:
-    tasks = await backlog.store.tasks(status=list(Status), limit=-1)
-    notes = await backlog.store.notes(limit=-1)
-    comments = await backlog.store.comments(status=list(Status), limit=-1)
-    projects = await backlog.store.projects()
+async def snapshot(
+    backlog: Backlog, connection: aiosqlite.Connection
+) -> tuple[list[Task], list[Note], list[Comment], list[Project]]:
+    from . import server
+
+    tasks = await server.read_tasks(connection, backlog.actor, status=list(Status), limit=-1)
+    notes = await server.read_notes(connection, backlog.actor, limit=-1)
+    comments = await server.read_comments(connection, backlog.actor, status=list(Status), limit=-1)
+    projects = await scope.read_projects(connection, backlog.actor)
     return tasks, notes, comments, projects
 
 
@@ -336,18 +344,22 @@ class IndexState:
     indexes: tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex] | None = None
 
 
-states: WeakKeyDictionary[Store, IndexState] = WeakKeyDictionary()
+states: WeakKeyDictionary[Database, dict[str, IndexState]] = WeakKeyDictionary()
 
 
-async def indexes(backlog: Backlog) -> tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]:
+async def indexes(
+    backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]:
     """Build lazily; local writes and external commits invalidate the cached snapshot."""
-    state = states.setdefault(backlog.store, IndexState())
+    from . import server
+
+    state = states.setdefault(backlog.database, {}).setdefault(backlog.principal, IndexState())
     async with state.lock:
-        connection = await backlog.store.open()
-        version = await backlog.store.data_version()
+        version = await server.data_version(connection, backlog.actor)
         revision = (connection, version, connection.total_changes)
         if state.indexes is None or state.revision != revision:
-            tasks, notes, comments, projects = await snapshot(backlog)
+            async with transaction.lock:
+                tasks, notes, comments, projects = await snapshot(backlog, connection)
             state.indexes = await asyncio.to_thread(
                 cached_indexes,
                 database_key(backlog),
@@ -388,8 +400,12 @@ def match_ids(
     )
 
 
-async def search(args: Search, backlog: Backlog) -> Matches:
+async def search(
+    args: Search, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> Matches:
     """Merge FTS and semantic IDs, then fetch current records from SQLite."""
+    from . import server
+
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -406,7 +422,9 @@ async def search(args: Search, backlog: Backlog) -> Matches:
             return True
         return True
 
-    lexical_tasks = await backlog.store.search(
+    lexical_tasks = await server.search_tasks(
+        connection,
+        backlog.actor,
         args.query,
         project_id=project_id,
         computer=computer,
@@ -414,11 +432,19 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         tag=args.tag,
         limit=args.limit,
     )
-    lexical_notes = await backlog.store.search_notes(
-        args.query, project_id=project_id, computer=computer, tag=args.tag, limit=args.limit
+    lexical_notes = await server.search_notes(
+        connection,
+        backlog.actor,
+        args.query,
+        project_id=project_id,
+        computer=computer,
+        tag=args.tag,
+        limit=args.limit,
     )
     lexical_comments = (
-        await backlog.store.comments(
+        await server.read_comments(
+            connection,
+            backlog.actor,
             query=args.query,
             project_id=project_id,
             computer=computer,
@@ -434,8 +460,13 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     if "memory" not in args.kinds:
         lexical_notes = []
     lexical_projects = (
-        await backlog.store.search_projects(
-            args.query, project_id=project_id, computer=computer, limit=args.limit
+        await server.search_projects(
+            connection,
+            backlog.actor,
+            args.query,
+            project_id=project_id,
+            computer=computer,
+            limit=args.limit,
         )
         if "projects" in args.kinds
         else []
@@ -450,12 +481,18 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         if task_snippets or note_snippets or comment_snippets or project_fts
         else args.min_score
     )
-    vectors = await indexes(backlog)
-    tasks = await backlog.store.tasks(
-        project_id=project_id, computer=computer, status=args.status, tag=args.tag, limit=-1
+    vectors = await indexes(backlog, connection, transaction)
+    tasks = await server.read_tasks(
+        connection,
+        backlog.actor,
+        project_id=project_id,
+        computer=computer,
+        status=args.status,
+        tag=args.tag,
+        limit=-1,
     )
-    notes = await backlog.store.notes(
-        project_id=project_id, computer=computer, tag=args.tag, limit=-1
+    notes = await server.read_notes(
+        connection, backlog.actor, project_id=project_id, computer=computer, tag=args.tag, limit=-1
     )
     tag = args.tag.strip().lower() if args.tag else None
     allowed_tasks = {
@@ -470,7 +507,9 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         item.id for item in notes if (inside(item) or item.shared) and (not tag or tag in item.tags)
     }
     comments = (
-        await backlog.store.comments(
+        await server.read_comments(
+            connection,
+            backlog.actor,
             project_id=project_id,
             computer=computer,
             status=args.status,
@@ -486,7 +525,11 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     if "memory" not in args.kinds:
         allowed_notes = set()
     del tasks, notes, comments
-    projects = await backlog.store.projects(computer=computer) if "projects" in args.kinds else []
+    projects = (
+        await scope.read_projects(connection, backlog.actor, computer=computer)
+        if "projects" in args.kinds
+        else []
+    )
     allowed_projects = {item.id for item in projects if project_id is None or item.id == project_id}
     task_ids, note_ids, comment_ids, project_ids = await asyncio.to_thread(
         match_ids,
@@ -506,7 +549,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     ranked_tasks = list(dict.fromkeys([*task_snippets, *task_scores]))[: args.limit]
     ranked_notes = list(dict.fromkeys([*note_snippets, *note_scores]))[: args.limit]
     for record_id in ranked_tasks:
-        task = await backlog.store.task(record_id)
+        task = await server.read_task(connection, backlog.actor, record_id)
         if (
             task is None
             or not inside(task)
@@ -528,7 +571,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
             )
         )
     for record_id in ranked_notes:
-        note = await backlog.store.note(record_id)
+        note = await server.read_note(connection, backlog.actor, record_id)
         if note is None or not (inside(note) or note.shared):
             continue
         if tag and tag not in note.tags:
@@ -548,7 +591,9 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     current_comments = (
         {
             item.id: item
-            for item in await backlog.store.comments(
+            for item in await server.read_comments(
+                connection,
+                backlog.actor,
                 project_id=project_id,
                 computer=computer,
                 status=args.status,
@@ -580,7 +625,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         dict.fromkeys([*(item.id for item in lexical_projects), *project_scores])
     )[: args.limit]
     for record_id in ranked_projects:
-        project = await backlog.store.project(record_id)
+        project = await scope.read_project(connection, backlog.actor, record_id)
         if (
             project is None
             or project.archived
@@ -592,7 +637,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         project_hits.append(
             ProjectHit(
                 **project_out(
-                    project, computer=backlog.computer, principal=backlog.store.principal
+                    project, computer=backlog.computer, principal=backlog.principal
                 ).model_dump(),
                 match="fts" if record_id in project_fts else "semantic",
                 score=project_scores.get(record_id),
@@ -606,7 +651,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         count=len(task_hits) + len(note_hits) + len(comment_hits) + len(project_hits),
         project=reach.slug,
         computer=reach.scope_computer,
-        principal=backlog.store.principal,
+        principal=backlog.principal,
     )
 
 

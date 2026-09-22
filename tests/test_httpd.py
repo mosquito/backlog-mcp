@@ -11,6 +11,7 @@ from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextRe
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
 
+from backlog_mcp import server as operations
 from backlog_mcp.auth import credentials, user_identity
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import CONSOLE_PATH, ENDPOINT_PATH, application
@@ -76,17 +77,19 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
         async with session.get(server.make_url("/")) as response:
             assert response.status == 200
             assert response.content_type == "text/html"
-    assert backlog.store.connection is None
+    assert backlog.database.connection is None
     # Reopening preserves data and still requires the authenticated principal.
-    assert await backlog.store.task(task["id"]) is None
-    stored = await backlog.store.view(principal=user_identity("user")).task(task["id"])
+    assert await operations.read_task(await backlog.open(), backlog.actor, task["id"]) is None
+    view = backlog.view(principal=user_identity("user"))
+    stored = await operations.read_task(await view.open(), view.actor, task["id"])
     assert stored is not None
     assert stored.title == "Over HTTP"
 
 
 async def test_the_query_string_serves_a_client_as_another_computer(backlog: Backlog) -> None:
     app = application(backlog, console=False)
-    await backlog.view(computer="laptop").save(root="/srv/app", name="App")
+    view = backlog.view(computer="laptop")
+    await view.save(await view.open(), view.transaction, root="/srv/app", name="App")
     async with TestServer(app) as server:
         endpoint = server.make_url(ENDPOINT_PATH)
         fixed = str(endpoint.with_query(computer="laptop", project="app"))
@@ -180,7 +183,7 @@ async def test_console_can_be_disabled(backlog: Backlog) -> None:
 
 async def test_http_binding_uses_application_backlog(backlog: Backlog) -> None:
     app = application(backlog, console=False)
-    unrelated = Backlog(backlog.store, backlog.state, project="not-registered")
+    unrelated = Backlog(backlog.database, backlog.state, project="not-registered")
     token = ACTIVE.set(unrelated)
     try:
         async with (

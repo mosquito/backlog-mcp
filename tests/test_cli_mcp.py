@@ -9,9 +9,12 @@ from typing import Any
 
 import pytest
 from aiohttp.test_utils import TestServer
+from helpers import mutate
 
+from backlog_mcp import backlog as scope
 from backlog_mcp import cli
 from backlog_mcp import client as transport
+from backlog_mcp import server as operations
 from backlog_mcp.auth import user_identity
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
@@ -70,7 +73,7 @@ async def remote(
 
     monkeypatch.setattr(cli, "build", forbidden)
     # Assertions inspect storage as the authenticated client, not the local principal.
-    backlog.store.principal = user_identity("tester")
+    backlog.principal = user_identity("tester")
     async with TestServer(
         cli.httpd.application(
             backlog,
@@ -84,16 +87,18 @@ async def remote(
 async def test_http_operations_use_server_storage(remote: RemoteRunner, backlog: Backlog) -> None:
     code, output = await remote("task", "add", "Remote task", "-b", "Original requirement")
     assert code == 0 and "added #1 to tester/client-workspace" in output
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.title == "Remote task"
-    project = await backlog.store.project_by_slug("client-workspace")
+    project = await scope.project_by_slug(await backlog.open(), backlog.actor, "client-workspace")
     assert project is not None
     assert [(root.computer, root.root) for root in project.roots] == [("client", str(remote.root))]
     assert "Remote task" in (await remote("task", "list"))[1]
     assert (await remote("task", "close", "1"))[0] == 0
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.status == Status.DONE
-    assert (await backlog.store.comments(task_id=task.id))[0].body == "Status changed: todo → done"
+    assert (await operations.read_comments(await backlog.open(), backlog.actor, task_id=task.id))[
+        0
+    ].body == "Status changed: todo → done"
     assert (await remote("memory", "add", "Constraint", "-b", "Keep history"))[0] == 0
     assert (await remote("memory", "append", "1", "Use MCP"))[0] == 0
     assert "Use MCP" in (await remote("memory", "show", "1"))[1]
@@ -111,10 +116,10 @@ async def test_aliases_route_tasks_notes_and_projects(
     assert "Alias comment" in (await remote("task", "cm", "1"))[1]
     assert "Alias comment" in (await remote("task", "sh", "1"))[1]
     assert (await remote("task", "st", "1"))[0] == 0
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.status == Status.DOING
     assert (await remote("task", "cl", "1"))[0] == 0
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.status == Status.DONE
 
     assert (await remote("mm", "na", "Alias note", "-b", "Original text"))[0] == 0
@@ -122,11 +127,11 @@ async def test_aliases_route_tasks_notes_and_projects(
     assert "More text" in (await remote("mm", "show", "1"))[1]
     assert "Alias note" in (await remote("mm", "nl"))[1]
     assert (await remote("mm", "nd", "1"))[0] == 0
-    assert await backlog.store.note(1) is None
+    assert await operations.read_note(await backlog.open(), backlog.actor, 1) is None
 
     code, output = await remote("pr", "pu", "client-workspace", "--preferred-language", "ru")
     assert code == 0 and "preferred language = ru" in output
-    project = await backlog.store.project_by_slug("client-workspace")
+    project = await scope.project_by_slug(await backlog.open(), backlog.actor, "client-workspace")
     assert project is not None and project.preferred_language == "ru"
 
 
@@ -138,7 +143,9 @@ async def test_remote_scope_uses_nested_local_root_and_explicit_override(
     nested = remote.root / "nested"
     (nested / ".git").mkdir(parents=True)
     assert (await remote("--root", str(nested), "task", "list"))[0] == 0
-    assert len(await backlog.store.projects(computer="client")) == 1
+    assert (
+        len(await scope.read_projects(await backlog.open(), backlog.actor, computer="client")) == 1
+    )
     other = remote.root.parent / "other"
     other.mkdir(exist_ok=True)
     assert (await remote("--root", str(other), "task", "add", "Other task"))[0] == 0
@@ -194,9 +201,9 @@ async def test_remote_confirmations_are_answered_in_the_terminal(
     await remote("memory", "add", "Delete me")
     monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: False)
     assert (await remote("projects", "delete", "client-workspace")) == (1, "nothing deleted\n")
-    assert await backlog.store.note(1) is not None
+    assert await operations.read_note(await backlog.open(), backlog.actor, 1) is not None
     assert (await remote("projects", "delete", "client-workspace", "--yes"))[0] == 0
-    assert await backlog.store.note(1) is None
+    assert await operations.read_note(await backlog.open(), backlog.actor, 1) is None
 
 
 async def test_edit_replaces_description_and_preserves_comments(
@@ -215,12 +222,14 @@ async def test_edit_replaces_description_and_preserves_comments(
     assert (await remote("task", "comment", "1", "Progress update"))[0] == 0
     monkeypatch.setattr(cli, "compose", edit)
     assert (await remote("task", "edit", "1"))[0] == 0
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.title == "Renamed"
     assert task.body == "Revised requirement"
-    assert (await backlog.store.comments(task_id=1))[0].body == "Progress update"
+    assert (await operations.read_comments(await backlog.open(), backlog.actor, task_id=1))[
+        0
+    ].body == "Progress update"
     assert (await remote("task", "delete", "1"))[0] == 0
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.status == Status.DELETED
     assert task.body == "Revised requirement"
     assert "Renamed" not in (await remote("task", "list", "--every"))[1]
@@ -234,7 +243,7 @@ async def test_move_accepts_local_relative_destination(
     other = remote.root.parent / "other"
     assert (await remote("--root", str(other), "board"))[0] == 0
     assert (await remote("task", "move", "1", "../other"))[0] == 0
-    task = await backlog.store.task(1)
+    task = await operations.read_task(await backlog.open(), backlog.actor, 1)
     assert task is not None and task.project == "tester/other"
 
 
@@ -246,7 +255,7 @@ async def test_remote_skills_and_broad_listings_do_not_register_projects(
     assert (await remote("task", "list", "--all-projects"))[0] == 0
     assert "planning" in (await remote("skills"))[1]
     assert "task_update" in (await remote("skills", "planning"))[1]
-    assert await backlog.store.projects(computer="client") == []
+    assert await scope.read_projects(await backlog.open(), backlog.actor, computer="client") == []
 
 
 async def test_watch_outlives_the_regular_request_timeout(remote: RemoteRunner) -> None:
@@ -346,20 +355,26 @@ async def test_qualified_project_names_are_not_normalized_as_paths(
     remote: RemoteRunner,
     backlog: Backlog,
 ) -> None:
-    await backlog.store.register(user_identity("alice"), "alice")
+    await mutate(
+        scope.register(await backlog.open(), backlog.actor, user_identity("alice"), "alice"),
+        backlog.transaction,
+    )
     alice = backlog.view(principal=user_identity("alice"))
     shared = await alice.create("", name="Foo")
-    await alice.store.share(shared.id, user_identity("tester"), "editor")
+    await mutate(
+        scope.share(await alice.open(), alice.actor, shared.id, user_identity("tester"), "editor"),
+        alice.transaction,
+    )
     code, output = await remote("init", "Foo")
     assert code == 0, output
-    own = await backlog.store.project_by_slug("tester/foo")
+    own = await scope.project_by_slug(await backlog.open(), backlog.actor, "tester/foo")
     assert own is not None and own.slug == "foo"
     code, output = await remote("--project", "alice/foo", "task", "add", "Shared work")
     assert code == 0, output
     assert "alice/foo" in output
-    tasks = await backlog.store.tasks(project_id=shared.id)
+    tasks = await operations.read_tasks(await backlog.open(), backlog.actor, project_id=shared.id)
     assert [task.title for task in tasks] == ["Shared work"]
-    assert await backlog.store.tasks(project_id=own.id) == []
+    assert await operations.read_tasks(await backlog.open(), backlog.actor, project_id=own.id) == []
     code, output = await remote("--project", "foo", "task", "list")
     assert code != 0 and "ambiguous project" in output
     code, output = await remote("init", "--existing", "foo")

@@ -13,7 +13,7 @@ import pytest
 from backlog_mcp import cli, render
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Priority, Status
-from backlog_mcp.store import Note, Task
+from backlog_mcp.records import Note, Task
 
 
 class Runner:
@@ -974,7 +974,7 @@ def test_server_default_user_without_authorizers(
     ):
         parser = cli.CLI()
         parser.parse_args(["--database", str(tmp_path / "unused.db"), "mcp", *arguments])
-        assert cli.build(parser).store.principal == expected
+        assert cli.build(parser).principal == expected
 
 
 @pytest.mark.parametrize(

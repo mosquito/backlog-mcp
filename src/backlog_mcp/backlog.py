@@ -2,17 +2,34 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from .computer import check
-from .models import Origin
+import aiosqlite
+
+from .computer import check, hostname
+from .database import Database
+from .models import (
+    Actor,
+    Origin,
+)
+from .names import owner_name, project_name
+from .queries import QUERIES
+from .records import (
+    Project,
+    ProjectContents,
+    ProjectRoot,
+    Unset,
+    to_project,
+)
 from .state import State
-from .store import Project, ProjectContents, Store, Unset
+from .transaction import Transaction
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +85,7 @@ class Reach:
 
 
 class Backlog:
-    """The store, the state file and one working directory, as the tools see them.
+    """The database, the state file and one working directory, as the tools see them.
 
     Every handler asks this object which project it is working on. Resolution order:
     the project named on the command line or in the URL, then the deepest registered project of
@@ -78,25 +95,27 @@ class Backlog:
 
     def __init__(
         self,
-        store: Store,
-        state: State,
+        database: Database | Path | str,
+        state: State | None = None,
         *,
+        principal: str = "local",
         cwd: Path | str | None = None,
         project: str | None = None,
         computer: str | None = None,
     ) -> None:
         self.auth_type: Literal["basic", "jwt", "none"] = "none"
-        self.store = store
-        self.state = state
+        self.database = database if isinstance(database, Database) else Database(Path(database))
+        self.principal = principal
+        self.state = state or State(self.database.path.with_suffix(".state.json"))
         self.cwd = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
         #: Named by `--project`, and so fixed for the life of the process.
         self.named = project or None
-        self.computer = state.computer_name(computer)
+        self.computer = (
+            state.computer_name(computer) if state else check(computer) if computer else hostname()
+        )
         #: True for a view of another computer: its directories are not here, so nothing is
         #: read from the file system and nothing is registered from `cwd`.
         self.remote = False
-        if store.computer is None:
-            store.computer = self.computer
 
     def view(
         self,
@@ -105,13 +124,14 @@ class Backlog:
         project: str | None = None,
         principal: str | None = None,
     ) -> Backlog:
-        """The same store and state, seen from a computer, with a project fixed when given.
+        """The same database and state, seen from a computer, with a project fixed when given.
 
         One HTTP server answers for several computers: each request gets its own view.
         """
         seen = Backlog(
-            self.store.view(principal=principal, computer=computer or self.computer),
+            self.database,
             self.state,
+            principal=principal or self.principal,
             cwd=self.cwd,
             project=project or self.named,
             computer=computer or self.computer,
@@ -119,6 +139,21 @@ class Backlog:
         seen.auth_type = self.auth_type
         seen.remote = seen.computer != self.computer
         return seen
+
+    @property
+    def actor(self) -> Actor:
+        return Actor(principal=self.principal, computer=self.computer)
+
+    @property
+    def transaction(self) -> Transaction:
+        assert self.database.transaction is not None, "database is not open"
+        return self.database.transaction
+
+    async def open(self) -> aiosqlite.Connection:
+        return await self.database.open(self.principal)
+
+    async def close(self) -> None:
+        await self.database.close()
 
     def absolute(self, path: Path | str) -> Path:
         """A path as given, made canonical against the working directory.
@@ -157,11 +192,12 @@ class Backlog:
         Only a view of another computer ends with no project: this computer always has the
         working directory to fall back on.
         """
+        connection = await self.open()
         if self.named:
             return await self.lookup(self.named), Origin.ARGUMENT
         if self.remote:
             return None, Origin.NONE
-        found = await self.store.project_for_path(self.cwd, computer=self.computer)
+        found = await project_for_path(connection, self.actor, self.cwd, computer=self.computer)
         if found is not None:
             return found, Origin.DIRECTORY
         return await self.create(checkout_root(self.cwd)), Origin.CREATED
@@ -172,18 +208,19 @@ class Backlog:
 
     async def lookup(self, reference: str) -> Project:
         """Resolve an owner/slug name, unique short slug, #id, or explicit filesystem path."""
+        connection = await self.open()
         found = (
-            await self.store.project(int(reference[1:]))
+            await read_project(connection, self.actor, int(reference[1:]))
             if reference.startswith("#") and reference[1:].isdigit()
-            else await self.store.project_by_slug(reference)
+            else await project_by_slug(connection, self.actor, reference)
         )
         if found is not None:
             return found
         if reference.startswith((".", "/", "~")):
             path = self.absolute(reference)
-            found = await self.store.project_by_root(path, computer=self.computer)
+            found = await project_by_root(connection, self.actor, path, computer=self.computer)
             if found is None:
-                found = await self.store.project_for_path(path, computer=self.computer)
+                found = await project_for_path(connection, self.actor, path, computer=self.computer)
             if found is not None:
                 return found
         raise UnknownProject(
@@ -211,6 +248,7 @@ class Backlog:
         `all_projects` every project of this computer, and `project` one project, else the
         current one. A computer nobody registered a project on is `UnknownProject`.
         """
+        connection = await self.open()
         if all_computers:
             return Reach()
         if project:
@@ -221,7 +259,7 @@ class Backlog:
             return Reach(project=selected, computer=name)
         if computer:
             name = check(computer)
-            known = await self.store.computers()
+            known = await computers(connection, self.actor)
             if name not in known and name != self.computer:
                 raise UnknownProject(
                     f"no computer {name!r}: known computers are {', '.join(known) or 'none'}"
@@ -232,7 +270,8 @@ class Backlog:
         return Reach(project=await self.resolve(project))
 
     async def free_slug(self, wanted: str) -> str:
-        taken = set(await self.store.slugs(owned=True))
+        connection = await self.open()
+        taken = set(await slugs(connection, self.actor, owned=True))
         if wanted not in taken:
             return wanted
         for suffix in range(2, len(taken) + 3):
@@ -249,28 +288,45 @@ class Backlog:
         The directory must exist. A view of another computer cannot check that and takes the
         path as given.
         """
+        connection = await self.open()
         if str(root) == "":
             label = name or "project"
             slug = await self.free_slug(slugify(label))
-            return await self.store.add_project(
-                slug=slug, name=label, root="", computer=self.computer, description=description
-            )
+            async with self.transaction:
+                return await add_project(
+                    connection,
+                    self.actor,
+                    slug=slug,
+                    name=label,
+                    root="",
+                    computer=self.computer,
+                    description=description,
+                )
         path = self.absolute(root)
-        existing = await self.store.project_by_root(path, computer=self.computer)
+        existing = await project_by_root(connection, self.actor, path, computer=self.computer)
         if existing is not None:
             return existing
         if not self.remote and not path.is_dir():
             raise ValueError(f"no such directory on {self.computer!r}: {path}")
         label = name or path.name or "project"
         slug = await self.free_slug(slugify(label))
-        created = await self.store.add_project(
-            slug=slug, name=label, root=path, computer=self.computer, description=description
-        )
+        async with self.transaction:
+            created = await add_project(
+                connection,
+                self.actor,
+                slug=slug,
+                name=label,
+                root=path,
+                computer=self.computer,
+                description=description,
+            )
         log.info("registered project %s at %s on %s", created.slug, path, self.computer)
         return created
 
     async def save(
         self,
+        connection: aiosqlite.Connection,
+        transaction: Transaction,
         *,
         reference: str | None = None,
         root: Path | str | None = None,
@@ -288,7 +344,7 @@ class Backlog:
                     )
                 #: Nothing named: the working directory, registered if it is new.
                 path = self.absolute(self.cwd)
-                found = await self.store.project_by_root(path, computer=self.computer)
+                found = await project_by_root(connection, self.actor, path, computer=self.computer)
                 project = found if found is not None else await self.create(checkout_root(path))
             case None | "", (str() | Path()) as directory:
                 project = await self.create(directory, name=name, description=description or "")
@@ -299,24 +355,33 @@ class Backlog:
                     path = self.absolute(directory)
                     if not self.remote and not path.is_dir():
                         raise ValueError(f"no such directory on {self.computer!r}: {path}")
-                    project = await self.store.add_root(
-                        project.id, computer=self.computer, root=path
-                    )
+                    async with transaction:
+                        project = await add_root(
+                            connection, self.actor, project.id, computer=self.computer, root=path
+                        )
                 else:
-                    project = await self.store.add_root(project.id, computer=self.computer, root="")
+                    async with transaction:
+                        project = await add_root(
+                            connection, self.actor, project.id, computer=self.computer, root=""
+                        )
             case str() as named, None:
                 project = await self.lookup(named)
-        updated = await self.store.update_project(
-            project.id,
-            name=name,
-            description=description,
-            archived=archived,
-            preferred_language=preferred_language,
-        )
+        async with transaction:
+            updated = await update_project(
+                connection,
+                self.actor,
+                project.id,
+                name=name,
+                description=description,
+                archived=archived,
+                preferred_language=preferred_language,
+            )
         assert updated is not None, "the project just updated is gone"
         return updated
 
-    async def delete(self, project: Project) -> ProjectContents:
+    async def delete(
+        self, project: Project, connection: aiosqlite.Connection, transaction: Transaction
+    ) -> ProjectContents:
         """Delete a project for good: its roots, tasks and notes.
 
         The project fixed for this process by `--project` or the URL stays, because every later
@@ -326,8 +391,9 @@ class Backlog:
             raise ValueError(
                 f"project {project.slug!r} is fixed for this client; delete it from another one"
             )
-        contents = await self.store.project_contents(project.id)
-        await self.store.delete_project(project.id)
+        contents = await project_contents(connection, self.actor, project.id)
+        async with transaction:
+            await delete_project(connection, self.actor, project.id)
         log.info(
             "deleted project %s with %d tasks and %d notes",
             project.slug,
@@ -338,3 +404,288 @@ class Backlog:
 
 
 __all__ = ["MARKERS", "Backlog", "Reach", "UnknownProject", "checkout_root", "slugify"]
+
+
+async def register(
+    connection: aiosqlite.Connection, actor: Actor, identity: str, name: str
+) -> None:
+
+    await QUERIES.register_principal(
+        connection, identity=identity, handle=owner_name(identity), name=name
+    )
+
+
+async def require(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int, *, role: str = "reader"
+) -> str:
+    row = await QUERIES.membership(connection, project_id=project_id, principal=actor.principal)
+    if row is None:
+        raise LookupError(f"no project #{project_id}")
+    actual = str(row["role"])
+    if role == "owner" and actual != "owner" or role == "editor" and actual == "reader":
+        raise PermissionError(f"project #{project_id} requires {role} access")
+    return actual
+
+
+async def members(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int
+) -> list[dict[str, str]]:
+    await require(connection, actor, project_id)
+    return [dict(row) async for row in QUERIES.members(connection, project_id=project_id)]
+
+
+async def share(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int, principal: str, role: str
+) -> None:
+    await require(connection, actor, project_id, role="owner")
+    if role not in {"reader", "editor"}:
+        raise ValueError("membership role must be reader or editor")
+
+    if await QUERIES.principal(connection, identity=principal) is None:
+        raise LookupError("unknown principal; use a registered authentication identity")
+    current = await QUERIES.membership(connection, project_id=project_id, principal=principal)
+    if current and current["role"] == "owner":
+        raise ValueError("the project owner cannot be changed")
+    await QUERIES.save_member(connection, project_id=project_id, principal=principal, role=role)
+
+
+async def attach_roots(
+    connection: aiosqlite.Connection, actor: Actor, projects: list[Project]
+) -> list[Project]:
+    if not projects:
+        return projects
+    rows = QUERIES.project_roots(
+        connection, ids=json.dumps([p.id for p in projects]), principal=actor.principal
+    )
+    by_id: dict[int, list[ProjectRoot]] = {project.id: [] for project in projects}
+    async for row in rows:
+        by_id[row["project_id"]].append(ProjectRoot(row["computer"], row["root"]))
+    for project in projects:
+        project.roots = by_id[project.id]
+        project.role = await require(connection, actor, project.id)
+    return projects
+
+
+async def roots(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int
+) -> list[ProjectRoot]:
+    project = await read_project(connection, actor, project_id)
+    return project.roots if project else []
+
+
+async def read_project(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int
+) -> Project | None:
+    row = await QUERIES.project(connection, project_id=project_id, principal=actor.principal)
+    return (await attach_roots(connection, actor, [to_project(row)]))[0] if row else None
+
+
+async def project_by_slug(
+    connection: aiosqlite.Connection, actor: Actor, slug: str
+) -> Project | None:
+    handle, local_slug = slug.split("/", 1) if "/" in slug else (None, slug)
+    rows = [
+        row
+        async for row in QUERIES.project_by_slug(
+            connection, handle=handle, slug=local_slug, principal=actor.principal
+        )
+    ]
+    if len(rows) > 1:
+        references = ", ".join(project_name(row["owner"], row["slug"]) for row in rows)
+        raise ValueError(f"ambiguous project {slug!r}; use its full name: {references}")
+    return (await attach_roots(connection, actor, [to_project(rows[0])]))[0] if rows else None
+
+
+async def project_by_root(
+    connection: aiosqlite.Connection, actor: Actor, root: Path | str, *, computer: str
+) -> Project | None:
+    row = await QUERIES.project_by_root(
+        connection, computer=computer, root=str(root), principal=actor.principal
+    )
+    return (await attach_roots(connection, actor, [to_project(row)]))[0] if row else None
+
+
+async def project_for_path(
+    connection: aiosqlite.Connection, actor: Actor, path: Path, *, computer: str
+) -> Project | None:
+    candidates = [str(path), *(str(parent) for parent in path.parents)]
+    rows = QUERIES.projects_for_paths(
+        connection,
+        computer=computer,
+        paths=json.dumps(candidates),
+        principal=actor.principal,
+    )
+    found = await attach_roots(connection, actor, [to_project(row) async for row in rows])
+    return (
+        max(
+            found,
+            key=lambda item: max(
+                len(root.root) for root in item.roots if root.computer == computer
+            ),
+        )
+        if found
+        else None
+    )
+
+
+async def read_projects(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    archived: bool = False,
+    computer: str | None = None,
+) -> list[Project]:
+    rows = QUERIES.projects(
+        connection, archived=archived, computer=computer, principal=actor.principal
+    )
+    return await attach_roots(connection, actor, [to_project(row) async for row in rows])
+
+
+async def computers(connection: aiosqlite.Connection, actor: Actor) -> list[str]:
+    return [
+        row["computer"] async for row in QUERIES.computers(connection, principal=actor.principal)
+    ]
+
+
+async def slugs(
+    connection: aiosqlite.Connection, actor: Actor, *, owned: bool = False
+) -> list[str]:
+    if owned:
+        return [
+            row["slug"] async for row in QUERIES.owned_slugs(connection, principal=actor.principal)
+        ]
+    return sorted(
+        project.full_name for project in await read_projects(connection, actor, archived=True)
+    )
+
+
+async def add_project(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    *,
+    slug: str,
+    name: str,
+    root: Path | str,
+    computer: str,
+    description: str = "",
+    preferred_language: str | None = None,
+) -> Project:
+
+    now = time.time()
+    inserted_id = await QUERIES.add_project(
+        connection,
+        slug=slug,
+        name=name,
+        description=description,
+        preferred_language=preferred_language,
+        created_at=now,
+        updated_at=now,
+        owner=actor.principal,
+        created_principal=actor.principal,
+        created_computer=actor.computer or hostname(),
+        updated_principal=actor.principal,
+        updated_computer=actor.computer or hostname(),
+    )
+    await QUERIES.save_member(
+        connection, project_id=inserted_id, principal=actor.principal, role="owner"
+    )
+    await QUERIES.add_root(
+        connection,
+        project_id=inserted_id,
+        principal=actor.principal,
+        computer=computer,
+        root=str(root),
+    )
+    created = await read_project(connection, actor, inserted_id or 0)
+    assert created is not None, "the project just written is not there"
+    return created
+
+
+async def add_root(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    project_id: int,
+    *,
+    computer: str,
+    root: Path | str,
+) -> Project:
+    """Bind a project to one location; non-empty paths belong to only one project."""
+    await require(connection, actor, project_id)
+
+    existing = await QUERIES.existing_root(
+        connection,
+        project_id=project_id,
+        principal=actor.principal,
+        computer=computer,
+        root=str(root),
+    )
+    if existing is not None:
+        project = await read_project(connection, actor, project_id)
+        assert project is not None
+        return project
+    try:
+        await QUERIES.add_root(
+            connection,
+            project_id=project_id,
+            principal=actor.principal,
+            computer=computer,
+            root=str(root),
+        )
+    except aiosqlite.IntegrityError as error:
+        raise ValueError(f"path {root!s} on {computer!r} is already registered") from error
+    project = await read_project(connection, actor, project_id)
+    assert project is not None, "the project just updated is gone"
+    return project
+
+
+async def project_contents(
+    connection: aiosqlite.Connection, actor: Actor, project_id: int
+) -> ProjectContents:
+    await require(connection, actor, project_id)
+    row = await QUERIES.project_contents(connection, project_id=project_id)
+    assert row is not None
+    return ProjectContents(row["tasks"], row["notes"], row["shared_notes"])
+
+
+async def delete_project(connection: aiosqlite.Connection, actor: Actor, project_id: int) -> bool:
+
+    if await read_project(connection, actor, project_id) is None:
+        return False
+    await require(connection, actor, project_id, role="owner")
+    await QUERIES.delete_project_tasks(connection, project_id=project_id)
+    await QUERIES.delete_project_notes(connection, project_id=project_id)
+    await QUERIES.delete_project_project_roots(connection, project_id=project_id)
+    removed = await QUERIES.delete_project(connection, project_id=project_id)
+    return bool(removed)
+
+
+async def update_project(
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    project_id: int,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    archived: bool | None = None,
+    slug: str | None = None,
+    preferred_language: str | None | Unset = Unset.VALUE,
+) -> Project | None:
+    changes: dict[str, Any] = {}
+    if name is not None:
+        changes["name"] = name
+    if description is not None:
+        changes["description"] = description
+    if archived is not None:
+        changes["archived"] = int(archived)
+    if slug is not None:
+        changes["slug"] = slug
+    if preferred_language is not Unset.VALUE:
+        changes["preferred_language"] = preferred_language
+    if changes:
+        await require(connection, actor, project_id, role="editor")
+        changes["updated_principal"] = actor.principal
+        changes["updated_computer"] = actor.computer or hostname()
+        changes["updated_at"] = time.time()
+
+        await QUERIES.update_project(connection, project_id=project_id, changes=json.dumps(changes))
+    return await read_project(connection, actor, project_id)

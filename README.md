@@ -303,7 +303,7 @@ project. Omit the field to keep its current value; send `null` to clear it.
 `backlog board` and `backlog projects`.
 
 ```bash
-backlog board            # project context, counts and top ten unclaimed tasks
+backlog board            # project context, counts and ready and claimed tasks
 backlog projects           # every registered project
 backlog task move 1 other-project
 ```
@@ -353,9 +353,14 @@ including when the header is invalid. Without a connection project, remote clien
 `project=<slug>` to project-scoped tools. Nothing is pinned or remembered between clients.
 `project_board(project=...)` always requires an explicit project and never creates one.
 It returns the project description, language, role and roots; task counts; accessible memory
-count; and up to ten open unclaimed tasks with id, title, status and priority.
-Tasks sort by priority, then creation time and id. Claimed and unclaimed counts cover open
-tasks (`todo`, `doing`, `blocked`); total includes closed and deleted tasks.
+count; and two sections, `ready` and `claimed`. Each section has a full `count` and
+up to ten `items`, each containing only `id` and `title`, sorted by priority, creation time and id.
+`ready` contains unassigned `todo/doing` tasks whose direct `depends_on` targets are closed
+(`done/cancelled/deleted`). Inaccessible dependencies also prevent readiness.
+`claimed` contains open tasks assigned to the current `username@computer:`, across all markers.
+The `tasks` counters cover the whole project: total, open, claimed, unclaimed, blocked,
+done, cancelled and deleted. Blocked counts each open task once if its status is blocked
+or a dependency prevents readiness. It can overlap claimed. The total includes deleted tasks.
 The memory count includes accessible shared memory. Read a task and use `task_claim`
 before starting it: the board is a snapshot, not a reservation.
 `backlog board [project]` shows the same summary; omitting the project uses the CLI checkout
@@ -685,8 +690,13 @@ port = 3009
 
 ## The library
 
-The MCP server uses `Backlog` to resolve project scope and access storage.
-Python applications can also use this object directly:
+`Backlog` holds project scope and the database lifetime. Tools receive the shared
+`aiosqlite.Connection` and `Transaction` through dependency injection. A transaction
+uses `async with transaction:` and commits on success or rolls back on failure.
+The same instance serializes writers on that connection. Transactions must not nest.
+SQL remains in `queries.sql`; there is no `Store` interface.
+
+Python applications can call tools with these dependencies explicitly:
 
 <!-- name: test_readme_library -->
 ```python
@@ -694,50 +704,45 @@ import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from backlog_mcp import Backlog, Priority, State, Status, Store
+from backlog_mcp import Backlog, Priority, State, Status, use
+from backlog_mcp import server
 
 
 async def main(directory: Path) -> None:
     backlog = Backlog(
-        Store(directory / "backlog.sqlite3"),
+        directory / "backlog.sqlite3",
         State(directory / "state.json"),
         cwd=directory,
     )
-    await backlog.store.open()
+    use(backlog)
+    connection = await backlog.open()
+    try:
+        project, origin = await backlog.current()
+        assert origin.value == "created"
+        assert project.roots[0].root == str(directory)
 
-    project, origin = await backlog.current()
-    assert origin.value == "created"  # the directory was not registered yet
-    assert project.roots[0].root == str(directory)
+        task = await server.task_add(
+            server.AddTask(
+                project=project.full_name,
+                title="Write the release notes",
+                priority=Priority.HIGH,
+                tags=["docs"],
+            ),
+            backlog,
+            connection,
+            backlog.transaction,
+        )
+        assert task.status is Status.TODO
 
-    task = await backlog.store.add_task(
-        project_id=project.id,
-        title="Write the release notes",
-        body="Mention the HTTP transport.",
-        priority=Priority.HIGH,
-        tags=["docs"],
-    )
-    assert task.status is Status.TODO
-
-    found = await backlog.store.search("release", project_id=project.id)
-    assert [item.id for item in found] == [task.id]
-
-    saved = await backlog.store.add_note(
-        project_id=project.id,
-        title="Release coordination",
-        body="Contact Anna first",
-        tags=["people"],
-    )
-    noted = await backlog.store.append_note(saved.id, "Give one day of notice")
-    assert noted is not None and noted.body.endswith("Give one day of notice")
-    assert [
-        item.id for item in await backlog.store.search_notes("notice", project_id=project.id)
-    ] == [saved.id]
-
-    closed = await backlog.store.update_task(task.id, status=Status.DONE)
-    assert closed is not None
-    assert closed.closed_at is not None  # closing stamps the time
-
-    await backlog.store.close()
+        closed = await server.task_update(
+            server.UpdateTask(id=task.id, status=Status.DONE),
+            backlog,
+            connection,
+            backlog.transaction,
+        )
+        assert closed.closed_at is not None
+    finally:
+        await backlog.close()
 
 
 with TemporaryDirectory() as name:
