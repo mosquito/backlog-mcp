@@ -474,3 +474,24 @@ SELECT filename, sha256 FROM migrations;
 
 -- name: record_migration(filename, sha256, applied_at)!
 INSERT INTO migrations(filename, sha256, applied_at) VALUES (:filename, :sha256, :applied_at);
+
+-- name: board_counts(project_id, principal)^
+SELECT COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE status IN ('todo', 'doing', 'blocked')) AS open,
+       COUNT(*) FILTER (WHERE status IN ('todo', 'doing', 'blocked') AND assigned IS NOT NULL) AS claimed,
+       COUNT(*) FILTER (WHERE status IN ('todo', 'doing', 'blocked') AND assigned IS NULL) AS unclaimed,
+       COUNT(*) FILTER (WHERE status = 'blocked') AS blocked
+FROM tasks
+WHERE project_id = :project_id
+AND EXISTS (SELECT 1 FROM project_members m
+            WHERE m.project_id = :project_id AND m.principal = :principal);
+
+-- name: board_unclaimed(project_id, principal)
+SELECT t.*, u.handle || '/' || p.slug AS project
+FROM tasks t JOIN projects p ON p.id = t.project_id
+JOIN principals u ON u.identity = p.owner
+WHERE t.project_id = :project_id AND t.assigned IS NULL
+AND t.status IN ('todo', 'doing', 'blocked')
+AND EXISTS (SELECT 1 FROM project_members m
+            WHERE m.project_id = t.project_id AND m.principal = :principal)
+ORDER BY t.priority, t.created_at, t.id LIMIT 10;

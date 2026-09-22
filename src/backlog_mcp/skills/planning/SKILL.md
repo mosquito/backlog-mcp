@@ -10,9 +10,10 @@ whose cause is not known yet.
 
 ## 1. Work on the right board
 
-Call `project_current` to see which project the tools work on. If the work belongs to another
-directory tree, pass `project` to each call, or register that directory with `project_save`.
-A project name is a slug, such as `backlog-mcp`, or any path inside the project.
+Use `whoami` and `project_list` to check the local project binding.
+Use `all_computers=true` to find an existing project before registering another checkout.
+Read `project_board(project=<full_name>)` for project context, counts and unclaimed tasks.
+Pass `project` explicitly to calls over an unscoped HTTP connection.
 
 ## 2. Search for relevant context and consult notes
 

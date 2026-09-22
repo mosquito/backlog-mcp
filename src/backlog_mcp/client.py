@@ -23,7 +23,7 @@ from yarl import URL
 
 from . import paths, skills
 from .backlog import checkout_root
-from .models import ProjectOut, Projects, Scope
+from .models import ProjectBoard, ProjectOut, Projects
 from .names import default_user
 from .state import State
 
@@ -82,6 +82,7 @@ class Connection:
         self.root = root
         self.relocate: Callable[[str, Path], Awaitable[None]] | None = None
         self.state: State | None = None
+        self.project: str | None = None
 
     async def call[M: BaseModel](
         self, model: type[M], tool: str, *, exclude_none: bool = True, **arguments: Any
@@ -115,8 +116,11 @@ class Connection:
             value = json.loads(text)
         return model.model_validate(value)
 
-    async def scope(self) -> Scope:
-        return await self.call(Scope, "project_current")
+    async def board(self, project: str | None = None) -> ProjectBoard:
+        reference = project or self.project
+        if reference is None:
+            raise ToolError("no project chosen: pass --project or register this checkout")
+        return await self.call(ProjectBoard, "project_board", project=reference)
 
     async def skills(self) -> list[RemoteSkill]:
         content = await self.read(skills.LIST_URI)
@@ -218,6 +222,7 @@ async def bind_directory(connection: Connection, register: Registrar) -> Project
                 name=chosen.name,
                 description=chosen.description,
             )
+    connection.project = project.full_name
     if isinstance(connection.client, Client):
         connection.client.base_url = str(
             URL(connection.client.base_url).update_query(project=project.full_name)
@@ -247,6 +252,7 @@ async def connect(
         connection.relocate = relocate
         endpoint = URL(options.url) if options.url else None
         explicit = options.project or (endpoint.query.get("project") if endpoint else None)
+        connection.project = explicit
         if scope_directory and not explicit:
             await bind_directory(connection, on_register)
         yield connection

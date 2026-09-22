@@ -10,11 +10,11 @@ ends, and whenever the board disagrees with the code.
 
 ## 1. See where you are
 
-Call `project_current` first. It reports which project the tools work on and why that one.
-Call `stats` next, for the counts by status and priority and the tags in use.
-
-A large `todo` count with an empty `doing` count means nobody is working. Several `doing`
-tasks at once mean the board tracks intentions, not work.
+Check the local project binding with `whoami` and `project_list`.
+Read `project_board(project=<full_name>)` for context, counts and the top ten unclaimed tasks.
+Use `stats` for detailed counts by status and priority and the tags in use.
+Several agents can work on different claimed tasks. Use `task_assigned` to inspect ownership;
+status alone does not identify who is working.
 
 ## 2. Search for what is already known and consult notes
 

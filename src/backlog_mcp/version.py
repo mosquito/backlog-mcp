@@ -1,8 +1,4 @@
-"""The code that answers: the package version and the git commit of its checkout.
-
-A server can run a stale or partial copy of the repository. The commit in `project_current`
-makes that visible from a client without a shell on the server.
-"""
+"""The code that answers: the package version and the git commit of its checkout."""
 
 from __future__ import annotations
 

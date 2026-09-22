@@ -57,6 +57,7 @@ from .models import (
 )
 from .names import default_user, principal_label
 from .render import (
+    board_panel,
     comment_panel,
     comments_table,
     console,
@@ -68,7 +69,6 @@ from .render import (
     note_panel,
     notes_table,
     projects_table,
-    scope_panel,
     skill_panel,
     skills_table,
     stats_view,
@@ -528,11 +528,19 @@ class Whoami(Command):
         return 0
 
 
-class Current(Command):
-    """Show the project the commands work on, and why that one."""
+class Board(Command):
+    """Show project context, counts and the next unclaimed tasks."""
+
+    project: str | None = argclass.Argument(
+        "project",
+        nargs="?",
+        default=None,
+        type=str,
+        help="Project reference; omit for this checkout",
+    )
 
     async def __call__(self) -> int:
-        console.print(scope_panel(await self.connection.scope()))
+        console.print(board_panel(await self.connection.board(self.project)))
         return 0
 
 
@@ -1148,9 +1156,9 @@ class Delete(Command):
 
     async def __call__(self) -> int:
         task = await self.task(self.id)
-        current = (await self.connection.scope()).project
+        current = (await self.connection.board()).project
         if (
-            (current is None or task.project != current.full_name)
+            task.project != current.full_name
             and not self.yes
             and not Confirm.ask(
                 f"delete task #{task.id} {task.title!r} from {task.project!r}?",
@@ -1421,9 +1429,7 @@ class Watch(Command):
 
         project = self.reference()
         if project:
-            selected = (await self.connection.scope()).project
-            if selected is None:
-                raise ToolError("no project selected")
+            selected = (await self.connection.board()).project
             project = selected.full_name
         methods: list[str | MethodFilter] = [
             MethodFilter(method=method, topics=[project]) if project else method
@@ -1797,15 +1803,7 @@ class CLI(argclass.Parser):
         config_parser_class=argclass.TOMLDefaultsParser,
     )
     whoami = Whoami(aliases=["wi"], help="Show the current principal and computer")
-    current = Current(
-        aliases=["cu"],
-        help="Show which project the commands work on",
-        description=(
-            "Print the current project and why it is current: named by --project, found from "
-            "the working directory, or registered for it just now. Also prints the database and "
-            "the state file in use."
-        ),
-    )
+    board = Board(aliases=["bo"], help="Show a project board and its unclaimed tasks")
     init = Init(
         aliases=["in"],
         help="Register this checkout or bind it to an existing project",
@@ -1909,10 +1907,11 @@ class CLI(argclass.Parser):
                 self.password = command.auth_password or self.password
             scoped = isinstance(
                 command,
-                (Current, List, Search, Add, Create, Delete, Stats, NoteList, NoteAdd, NoteDelete),
+                (Board, List, Search, Add, Create, Delete, Stats, NoteList, NoteAdd, NoteDelete),
             )
             if (
-                getattr(command, "all_projects", False)
+                (isinstance(command, Board) and command.project is not None)
+                or getattr(command, "all_projects", False)
                 or getattr(command, "all_computers", False)
                 or getattr(command, "at", None)
             ):

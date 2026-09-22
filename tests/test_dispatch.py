@@ -28,5 +28,5 @@ async def test_every_listed_tool_dispatches(client: BaseClient) -> None:
 async def test_an_unlisted_tool_is_unknown(client: BaseClient) -> None:
     """The check above would catch a lookup failure: an unlisted name fails as unknown."""
     with pytest.raises(ClientError, match="unknown tool") as caught:
-        await client.call_tool("backlog.project_current", {})
+        await client.call_tool("backlog.project_board", {})
     assert caught.value.code == UNKNOWN_TOOL

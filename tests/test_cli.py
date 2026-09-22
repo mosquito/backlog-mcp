@@ -14,7 +14,6 @@ from backlog_mcp import cli, render
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Priority, Status
 from backlog_mcp.store import Note, Task
-from backlog_mcp.version import VERSION
 
 
 class Runner:
@@ -174,12 +173,12 @@ def test_project_language_can_be_set_changed_and_cleared(run: Runner) -> None:
         code, output = run("projects", "update", "workspace", "--preferred-language", language)
         assert code == 0
         assert f"preferred language = {language}" in output
-        assert language in run("current")[1]
+        assert language in run("board")[1]
         assert language in run("projects")[1]
     code, output = run("projects", "update", "workspace", "--clear-preferred-language")
     assert code == 0
     assert "preferred language = none" in output
-    assert "English" not in run("current")[1]
+    assert "English" not in run("board")[1]
     assert "Keep this task" in run("task", "show", "1")[1]
 
 
@@ -263,10 +262,10 @@ def test_projects_and_scope(run: Runner, tmp_path: Path) -> None:
     #: No `use` command: only --project and the directory choose.
     with pytest.raises(SystemExit):
         run("use", "workspace")
-    code, output = run("current")
+    code, output = run("board")
     assert "workspace" in output
-    assert "directory" in output
-    assert VERSION in output
+    assert "unclaimed" in output
+    assert "memory" in output
     assert "workspace" in run("projects")[1]
 
 
@@ -275,13 +274,13 @@ def test_move_between_projects_and_count(run: Runner, tmp_path: Path) -> None:
     second.mkdir()
     run("task", "add", "Travelling task")
     #: Visiting the other directory registers it as a project of its own.
-    run("-r", str(second), "current")
+    run("-r", str(second), "board")
     code, output = run("task", "move", "1", "second")
     assert code == 0
     assert "#1 now belongs to stdio-user/second" in output
     assert run("task", "list")[1].count("Travelling task") == 0
     assert "Travelling task" in run("--project", "second", "task", "list")[1]
-    assert "2 open of 2" not in run("current")[1]
+    assert "2 open of 2" not in run("board")[1]
 
     code, output = run("stats", "--all-projects")
     assert "total" in output
@@ -440,7 +439,7 @@ def test_generate_config_writes_the_global_options_and_reads_back(
     assert not run.database.exists()
     assert "generate_config" not in loaded
 
-    code = cli.main(["--config", str(target), "current"])
+    code = cli.main(["--config", str(target), "board"])
     run.capsys.readouterr()
     assert code == 0
     assert run.database.exists()
@@ -609,7 +608,7 @@ def test_basic_accounts_accept_multiple_values_and_config(
 
 
 def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
-    code, output = run("--computer", "desk", "current")
+    code, output = run("--computer", "desk", "board")
     assert code == 0
     assert "desk" in output
     elsewhere = tmp_path / "laptop-work"
@@ -634,7 +633,7 @@ def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
     code, output = run("--computer", "desk", "task", "list", "--computer", "nowhere")
     assert code == 2
     assert "known computers" in output
-    code, output = run("--computer", "two words", "current")
+    code, output = run("--computer", "two words", "board")
     assert code != 0
 
 
@@ -1044,3 +1043,17 @@ def test_task_claim_and_assigned_commands(run: Runner) -> None:
         "--computer", "test-pc", "task", "claim", "1", "--expected", target, "--assigned", "null"
     )
     assert code == 0, output
+
+
+def test_board_explicit_project_does_not_register_checkout(run: Runner, tmp_path: Path) -> None:
+    assert run("task", "add", "Available work")[0] == 0
+    other = tmp_path / "unregistered"
+    other.mkdir()
+    code, output = run("--root", str(other), "board", "workspace")
+    assert code == 0
+    assert "Available work" in output
+    assert "unclaimed" in output
+    code, output = run("--root", str(other), "projects", "--all-computers")
+    assert code == 0
+    assert "unregistered" not in output
+    assert "workspace" in output

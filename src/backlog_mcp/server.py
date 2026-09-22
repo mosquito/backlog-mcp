@@ -23,6 +23,9 @@ from .models import (
     PRIORITIES,
     Action,
     Actor,
+    BoardCounts,
+    BoardProject,
+    BoardTask,
     CommentOut,
     Comments,
     Deleted,
@@ -38,12 +41,12 @@ from .models import (
     NullableAssignment,
     NullableString,
     Priority,
+    ProjectBoard,
     ProjectDeleted,
     ProjectOut,
     ProjectRootOut,
     Projects,
     Relation,
-    Scope,
     Stats,
     Status,
     TaskDetails,
@@ -53,7 +56,7 @@ from .models import (
 )
 from .names import owner_name, principal_label, principal_user
 from .store import NOTE_LIMIT, Comment, Note, Project, Task, Unset
-from .version import COMMIT, VERSION
+from .version import VERSION
 
 log = logging.getLogger(__name__)
 
@@ -66,14 +69,14 @@ note, which is one piece of lasting context from the user that persists across s
 
 Agent workflow:
 1. Check project registration first. At session start or when changing projects or directories,
-call `project_current` before searching context, managing tasks, or investigating code.
-Compare its computer and roots with the actual local workspace. For HTTP connections, the
-server cwd is not the local cwd. Use `project_list`, with `all_computers=true` when needed,
-to find an existing logical project. If the local binding is missing or wrong, call
-`project_save(project=<existing full_name>, root=<absolute local project root>)`.
+use `whoami` and `project_list` to compare the principal and project roots with the local
+workspace. Use `all_computers=true` to find an existing logical project on another computer.
+For HTTP connections, the server cwd is not the local cwd. If the local binding is missing
+or wrong, call `project_save(project=<existing full_name>, root=<absolute local project root>)`.
 Create a project only if no matching logical project exists. Leave correct bindings unchanged.
-Explicit `project=` does not replace this check. Registration does not select a project for
-an unscoped HTTP connection; pass `project=` explicitly when needed.
+Read `project_board(project=<full_name>)` for project context, counts and ten unclaimed tasks.
+Registration and reading a board do not select a project for an unscoped HTTP connection;
+pass `project=` explicitly when needed.
 
 2. Search context before decisions. After registration, use `search` before investigating,
 choosing an approach, creating tasks or memory, or asking about prior agreements.
@@ -108,30 +111,27 @@ authorized work that does not require missing context. Keep pending task and mem
 in the conversation and save them when access returns. Do not claim a write succeeded
 unless the tool confirmed it.
 
-Scope. Every tool works on one project, the current one, unless the call names another with \
-`project`. The current project is the one fixed for this connection (`--project` on stdio, \
-`?project=<slug>` in the URL), else the project whose root contains the working directory, else \
-a project registered for that directory on the spot. Nothing else chooses a project: there is \
-no pin and no remembered choice, so two clients never redirect each other. `project_current` \
-reports which project is current and which of those reasons chose it. A computer reached over \
-HTTP with nothing named has no current project: `project_current` then says `origin: none`, and \
-every tool that needs a project takes `project=<slug>`. `project_current` also reports `version` \
-and `commit`: the package version that answers and the git commit of its checkout, so a stale \
-deploy is visible from the client.
+Scope. `project_board(project=...)` requires an explicit existing project. It returns project
+context, task counts, accessible memory count and up to ten open unclaimed tasks by priority.
+It never creates a project or changes connection scope. Read a task before claiming it;
+another agent can claim it after the board was read.
+Other project-scoped tools use their explicit `project`, then the connection project
+(`--project` on stdio or `?project=<slug>` over HTTP). Local connections can fall back to
+the working directory and register it. An unscoped remote computer must pass `project=`.
+There is no mutable or remembered project selection shared between clients.
 
-Computers. One logical project can have several `(computer, root)` bindings. `project_current` \
-reports the computer this session works from and every computer with a binding; a project lists \
-its bindings as `user@computer:path` strings in `roots`. `here: true` means this computer has \
-a non-empty path. An \
-empty stored root is a contextual binding with no files and is omitted from output. \
-Do not read, edit, build or run a path belonging \
-to another computer. Tasks and notes belong to the logical project, not to one computer.
+Computers. One logical project can have several `(computer, root)` bindings.
+`whoami` reports the authenticated principal as `user@computer`. Project roots use
+`user@computer:path` strings. In `project_list`, `here: true` means this computer has
+a non-empty path. Empty contextual bindings are omitted from roots.
+Do not read, edit, build or run a path belonging to another computer.
+Tasks and memory belong to the logical project, not to one computer.
 
 Projects are private to their creator until shared with project_share. Owners manage access
 and deletion; editors change project content; readers can read it. project_members lists
 members. Lists, direct IDs, resources, search and notifications require project membership.
 Shared notes do not bypass membership. IDs are unique in the common database. Roots belong
-to a principal and computer. project_current reports the authenticated principal. Comments
+to a principal and computer. whoami reports the authenticated principal. Comments
 record `principal` as `user@computer`; records expose created_by and updated_by as the same strings.
 Use owner/slug names, such as alice/foo, to distinguish projects. Short slugs work only
 when unambiguous; #42 selects a stable numeric ID.
@@ -143,7 +143,7 @@ Unknown names are errors and create nothing. Use `project_save` to register a di
 
 Project language. A project's nullable `preferred_language` specifies the language for project \
 work. Follow it when writing task titles, descriptions, and progress updates. Read it from \
-`project_current` or `project_list` before writing tasks. Null means no language preference. \
+`project_board` or `project_list` before writing tasks. Null means no language preference. \
 Set or change it with `project_save`; omit the field to keep it, or send null to clear it.
 
 Tasks. A task has a title, a Markdown description in `body`, a status, a priority, and tags.
@@ -442,25 +442,6 @@ def note_list_item(note: Note) -> NoteListItem:
         created_at=note.created_at,
         updated_at=note.updated_at,
         snippet=compact_snippet(note.body),
-    )
-
-
-async def scope_of(backlog: Backlog) -> Scope:
-    """Where the tools work, and why there."""
-    project, origin = await backlog.scope()
-    return Scope(
-        project=project_out(project, computer=backlog.computer, principal=backlog.store.principal)
-        if project
-        else None,
-        origin=origin,
-        principal=backlog.store.principal,
-        computer=backlog.computer,
-        computers=await backlog.store.computers(),
-        cwd=str(backlog.cwd),
-        database=str(backlog.store.path),
-        state=str(backlog.state.path),
-        version=VERSION,
-        commit=COMMIT,
     )
 
 
@@ -948,12 +929,36 @@ async def whoami(args: Nothing, backlog: Backlog) -> Identity:
     )
 
 
-@registry.tool(title="Current project", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def project_current(args: Nothing, backlog: Backlog) -> Scope:
-    """Report the current project, how it was chosen, the computer, and the storage paths.
+class ReadBoard(BaseModel):
+    project: str = Field(
+        min_length=1,
+        description="Existing project: owner/slug, unique slug, #id or registered path.",
+    )
 
-    Diagnostics only: it changes nothing. Call at session start."""
-    return await scope_of(backlog)
+
+@registry.tool(title="Project board", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+async def project_board(args: ReadBoard, backlog: Backlog) -> ProjectBoard:
+    """Start here for an existing project's context, counts and ten unclaimed tasks.
+
+    Project is required; this read never creates a project or changes connection scope.
+    Claimed and unclaimed counts cover open tasks. The top ten are open, unassigned tasks
+    ordered by priority, then age and id. Read task_get before claiming one with task_claim.
+    Memory counts include accessible shared memory; search it for relevant agreements.
+    Follow project.preferred_language when writing tasks and progress updates.
+    """
+    project = await backlog.lookup(args.project)
+    shown = project_out(project, computer=backlog.computer, principal=backlog.store.principal)
+    counts, tasks = await backlog.store.board(project.id)
+    return ProjectBoard(
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+        project=BoardProject(**shown.model_dump()),
+        tasks=BoardCounts(**counts),
+        memory=await backlog.store.count_notes(project_id=project.id),
+        unclaimed=[
+            BoardTask(id=t.id, title=t.title, status=t.status, priority=t.priority) for t in tasks
+        ],
+    )
 
 
 @registry.tool(title="List projects", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)

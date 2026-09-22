@@ -10,7 +10,6 @@ from aiohttp_tiny_mcp.testing import connect
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 from backlog_mcp.server import ACTIVE, registry
-from backlog_mcp.version import VERSION
 
 
 def check_public_identity(value: Any) -> None:
@@ -56,7 +55,7 @@ async def test_catalogue(client: BaseClient) -> None:
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert set(tools) == {
         "whoami",
-        "project_current",
+        "project_board",
         "project_share",
         "project_members",
         "project_list",
@@ -84,10 +83,7 @@ async def test_catalogue(client: BaseClient) -> None:
     }
     assert "title" in tools["task_add"].input_schema["required"]
     assert "backlog" not in tools["task_add"].input_schema["properties"]
-    scope = await call(client, "project_current")
-    assert scope["version"] == VERSION
-    #: The test suite runs from the checkout, so the commit is known.
-    assert isinstance(scope["commit"], str) and len(scope["commit"]) == 7
+    assert tools["project_board"].input_schema["required"] == ["project"]
     assert {prompt.name for prompt in await client.list_prompts()} == {"standup", "groom"}
     assert {item.uri for item in await client.list_resources()} >= {
         "backlog://project",
@@ -97,31 +93,30 @@ async def test_catalogue(client: BaseClient) -> None:
     }
 
 
-async def test_scope_follows_the_directory(client: BaseClient, backlog: Backlog) -> None:
-    current = await call(client, "project_current")
-    assert current["origin"] == "created"
+async def test_board_does_not_change_directory_scope(client: BaseClient, backlog: Backlog) -> None:
+    local = await call(client, "project_save", root=".")
+    current = await call(client, "project_board", project=local["full_name"])
     assert current["project"]["roots"] == [f"local@here:{backlog.cwd}"]
-    assert current["database"] == str(backlog.store.path)
-    assert current["state"] == str(backlog.state.path)
-    assert (await call(client, "project_current"))["origin"] == "directory"
-
+    assert not {"database", "state", "origin", "version", "commit"} & current.keys()
     other = await call(client, "project_save", root="../other", name="Other Project")
-    #: Another registered project changes nothing: the directory still decides.
-    assert (await call(client, "project_current"))["project"]["id"] == current["project"]["id"]
-    task = await call(client, "task_add", title="Elsewhere", project=other["slug"])
-    assert task["project"] == other["full_name"]
+    board = await call(client, "project_board", project=other["full_name"])
+    assert board["project"]["id"] == other["id"]
     task = await call(client, "task_add", title="Here")
-    assert task["project"] == current["project"]["full_name"]
+    assert task["project"] == local["full_name"]
 
 
-async def test_the_fixed_project_beats_the_directory(client: BaseClient, backlog: Backlog) -> None:
-    current = await call(client, "project_current")
+async def test_board_requires_explicit_project_even_with_connection_scope(
+    client: BaseClient, backlog: Backlog
+) -> None:
+    local = await call(client, "project_save", root=".")
     other = await call(client, "project_save", root="../other")
     backlog.named = other["slug"]
-    fixed = await call(client, "project_current")
-    assert fixed["origin"] == "argument"
-    assert fixed["project"]["id"] == other["id"]
-    assert fixed["project"]["id"] != current["project"]["id"]
+    result = await client.call_tool("project_board", {})
+    assert isinstance(result, CallToolResult) and result.is_error
+    board = await call(client, "project_board", project=local["full_name"])
+    assert board["project"]["id"] == local["id"]
+    task = await call(client, "task_add", title="Fixed")
+    assert task["project"] == other["full_name"]
 
 
 async def test_project_update_archive_and_counts(client: BaseClient) -> None:
@@ -169,10 +164,14 @@ async def test_project_language_create_update_omit_and_clear(client: BaseClient)
     assert (
         next(item for item in listed["items"] if item["slug"] == slug)["preferred_language"] == "en"
     )
-    assert (await call(client, "project_current"))["project"]["preferred_language"] is None
+    assert (await call(client, "project_board", project=default["full_name"]))["project"][
+        "preferred_language"
+    ] is None
     saved = await call(client, "project_save", project=default["slug"], preferred_language="ru")
     assert saved["preferred_language"] == "ru"
-    assert (await call(client, "project_current"))["project"]["preferred_language"] == "ru"
+    assert (await call(client, "project_board", project=default["full_name"]))["project"][
+        "preferred_language"
+    ] == "ru"
     assert (await resource(client, "backlog://project"))["project"]["preferred_language"] == "ru"
 
     cleared = await call(client, "project_save", project=slug, preferred_language=None)
@@ -485,7 +484,10 @@ async def test_notes_save_replace_rename_and_append(client: BaseClient) -> None:
     saved = await call(client, "memory_save", title="dev vm", body="host: vm-3", tags=["Infra"])
     assert saved["tags"] == ["infra"]
     assert saved["shared"] is False
-    assert saved["project"] == (await call(client, "project_current"))["project"]["full_name"]
+    assert (
+        saved["project"]
+        == (await call(client, "project_board", project=saved["project"]))["project"]["full_name"]
+    )
 
     #: The same title in the same project is the same note; the body is replaced, not added to.
     replaced = await call(client, "memory_save", title="dev vm", body="host: vm-4")
@@ -625,7 +627,7 @@ async def test_project_delete_asks_the_user(
         asyncio.timeout(5),
         connect(registry, adapter=adapter, answers={"Delete project": answer}) as client,
     ):
-        await call(client, "project_current")
+        await call(client, "project_save", root=".")
         other = await call(client, "project_save", root="../other")
         task = await call(client, "task_add", title="Doomed", project=other["slug"])
         result = await call(client, "project_delete", project=other["slug"])
@@ -639,7 +641,7 @@ async def test_project_delete_asks_the_user(
 
 async def test_project_delete_refuses_a_client_that_cannot_ask(backlog: Backlog) -> None:
     async with connect(registry, adapter="2025-11-25") as client:
-        await call(client, "project_current")
+        await call(client, "project_save", root=".")
         other = await call(client, "project_save", root="../other")
         await call(client, "task_add", title="Doomed", project=other["slug"])
         result = await client.call_tool("project_delete", {"project": other["slug"]})
@@ -653,7 +655,7 @@ async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
         asyncio.timeout(5),
         connect(registry, adapter="2025-11-25", answers={"Delete project": {"ok": True}}) as client,
     ):
-        await call(client, "project_current")
+        await call(client, "project_save", root=".")
         other = await call(client, "project_save", root="../other")
         task = await call(client, "task_add", title="Doomed", project=other["slug"])
         shared = await call(
@@ -671,7 +673,7 @@ async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
         assert await backlog.store.note(private["id"]) is None
         assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
         #: The directory still decides.
-        assert (await call(client, "project_current"))["origin"] == "directory"
+        assert (await backlog.scope())[1].value == "directory"
         #: The directory is free again: registering it makes a new project.
         again = await call(client, "project_save", root="../other")
         assert again["id"] != other["id"]
@@ -739,8 +741,8 @@ async def test_note_delete_with_no_project_chosen_needs_a_question(backlog: Back
     token = ACTIVE.set(backlog.view(computer="laptop"))
     try:
         async with connect(registry, adapter="2024-11-05") as client:
-            scope = await call(client, "project_current")
-            assert (scope["project"], scope["origin"]) == (None, "none")
+            result = await client.call_tool("project_board", {})
+            assert isinstance(result, CallToolResult) and result.is_error
             app = await call(client, "project_save", root="/srv/app", name="App")
             saved = await call(client, "memory_save", title="Nowhere", project=app["slug"])
             refused = await client.call_tool("memory_delete", {"id": saved["id"]})
@@ -814,7 +816,7 @@ async def test_output_formats_principals_roots_and_seconds(
     stored = await backlog.store.task(task["id"])
     assert stored and stored.created_at == 1700000000.4 and stored.updated_at == 1700000001.6
     assert await resource(client, f"backlog://tasks/{task['id']}") == shown
-    project = (await call(client, "project_current"))["project"]
+    project = (await call(client, "project_list"))["items"][0]
     assert project["roots"] == [f"local@here:{backlog.cwd}"]
     assert project["owner"] == "local@unknown"
     assert type(project["created_at"]) is int and type(project["updated_at"]) is int
@@ -832,7 +834,7 @@ async def test_initialize_includes_agent_workflow(client: BaseClient) -> None:
 
     result = await client.initialize()
     assert result["instructions"] == INSTRUCTIONS
-    for tool in ("project_current", "search", "task_comment_add", "memory_save"):
+    for tool in ("project_board", "search", "task_comment_add", "memory_save"):
         assert tool in result["instructions"]
 
 

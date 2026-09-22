@@ -232,7 +232,7 @@ async def test_move_accepts_local_relative_destination(
 ) -> None:
     await remote("task", "add", "Move me")
     other = remote.root.parent / "other"
-    assert (await remote("--root", str(other), "current"))[0] == 0
+    assert (await remote("--root", str(other), "board"))[0] == 0
     assert (await remote("task", "move", "1", "../other"))[0] == 0
     task = await backlog.store.task(1)
     assert task is not None and task.project == "tester/other"
@@ -320,7 +320,7 @@ def test_stdio_startup_failure_reaps_child(
                 str(tmp_path / "state.json"),
                 "--timeout",
                 "0.1",
-                "current",
+                "board",
             ]
         )
         != 0

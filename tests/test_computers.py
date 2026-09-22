@@ -137,15 +137,14 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
 
 
 async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backlog) -> None:
-    current = await call(client, "project_current")
+    saved = await call(client, "project_save", root=".")
+    current = await call(client, "project_board", project=saved["full_name"])
     assert current["principal"] == "local@here"
-    assert current["principals"] == ["local@here"]
-    assert current["project"]["here"] is True
-    mine = current["project"]["slug"]
+    assert current["project"]["roots"] == [f"local@here:{backlog.cwd}"]
+    mine = saved["slug"]
 
     app = await backlog.view(computer="laptop").save(root="/srv/app", name="App")
     await backlog.store.add_task(project_id=app.id, title="Deploy on the laptop")
-    assert (await call(client, "project_current"))["principals"] == ["local@here", "local@laptop"]
 
     listed = await call(client, "project_list")
     assert [item["slug"] for item in listed["items"]] == [mine]

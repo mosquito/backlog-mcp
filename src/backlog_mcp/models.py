@@ -421,30 +421,38 @@ class FullNotes(Actor):
     computer: str | None = Field(default=None, description=COVERED)
 
 
-class Scope(Actor):
-    principal: str = "local"
-    """The project the tools work on when no project is named, and the computer this is."""
+class BoardProject(BaseModel):
+    id: int
+    full_name: str
+    name: str
+    description: str
+    preferred_language: str | None
+    role: str
+    archived: bool
+    roots: list[ProjectRootOut]
 
-    project: ProjectOut | None = Field(
-        description="The current project; null when this computer has none chosen."
-    )
-    origin: Origin = Field(
-        description="How the project was chosen; `none` when there is no project."
-    )
-    computer: str = Field(description="Computer this session works from.")
-    computers: list[str] = Field(
-        default_factory=list, description="Every computer with a registered project."
-    )
-    cwd: str
-    database: str
-    state: str
-    version: str = Field(description="Version of the backlog-mcp package that answers.")
-    commit: str | None = Field(
-        default=None,
-        description=(
-            "Short git commit of the checkout the package runs from; null for an installed "
-            "package without one."
-        ),
+
+class BoardCounts(BaseModel):
+    total: int = Field(description="All project tasks, including closed and deleted tasks.")
+    open: int
+    claimed: int = Field(description="Open tasks with an assignment.")
+    unclaimed: int = Field(description="Open tasks without an assignment.")
+    blocked: int
+
+
+class BoardTask(BaseModel):
+    id: int
+    title: str
+    status: Status
+    priority: Priority
+
+
+class ProjectBoard(Actor):
+    project: BoardProject
+    tasks: BoardCounts
+    memory: int = Field(description="Project memory plus accessible shared memory.")
+    unclaimed: list[BoardTask] = Field(
+        description="Up to ten open unassigned tasks, ordered by priority."
     )
 
 
@@ -504,7 +512,7 @@ __all__ = [
     "ProjectOut",
     "ProjectRootOut",
     "Projects",
-    "Scope",
+    "ProjectBoard",
     "Stats",
     "Status",
     "TaskOut",

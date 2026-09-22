@@ -92,31 +92,28 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
         fixed = str(endpoint.with_query(computer="laptop", project="app"))
         async with Client(fixed, pick(None)) as client:
             await client.initialize()
-            scope = payload(await client.call_tool("project_current", {}))
+            scope = payload(await client.call_tool("project_board", {"project": "app"}))
             assert scope["principal"] == "local@laptop"
-            assert scope["origin"] == "argument"
-            assert scope["project"]["slug"] == "app"
-            assert scope["project"]["here"] is True
+            assert scope["project"]["full_name"] == "local/app"
+            assert scope["project"]["roots"] == ["local@laptop:/srv/app"]
             task = payload(await client.call_tool("task_add", {"title": "From the laptop"}))
             assert task["project"] == "local/app"
         async with Client(str(endpoint.with_query(computer="laptop")), pick(None)) as client:
             await client.initialize()
-            #: No project chosen is a state, not an error.
-            scope = payload(await client.call_tool("project_current", {}))
-            assert (scope["project"], scope["origin"], scope["principal"]) == (
-                None,
-                "none",
-                "local@laptop",
-            )
+            result = await client.call_tool("project_board", {})
+            assert isinstance(result, CallToolResult) and result.is_error
+            scope = payload(await client.call_tool("project_board", {"project": "app"}))
+            assert scope["principal"] == "local@laptop"
+            assert scope["project"]["full_name"] == "local/app"
             result = await client.call_tool("task_add", {"title": "Nowhere"})
             assert isinstance(result, CallToolResult) and result.is_error
             assert isinstance(result.content[0], TextContent)
             assert "project=<slug>" in result.content[0].text
         async with Client(str(endpoint), pick(None)) as client:
             await client.initialize()
-            scope = payload(await client.call_tool("project_current", {}))
+            scope = payload(await client.call_tool("project_board", {"project": "app"}))
             assert scope["principal"] == "local@here"
-            assert scope["project"]["here"] is True
+            assert scope["project"]["roots"] == ["local@laptop:/srv/app"]
             listed = payload(await client.call_tool("project_list", {"all_computers": True}))
             assert {item["slug"]: item["here"] for item in listed["items"]}["app"] is False
         async with (

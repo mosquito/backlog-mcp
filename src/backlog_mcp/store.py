@@ -603,6 +603,16 @@ class Store:
 
     # -- tasks -----------------------------------------------------------------------------
 
+    async def board(self, project_id: int) -> tuple[dict[str, int], list[Task]]:
+        await self.require(project_id)
+        connection = await self.open()
+        counts = await QUERIES.board_counts(
+            connection, project_id=project_id, principal=self.principal
+        )
+        assert counts is not None
+        rows = QUERIES.board_unclaimed(connection, project_id=project_id, principal=self.principal)
+        return dict(counts), [to_task(row) async for row in rows]
+
     async def assigned_tasks(self, prefix: str, *, limit: int = 50, offset: int = 0) -> list[Task]:
         rows = QUERIES.assigned_tasks(
             await self.open(),

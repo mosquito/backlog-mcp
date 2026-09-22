@@ -91,7 +91,7 @@ Command aliases are shown in `--help`.
 | `memory` | `add`, `append`, `list`, `show`, `edit`, `delete` | `mm` |
 | `projects` | list by default; `update`, `delete` | `pr` |
 
-`whoami`, `search`, `stats`, `current`, `init`, `watch`, `skills`, `install`, and `mcp` remain top-level commands.
+`whoami`, `search`, `stats`, `board`, `init`, `watch`, `skills`, `install`, and `mcp` remain top-level commands.
 For example, `backlog ta sh 1` shows a task and
 `backlog mm na Convention -b "Use English"` saves a memory entry.
 
@@ -299,11 +299,11 @@ backlog projects update my-project --clear-preferred-language
 
 The MCP tool `project_save` accepts `preferred_language` when creating or updating a
 project. Omit the field to keep its current value; send `null` to clear it.
-`project_current` and `project_list` return the preference. The CLI shows it in
-`backlog current` and `backlog projects`.
+`project_board` and `project_list` return the preference. The CLI shows it in
+`backlog board` and `backlog projects`.
 
 ```bash
-backlog current            # which project, and why that one
+backlog board            # project context, counts and top ten unclaimed tasks
 backlog projects           # every registered project
 backlog task move 1 other-project
 ```
@@ -324,7 +324,7 @@ The computer name comes from `computer = "..."` in the config file or
 renamed host keeps its projects.
 
 ```bash
-backlog current                    # names this computer and lists the others
+backlog board                    # project context and registered roots
 backlog projects                   # the projects of this computer
 backlog projects --all-computers   # every project, with a column for the other computers
 backlog task list --computer laptop     # open tasks of every project on the laptop
@@ -349,12 +349,17 @@ https://backlog.example.com/mcp?computer=laptop&project=app
 the server cannot see the client's working directory. A client that cannot send an
 `Authorization` header passes the credentials in the URL instead, as `auth=<base64 of
 user:password>` for Basic or `token=<JWT>` for JWT. The header wins when both are present,
-including when the header is invalid. Without `project`, `project_current`
-reports `origin: none` and every tool that needs a project takes `project=<slug>`: nothing is
-pinned or remembered, so one client never redirects another. `project_current` also reports
-`version` and `commit`, the package version that answers and the git commit of its checkout
-(null for an installed package), so a stale deploy shows from the client. `backlog current`
-prints the same. `project_save` with an explicit `root`
+including when the header is invalid. Without a connection project, remote clients pass
+`project=<slug>` to project-scoped tools. Nothing is pinned or remembered between clients.
+`project_board(project=...)` always requires an explicit project and never creates one.
+It returns the project description, language, role and roots; task counts; accessible memory
+count; and up to ten open unclaimed tasks with id, title, status and priority.
+Tasks sort by priority, then creation time and id. Claimed and unclaimed counts cover open
+tasks (`todo`, `doing`, `blocked`); total includes closed and deleted tasks.
+The memory count includes accessible shared memory. Read a task and use `task_claim`
+before starting it: the board is a snapshot, not a reservation.
+`backlog board [project]` shows the same summary; omitting the project uses the CLI checkout
+or `--project` selection. `project_save` with an explicit `root`
 checks that the directory exists on this computer; for another computer it takes the path as
 given. A user may name any computer within their own data. Computer selection never
 switches the authenticated user or exposes another user's projects.
@@ -464,7 +469,7 @@ Use `project_share(project="example", principal="bob", role="reader")` to give a
 Basic user read access. Use `role="editor"` for task, comment, note and project edits.
 Only the owner can share or delete a project. `project_members(project="example")`
 lists its members. JWT principals register on first authenticated use; pass their exact
-identity from `project_current` when sharing. Basic users register at server startup.
+identity from `whoami` when sharing. Basic users register at server startup.
 
 Project roots belong to a principal and computer. Use `project_list(all_computers=true)`
 to discover shared projects, then register your own root with `project_save`.
@@ -548,7 +553,7 @@ in browser local storage. Its static files load without credentials; MCP request
 require valid credentials, including after a session has been established.
 
 The agent gets tools for identity (`whoami`), project access (`project_share`, `project_members`),
-projects (`project_current`, `project_list`, `project_save`, `project_delete`), and content:
+projects (`project_board`, `project_list`, `project_save`, `project_delete`), and content:
 `task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,
 `task_move`, `task_delete`, `task_link`, `task_unlink`, `memory_save`,
 `memory_append`, `memory_get`, `memory_list`, `memory_delete`, `search`, `stats`. They use the same

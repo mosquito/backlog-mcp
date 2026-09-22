@@ -22,8 +22,8 @@ from .models import (
     Event,
     NoteOut,
     Priority,
+    ProjectBoard,
     ProjectOut,
-    Scope,
     Stats,
     Status,
     TaskDetails,
@@ -386,60 +386,32 @@ def stats_view(stats: Stats) -> Table:
     return table
 
 
-def running(scope: Scope) -> str:
-    """The package version, with the commit when the server runs from a checkout."""
-    return f"{scope.version} ({scope.commit})" if scope.commit else scope.version
-
-
-def scope_panel(scope: Scope) -> Panel:
-    """Where the commands work, and why there."""
-    project = scope.project
-    rows: list[tuple[str, RenderableType]] = []
-    if project is None:
-        rows.append(("project", Text("none chosen", style="dim italic")))
-    else:
-        rows.extend(
-            [
-                ("project", Text(project.full_name, style="bold magenta")),
-                ("chosen by", Text(scope.origin.value, style="dim")),
-                (
-                    "roots",
-                    Text(", ".join(root.root_text() for root in project.roots)),
-                ),
-                ("tasks", Text(f"{project.open_tasks} open of {project.total_tasks}")),
-                (
-                    "preferred language",
-                    Text(
-                        project.preferred_language
-                        if project.preferred_language is not None
-                        else "none"
-                    ),
-                ),
-            ]
-        )
-    rows.append(
-        ("principal", Text(principal_label(scope.principal, scope.computer), style="yellow"))
-    )
-    others = [
-        principal_label(scope.principal, name) for name in scope.computers if name != scope.computer
+def board_panel(board: ProjectBoard) -> Panel:
+    project = board.project
+    rows: list[tuple[str, RenderableType]] = [
+        ("project", Text(project.full_name, style="bold magenta")),
+        ("principal", Text(principal_label(board.principal, board.computer))),
+        ("role", Text(project.role)),
+        ("roots", Text(", ".join(root.root_text() for root in project.roots))),
+        ("preferred language", Text(project.preferred_language or "none")),
+        ("tasks", Text(f"{board.tasks.open} open of {board.tasks.total}")),
+        ("claimed", Text(str(board.tasks.claimed))),
+        ("unclaimed", Text(str(board.tasks.unclaimed))),
+        ("blocked", Text(str(board.tasks.blocked))),
+        ("memory", Text(str(board.memory))),
     ]
-    if others:
-        rows.append(("also known", Text(", ".join(others), style="dim")))
-    rows.extend(
-        [
-            ("database", Text(scope.database, style="dim")),
-            ("state", Text(scope.state, style="dim")),
-            ("version", Text(running(scope), style="dim")),
-        ]
-    )
-    return Panel(
-        fields(rows),
-        box=ROUNDED,
-        title="current project",
-        title_align="left",
-        padding=(1, 2),
-        width=width(),
-    )
+    if project.archived:
+        rows.append(("archived", Text("yes")))
+    tasks = Table("id", "priority", "status", "title", title="unclaimed · top 10")
+    for task in board.unclaimed:
+        tasks.add_row(
+            str(task.id), priority_text(task.priority), status_text(task.status), Text(task.title)
+        )
+    parts: list[RenderableType] = [fields(rows)]
+    if project.description:
+        parts.append(Markdown(project.description))
+    parts.append(tasks)
+    return Panel(Group(*parts), title=Text(project.name), width=width(), padding=(1, 2))
 
 
 ACTION_STYLES = {
@@ -497,7 +469,7 @@ __all__ = [
     "note_panel",
     "notes_table",
     "projects_table",
-    "scope_panel",
+    "board_panel",
     "skill_panel",
     "skills_table",
     "stats_view",

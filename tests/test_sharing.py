@@ -109,7 +109,7 @@ async def test_sharing_tools_and_member_notifications(backlog: Backlog) -> None:
             alice, "project_share", project=project["slug"], principal="bob", role="reader"
         )
         assert {m["role"] for m in members["items"]} == {"owner", "reader"}
-        assert (await call(bob, "project_current"))["principal"] == f"bob@{backlog.computer}"
+        assert (await call(bob, "whoami"))["principal"] == f"bob@{backlog.computer}"
         assert (await call(bob, "project_list", all_computers=True))["items"][0]["role"] == "reader"
         denied = await bob.call_tool("task_add", {"project": project["slug"], "title": "No"})
         assert denied.is_error
