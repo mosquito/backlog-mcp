@@ -51,7 +51,7 @@ async def test_order_triggers_quoted_semicolons_and_apply_once(tmp_path: Path) -
 async def test_failed_migration_rolls_back_sql_and_record(tmp_path: Path) -> None:
     (tmp_path / "0001-initial.sql").write_bytes((MIGRATIONS / "0001-initial.sql").read_bytes())
     async with aiosqlite.connect(":memory:") as connection:
-        await migrate(connection)
+        await migrate(connection, tmp_path)
         before = await connection.execute_fetchall("SELECT * FROM migrations")
         migration = tmp_path / "0002-failure.sql"
         migration.write_text("CREATE TABLE sample(id INTEGER); INSERT INTO missing VALUES (1);")
@@ -116,7 +116,7 @@ async def test_memory_database_uses_same_connection() -> None:
     store = Store(Path(":memory:"))
     try:
         await store.open()
-        assert len(await store.rows("SELECT * FROM migrations")) == 1
+        assert len(await store.rows("SELECT * FROM migrations")) == 2
         assert await store.rows("SELECT * FROM task_links") == []
     finally:
         await store.close()
@@ -127,7 +127,7 @@ async def test_concurrent_startups(tmp_path: Path) -> None:
     try:
         await asyncio.gather(*(store.open() for store in stores))
         for store in stores:
-            assert len(await store.rows("SELECT * FROM migrations")) == 1
+            assert len(await store.rows("SELECT * FROM migrations")) == 2
     finally:
         await asyncio.gather(*(store.close() for store in stores))
 
@@ -149,14 +149,17 @@ async def test_candidates_are_collected_on_a_worker_thread(
     async with aiosqlite.connect(":memory:") as connection:
         await migrate(connection)
     assert len(seen) == 1 and isinstance(seen[0], dict)
-    assert list(seen[0]) == [MIGRATIONS / "0001-initial.sql"]
+    assert set(seen[0]) == {
+        MIGRATIONS / "0001-initial.sql",
+        MIGRATIONS / "0002-task-assignment.sql",
+    }
 
 
 async def test_migration_logs_include_commit_and_no_work(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="backlog_mcp.migrate")
     async with aiosqlite.connect(":memory:") as connection:
         await migrate(connection)
-        assert "1 migrations needed" in caplog.messages
+        assert "2 migrations needed" in caplog.messages
         assert "Applying migration 0001-initial.sql" in caplog.messages
         assert any(
             message.startswith("Applied migration 0001-initial.sql (sha256=")
@@ -179,7 +182,9 @@ async def test_failed_batch_never_logs_applied_migrations(
         assert "2 migrations needed" in caplog.messages
         assert "Applying migration 0001-initial.sql" in caplog.messages
         assert "Applying migration 0002-failure.sql" in caplog.messages
-        assert any("0002-failure.sql; rolling back" in message for message in caplog.messages)
+        assert any(
+            "0002-failure.sql; transaction rolled back" in message for message in caplog.messages
+        )
         assert "Migration transaction rolled back" in caplog.messages
         assert not any(message.startswith("Applied migration") for message in caplog.messages)
         assert (

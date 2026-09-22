@@ -1019,3 +1019,28 @@ def test_root_output_parses_paths_with_colons() -> None:
     assert ProjectRootOut.model_validate(root.model_dump(mode="json")) == root
     empty = ProjectRootOut.model_validate("alice@laptop:")
     assert empty.root == ""
+
+
+def test_task_claim_and_assigned_commands(run: Runner) -> None:
+    prefix = "stdio-user@test-pc:"
+    target = prefix + "agent_one"
+    assert run("--computer", "test-pc", "task", "add", "Claim this")[0] == 0
+    code, output = run(
+        "--computer", "test-pc", "task", "claim", "1", "--expected", "null", "--assigned", target
+    )
+    assert code == 0, output
+    assert target in output
+    code, output = run("--computer", "test-pc", "task", "assigned")
+    assert code == 0 and target in output
+    code, output = run("--computer", "test-pc", "task", "assigned", "--prefix", prefix)
+    assert code == 0 and target in output
+    code, output = run("--computer", "test-pc", "whoami")
+    assert code == 0 and "assigned_tasks" in output and "1" in output
+    code, output = run(
+        "--computer", "test-pc", "task", "claim", "1", "--expected", "null", "--assigned", target
+    )
+    assert code != 0 and "conflict" in output
+    code, output = run(
+        "--computer", "test-pc", "task", "claim", "1", "--expected", target, "--assigned", "null"
+    )
+    assert code == 0, output

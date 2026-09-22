@@ -150,6 +150,39 @@ Link changes require editor access to both tasks, including across projects. Rea
 links to inaccessible tasks. Closing, moving, or soft-deleting a task preserves its links.
 Links do not change task statuses. Physical project deletion removes links to its tasks.
 
+Task assignment coordinates agents that share a principal or work on different computers.
+Use `task_claim(task, expected, assigned)` before starting work. Both `expected` and `assigned`
+are required nullable arguments. The server compares the current assignment with `expected`
+and replaces it atomically. A mismatch returns an error with the current value, even if it
+already equals `assigned`. Only one concurrent claim with `expected=null` succeeds.
+
+An assignment has the form `username@computer:marker`. Copy the principal from `whoami` and
+append a marker with 1–64 ASCII letters, digits, underscores or hyphens. Use a distinct marker
+for each agent run and keep it across reconnects. Both strings are validated. A non-null
+`assigned` must belong to the requesting principal, including its computer. Editor access is
+required. An editor can take over another assignment by supplying its exact current value.
+
+```bash
+backlog task claim 42 --expected null --assigned 'alice@laptop:agent-k7Q2m'
+backlog task claim 42 --expected 'alice@laptop:agent-k7Q2m' --assigned null
+```
+
+`task_get`, task lists, search results and task resources expose `assigned`. Assignment changes
+create a history comment and notify subscribers. Status changes are independent: closing a
+task preserves its assignment. Release it explicitly with `assigned=null`. There is no timeout
+or MCP session dependency. This coordinates cooperating agents; it does not lock their files.
+
+Comment responses include `task_assigned`, the task's current assignment. This applies to
+adding comments, reading history and searching comments, so agents can detect reassignment
+in the response to a progress update.
+
+Use `task_assigned(prefix=null)` to list your assignments across accessible projects, including
+closed tasks. Omit `prefix` for the same result. Pass `username@computer:` to select another
+principal, or append a marker prefix to narrow the list. Prefixes are literal and case-sensitive;
+`%` and `_` are not wildcards. An empty prefix selects all accessible assignments. `limit` and
+`offset` paginate the results; `count` is the total. `whoami.assigned_tasks` counts your assignments
+with the same access rules. In the CLI, use `backlog task assigned [--prefix PREFIX]`.
+
 Search accepts `kinds=["tasks", "comments", "memory", "projects"]` by default. Select any subset to
 search task descriptions, comment text, memory, or project names and descriptions. Each kind has its own result list;
 comment results include their id, task_id, project, snippet, and match score.

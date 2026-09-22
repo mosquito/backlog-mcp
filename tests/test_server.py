@@ -68,6 +68,8 @@ async def test_catalogue(client: BaseClient) -> None:
         "task_list",
         "task_get",
         "task_link",
+        "task_claim",
+        "task_assigned",
         "task_unlink",
         "task_update",
         "task_move",
@@ -790,6 +792,7 @@ async def test_whoami_does_not_create_a_project(client: BaseClient, backlog: Bac
         "principal": f"{LOCAL_PRINCIPAL}@here",
         "handle": "local",
         "auth_type": "none",
+        "assigned_tasks": 0,
     }
     assert await backlog.store.projects() == []
 

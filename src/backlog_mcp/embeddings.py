@@ -344,9 +344,8 @@ async def indexes(backlog: Backlog) -> tuple[VectorIndex, VectorIndex, VectorInd
     state = states.setdefault(backlog.store, IndexState())
     async with state.lock:
         connection = await backlog.store.open()
-        version = await backlog.store.row("PRAGMA data_version")
-        assert version is not None
-        revision = (connection, int(version[0]), connection.total_changes)
+        version = await backlog.store.data_version()
+        revision = (connection, version, connection.total_changes)
         if state.indexes is None or state.revision != revision:
             tasks, notes, comments, projects = await snapshot(backlog)
             state.indexes = await asyncio.to_thread(

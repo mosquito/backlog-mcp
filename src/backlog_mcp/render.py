@@ -121,6 +121,9 @@ def tasks_table(
     table.add_column("status")
     table.add_column("pri")
     table.add_column("title", overflow="fold")
+    assigned = any(item.assigned is not None for item in items)
+    if assigned:
+        table.add_column("assigned", overflow="fold")
     if matched:
         table.add_column("match", overflow="fold", style="dim italic")
     table.add_column("tags", style="blue")
@@ -135,6 +138,8 @@ def tasks_table(
             priority_text(item.priority),
             Text(item.title),
         ]
+        if assigned:
+            cells.append(Text(item.assigned or "—"))
         if matched:
             cells.append(Text(excerpt(item.snippet)))
         cells.extend([", ".join(item.tags), age(item.updated_at)])
@@ -234,6 +239,7 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
     """One task in full: the id and title name the panel, the Markdown body follows the fields."""
     rows: list[tuple[str, RenderableType]] = [
         ("status", status_text(task.status)),
+        ("assigned", Text(task.assigned or "—")),
         ("priority", priority_text(task.priority)),
     ]
     if task.tags:
@@ -277,6 +283,7 @@ def comment_panel(comment: CommentOut) -> Panel:
         box=ROUNDED,
         subtitle=Text(
             f"{principal_label(comment.principal, comment.computer)} · task #{comment.task_id}"
+            f" · assigned: {comment.task_assigned or '—'}"
         ),
         width=width(),
     )
@@ -284,11 +291,18 @@ def comment_panel(comment: CommentOut) -> Panel:
 
 def comments_table(items: Sequence[CommentOut], *, title: str) -> Table:
     table = titled(title)
-    for label in ("comment", "task", "project", "kind", "match"):
+    for label in ("comment", "task", "project", "task_assigned", "kind", "match"):
         table.add_column(label, overflow="fold")
     for item in items:
         snippet = getattr(item, "snippet", None) or item.body[:200]
-        table.add_row(str(item.id), str(item.task_id), Text(item.project), item.kind, Text(snippet))
+        table.add_row(
+            str(item.id),
+            str(item.task_id),
+            Text(item.project),
+            Text(item.task_assigned or "—"),
+            item.kind,
+            Text(snippet),
+        )
     return table
 
 

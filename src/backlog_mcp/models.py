@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum, unique
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     Field,
     PlainSerializer,
     SerializationInfo,
     SerializerFunctionWrapHandler,
+    WithJsonSchema,
     field_serializer,
     field_validator,
     model_serializer,
@@ -21,6 +24,30 @@ from pydantic import (
 from .names import principal_label
 
 Seconds = Annotated[float, PlainSerializer(round, return_type=int, when_used="json")]
+
+ASSIGNMENT_PATTERN = (
+    r"^(?:[A-Za-z0-9_.~-]|%[0-9A-Fa-f]{2})+"
+    r"@(?:[A-Za-z0-9_.~-]|%[0-9A-Fa-f]{2})+:[A-Za-z0-9_-]{1,64}$"
+)
+
+
+def check_assignment(value: str) -> str:
+    """Validate a principal label followed by an agent's URL-safe marker."""
+    if re.fullmatch(ASSIGNMENT_PATTERN, value) is None:
+        raise ValueError(
+            "assignment must be username@computer:marker; "
+            "marker must contain 1–64 letters, digits, underscores or hyphens"
+        )
+    return value
+
+
+Assignment = Annotated[str, Field(pattern=ASSIGNMENT_PATTERN), AfterValidator(check_assignment)]
+# Keep explicit null values in the published schema on every supported MCP adapter.
+NullableAssignment = Annotated[
+    Assignment | None,
+    WithJsonSchema({"type": ["string", "null"], "pattern": ASSIGNMENT_PATTERN}),
+]
+NullableString = Annotated[str | None, WithJsonSchema({"type": ["string", "null"]})]
 
 
 class Status(StrEnum):
@@ -158,6 +185,10 @@ class Actor(BaseModel):
 
 
 class Identity(Actor):
+    assigned_tasks: int = Field(
+        default=0,
+        description="Accessible tasks assigned to this user@computer, across all statuses.",
+    )
     auth_type: Literal["basic", "jwt", "none"] = Field(
         description="Authentication used by this connection."
     )
@@ -234,6 +265,10 @@ class ProjectOut(Attributed):
 class CommentOut(Actor):
     id: int = Field(description="Stable comment id.")
     task_id: int
+    task_assigned: NullableAssignment = Field(
+        default=None,
+        description="Current task assignment, not a historical snapshot.",
+    )
     project: str
     body: str
     kind: Literal["comment", "status", "move"] = "comment"
@@ -252,6 +287,9 @@ class TaskOut(Attributed):
     title: str
     body: str = ""
     status: Status
+    assigned: NullableAssignment = Field(
+        default=None, description="Current username@computer:marker, or null when unassigned."
+    )
     priority: Priority
     tags: list[str] = Field(default_factory=list)
     created_at: Seconds
@@ -288,6 +326,7 @@ class TaskListItem(Attributed):
     project: str = Field(description="Owner-qualified name of the owning project.")
     title: str
     status: Status
+    assigned: NullableAssignment = None
     priority: Priority
     tags: list[str] = Field(default_factory=list)
     created_at: Seconds

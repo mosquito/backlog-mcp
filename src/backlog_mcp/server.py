@@ -35,6 +35,8 @@ from .models import (
     NoteListItem,
     NoteOut,
     Notes,
+    NullableAssignment,
+    NullableString,
     Priority,
     ProjectDeleted,
     ProjectOut,
@@ -50,7 +52,7 @@ from .models import (
     Tasks,
 )
 from .names import owner_name, principal_label, principal_user
-from .store import NOTE_LIMIT, TASK_COLUMNS, Comment, Note, Project, Task, Unset, to_task
+from .store import NOTE_LIMIT, Comment, Note, Project, Task, Unset
 from .version import COMMIT, VERSION
 
 log = logging.getLogger(__name__)
@@ -148,6 +150,13 @@ Tasks. A task has a title, a Markdown description in `body`, a status, a priorit
 Always track work: set `doing` when starting and `done`, `cancelled`, or `deleted` when appropriate.
 Listings show open statuses, most important first, unless filters ask for others.
 
+Assignment. Before starting work, claim the task with task_claim(task, expected, assigned).
+Both nullable fields are required. Use expected=null for a free task and assigned=null to
+release. Non-null assigned must be your principal from whoami plus :marker, with a distinct
+URL-safe marker per agent run. On conflict, do not start the task. Status does not release an
+assignment. task_assigned(prefix=null) lists your assignments across accessible projects;
+an explicit literal prefix selects another principal or marker. whoami reports assigned_tasks.
+
 Comments. Use `task_comment_add` for progress, findings, blockers, decisions, and verification.
 Comments are stored separately from the description. `task_update(body=...)` replaces the
 whole description; use it only to revise the task definition. An empty body clears it.
@@ -200,7 +209,7 @@ FTS and semantic candidates before ranking and limits. Use all_computers=true to
 accessible projects when no current project is selected.
 
 Writes. `task_add`, `task_comment_add`, `task_update`, `task_move`, `task_delete`,
-`task_link`, `task_unlink`,
+`task_link`, `task_unlink`, `task_claim`,
 `memory_save`, `memory_append`, \
 `memory_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
 one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
@@ -233,7 +242,8 @@ reviews the open backlog.
 #: The backlog the handlers work on. A context variable, so tests can run several at once.
 ACTIVE: ContextVar[Backlog] = ContextVar("backlog")
 
-registry = Registry("backlog", VERSION, instructions=INSTRUCTIONS)
+# Keep tool catalog pages below the default stdio reader's 64 KiB frame limit.
+registry = Registry("backlog", VERSION, instructions=INSTRUCTIONS, page_size=20)
 
 
 async def active(ex: Exchange) -> Backlog:
@@ -273,6 +283,7 @@ def persistent_registry(
         hub=SqliteHub(storage),
         session_store=SqliteSessionStore(storage),
         auth=policies or None,
+        page_size=registry.page_size,
     )
     configured.tools = registry.tools
     configured.resources_fixed = registry.resources_fixed
@@ -329,6 +340,7 @@ def task_out(task: Task) -> TaskOut:
         title=task.title,
         body=task.body,
         status=task.status,
+        assigned=task.assigned,
         priority=task.priority,
         tags=task.tags,
         created_by=task.created_by,
@@ -363,6 +375,7 @@ def comment_out(comment: Comment) -> CommentOut:
     return CommentOut(
         id=comment.id,
         task_id=comment.task_id,
+        task_assigned=comment.task_assigned,
         project=comment.project,
         body=comment.body,
         kind=comment.kind,
@@ -388,6 +401,7 @@ def task_list_item(task: Task) -> TaskListItem:
         project=task.project,
         title=task.title,
         status=task.status,
+        assigned=task.assigned,
         priority=task.priority,
         tags=task.tags,
         created_by=task.created_by,
@@ -549,13 +563,7 @@ async def linked_tasks(
     backlog: Backlog, *, task_id: int | None = None, project_id: int | None = None
 ) -> list[Task]:
     """Find resource dependents for notification routing, never for a public response."""
-    rows = await backlog.store.rows(
-        f"SELECT DISTINCT {TASK_COLUMNS} FROM tasks t JOIN projects p ON p.id = t.project_id "
-        "JOIN task_links l ON l.task_id = t.id JOIN tasks target ON target.id = l.target_id "
-        "WHERE target.id = ? OR target.project_id = ?",
-        (task_id, project_id),
-    )
-    return [to_task(row) for row in rows]
+    return await backlog.store.linked_tasks(task_id=task_id, project_id=project_id)
 
 
 async def invalidate_linked_tasks(tasks: list[Task], backlog: Backlog) -> None:
@@ -567,12 +575,9 @@ async def invalidate_linked_tasks(tasks: list[Task], backlog: Backlog) -> None:
     from aiohttp_tiny_mcp.storage.namespaces import namespace
 
     for task in tasks:
-        recipients = await backlog.store.rows(
-            "SELECT principal FROM project_members WHERE project_id = ?", (task.project_id,)
-        )
+        recipients = await backlog.store.notification_recipients(task.project_id)
         event = task_event(task, Action.UPDATED, computer=backlog.computer)
-        for row in recipients:
-            identity = row["principal"]
+        for identity in recipients:
             anonymous = ACTIVE_REGISTRY.get().auth is None and identity == backlog.store.principal
             token = namespace.set(None if anonymous else identity)
             try:
@@ -782,6 +787,27 @@ class TaskId(BaseModel):
     id: int
 
 
+class ClaimTask(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    task: int = Field(description="Task id to claim, release or reassign.")
+    expected: NullableAssignment = Field(
+        description="Expected current assignment; null requires an unassigned task."
+    )
+    assigned: NullableAssignment = Field(
+        description="New username@computer:marker of the current principal; null releases."
+    )
+
+
+class AssignedTasks(BaseModel):
+    prefix: NullableString = Field(
+        default=None,
+        description="Literal prefix; null or omitted selects the current username@computer:.",
+    )
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
+
+
 class UnlinkTask(BaseModel):
     task: int = Field(description="Source task id.")
     relation: Relation = Field(description="Relation from task to target.")
@@ -916,6 +942,9 @@ async def whoami(args: Nothing, backlog: Backlog) -> Identity:
         handle=owner_name(backlog.store.principal),
         auth_type=backlog.auth_type,
         computer=backlog.computer,
+        assigned_tasks=await backlog.store.count_assigned(
+            principal_label(backlog.store.principal, backlog.computer) + ":"
+        ),
     )
 
 
@@ -1107,6 +1136,45 @@ async def task_get(args: TaskId, backlog: Backlog) -> TaskDetails:
     if task is None:
         raise LookupError(f"no task #{args.id}")
     return await task_details(task, backlog)
+
+
+@registry.tool(title="List assigned tasks", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+async def task_assigned(args: AssignedTasks, backlog: Backlog) -> Tasks:
+    """Find assignments by literal prefix across all accessible projects and statuses.
+
+    Null or omitted prefix selects the current principal. Use username@computer: for a
+    principal or username@computer:marker for an agent marker prefix. Percent and underscore
+    are literal characters, not wildcards. Matching is case-sensitive. Closed tasks remain
+    assigned until explicitly released. Count includes all matches before pagination.
+    """
+    prefix = args.prefix
+    if prefix is None:
+        prefix = principal_label(backlog.store.principal, backlog.computer) + ":"
+    tasks = await backlog.store.assigned_tasks(prefix, limit=args.limit, offset=args.offset)
+    return Tasks(
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+        items=[task_list_item(task) for task in tasks],
+        count=await backlog.store.count_assigned(prefix),
+    )
+
+
+@registry.tool(title="Claim a task")
+async def task_claim(args: ClaimTask, backlog: Backlog) -> TaskOut:
+    """Atomically replace assigned only if its current value equals expected.
+
+    Both nullable arguments are required. A mismatch is an error with the current assignment,
+    even if it already equals the requested value. Requires editor access. Non-null assigned
+    must use the current principal and a URL-safe marker chosen by the agent. Keep the marker
+    across reconnects. Claim before starting work; on conflict do not start the task.
+    Use assigned=null to release. Status is independent; closing does not release ownership.
+    """
+    task, updated = await backlog.store.claim_task(
+        args.task, expected=args.expected, assigned=args.assigned
+    )
+    if updated:
+        await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
+    return task_out(task)
 
 
 @registry.tool(title="Link tasks", annotations=Hint.IDEMPOTENT)

@@ -47,6 +47,7 @@ from .models import (
     Status,
     TaskDetails,
     TaskOut,
+    Tasks,
 )
 from .models import (
     Projects as ProjectList,
@@ -520,6 +521,7 @@ class Whoami(Command):
                     ("principal", principal_label(identity.principal, identity.computer)),
                     ("auth_type", identity.auth_type),
                     ("handle", identity.handle),
+                    ("assigned_tasks", str(identity.assigned_tasks)),
                 ]
             )
         )
@@ -874,6 +876,53 @@ class Show(Command):
 
     async def __call__(self) -> int:
         console.print(task_panel(await self.task(self.id), computer=self.connection.computer))
+        return 0
+
+
+class Assigned(Command):
+    """List assigned tasks across accessible projects, including closed tasks."""
+
+    prefix: str | None = argclass.Argument(
+        default=None, type=str, help="Assignment prefix; omit for your principal"
+    )
+    limit: int = argclass.Argument(default=50, type=int, help="Maximum tasks to return")
+    offset: int = argclass.Argument(default=0, type=int, help="Skip this many matching tasks")
+
+    async def __call__(self) -> int:
+        result = await self.connection.call(
+            Tasks, "task_assigned", prefix=self.prefix, limit=self.limit, offset=self.offset
+        )
+        console.print(
+            tasks_table(
+                [TaskOut(**item.model_dump()) for item in result.items],
+                title=f"{result.count} assigned task(s)",
+                wide=True,
+            )
+        )
+        return 0
+
+
+class Claim(Command):
+    """Replace a task assignment only when its current value matches --expected."""
+
+    id: int = argclass.Argument("id", type=int, metavar="TASK", help="Task id")
+    expected: str = argclass.Argument(
+        required=True, help="Current username@computer:marker, or null"
+    )
+    assigned: str = argclass.Argument(
+        required=True, help="New username@computer:marker, or null to release"
+    )
+
+    async def __call__(self) -> int:
+        result = await self.connection.call(
+            TaskOut,
+            "task_claim",
+            exclude_none=False,
+            task=self.id,
+            expected=None if self.expected == "null" else self.expected,
+            assigned=None if self.assigned == "null" else self.assigned,
+        )
+        console.print(task_panel(result, computer=self.connection.computer))
         return 0
 
 
@@ -1553,6 +1602,8 @@ class TaskCommands(Command):
     )
 
     link = Link(aliases=["lk"], help="Create a typed relation and its inverse")
+    claim = Claim(aliases=["ck"], help="Atomically claim, release or reassign a task")
+    assigned = Assigned(aliases=["as"], help="List tasks by assignment prefix")
     unlink = Unlink(aliases=["ul"], help="Remove a relation and its inverse")
     comment = CommentAdd(aliases=["co"], help="Add a task comment")
 

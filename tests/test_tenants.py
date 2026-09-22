@@ -176,6 +176,7 @@ async def test_basic_and_jwt_with_the_same_subject_share_data(backlog: Backlog) 
             "principal": f"alice@{backlog.computer}",
             "handle": "alice",
             "auth_type": "jwt",
+            "assigned_tasks": 0,
         }
         assert (await call(basic, "whoami"))["auth_type"] == "basic"
         task = await call(basic, "task_add", title="Shared account")
@@ -202,6 +203,7 @@ async def test_whoami_reports_each_authenticated_identity(backlog: Backlog) -> N
                     "principal": f"{username}@{backlog.computer}",
                     "handle": username,
                     "auth_type": "basic",
+                    "assigned_tasks": 0,
                 }
                 assert (await call(client, "project_list", all_computers=True))["items"] == []
 
@@ -216,6 +218,7 @@ async def test_whoami_unauthenticated_http_uses_local_identity(backlog: Backlog)
             "principal": "local@client-host",
             "handle": "local",
             "auth_type": "none",
+            "assigned_tasks": 0,
         }
         assert (await call(client, "project_list", all_computers=True))["items"] == []
 
