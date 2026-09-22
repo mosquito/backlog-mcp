@@ -228,3 +228,38 @@ async def test_owner_handles_are_stable_and_do_not_collide(backlog: Backlog) -> 
         assert "/" not in owner_name(identity)
         await backlog.store.register(identity, "Changed display name")
         assert (await scoped.lookup(project.full_name)).id == project.id
+
+
+async def test_project_search_filters_acl_scope_and_archived_before_limit(backlog: Backlog) -> None:
+    for user in ("alice", "bob"):
+        await backlog.store.register(basic_namespace(user), user)
+    alice = backlog.store.view(principal=basic_namespace("alice"), computer="same")
+    bob = backlog.store.view(principal=basic_namespace("bob"), computer="same")
+    hidden = await alice.add_project(slug="hidden", name="Needle " * 10, root="", computer="same")
+    visible = await alice.add_project(slug="visible", name="Needle", root="", computer="same")
+    archived = await alice.add_project(slug="archived", name="Needle", root="", computer="same")
+    await alice.update_project(archived.id, archived=True)
+    await alice.share(visible.id, bob.principal, "reader")
+    await alice.share(archived.id, bob.principal, "reader")
+    assert [p.id for p in await bob.search_projects("needle", limit=1)] == [visible.id]
+    scoped = backlog.view(principal=bob.principal)
+    query = embeddings.Search(query="needle", kinds=["projects"], all_computers=True, limit=1)
+    found = await embeddings.search(query, scoped)
+    assert found.count == 1 and found.projects[0].full_name == "alice/visible"
+    assert found.projects[0].match == "fts"
+    assert found.tasks == found.comments == found.memory == []
+    assert {p.id for p in (await embeddings.snapshot(scoped))[3]} == {visible.id}
+    semantic = await embeddings.search(
+        query.model_copy(update={"query": "sewing", "min_score": -1}), scoped
+    )
+    assert [p.id for p in semantic.projects] == [visible.id]
+    assert semantic.projects[0].match == "semantic"
+    assert await bob.search_projects("needle", project_id=hidden.id) == []
+    assert await bob.search_projects("needle", computer="same") == []
+    await bob.add_root(visible.id, computer="same", root="/bob")
+    assert [p.id for p in await bob.search_projects("needle", computer="same")] == [visible.id]
+    await alice.update_project(visible.id, name="Changed", description="Orchestration")
+    assert await bob.search_projects("needle") == []
+    assert [p.id for p in await bob.search_projects("orchestration")] == [visible.id]
+    await alice.delete_project(visible.id)
+    assert await bob.search_projects("orchestration") == []

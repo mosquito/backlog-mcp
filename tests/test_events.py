@@ -83,9 +83,9 @@ async def test_a_modern_listener_learns_what_each_write_did(backlog: Backlog) ->
         ("backlog://tasks", "task", "updated", task["id"]),
         ("backlog://tasks", "task", "moved", task["id"]),
         ("backlog://tasks", "task", "deleted", task["id"]),
-        ("backlog://memory", "note", "added", note["id"]),
-        ("backlog://memory", "note", "updated", note["id"]),
-        ("backlog://memory", "note", "deleted", note["id"]),
+        ("backlog://memory", "memory", "added", note["id"]),
+        ("backlog://memory", "memory", "updated", note["id"]),
+        ("backlog://memory", "memory", "deleted", note["id"]),
         ("backlog://tasks", "project", "updated", other["id"]),
     ]
 
@@ -211,7 +211,7 @@ async def test_every_listener_hears_a_broadcast(backlog: Backlog) -> None:
         "project_id": (await backlog.current())[0].id,
     }
     assert frames_one[1]["params"]["id"] == note["id"]
-    assert frames_one[1]["params"]["kind"] == "note"
+    assert frames_one[1]["params"]["kind"] == "memory"
     #: Nobody asked for notes on the second listener.
     assert heard_two.empty()
 

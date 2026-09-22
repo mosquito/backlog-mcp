@@ -143,12 +143,12 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
         embeddings.Search(query="Сбросить пароль", status=[Status.TODO], tag="auth"), backlog
     )
     assert filtered.tasks == []
-    assert [item.id for item in filtered.notes] == [note.id]
+    assert [item.id for item in filtered.memory] == [note.id]
     global_result = await embeddings.search(
         embeddings.Search(query="password", all_projects=True, min_score=-1), backlog
     )
     assert len(global_result.tasks) == 2
-    assert len(global_result.notes) == 2
+    assert len(global_result.memory) == 2
 
 
 async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
@@ -163,7 +163,7 @@ async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
         *args: Any,
     ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], list[tuple[int, float]]]:
         scores.append(args[-1])
-        return [(lexical.id, 0.8), (semantic.id, 0.3)], [], []
+        return [(lexical.id, 0.8), (semantic.id, 0.3)], [], [], []
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
@@ -186,7 +186,7 @@ async def test_search_uses_default_semantic_floor_without_fts(
         *args: Any,
     ) -> tuple[list[tuple[int, float]], list[tuple[int, float]], list[tuple[int, float]]]:
         scores.append(args[-1])
-        return [(task.id, 0.3)], [], []
+        return [(task.id, 0.3)], [], [], []
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(embeddings.Search(query="Needle"), backlog)
@@ -211,6 +211,8 @@ async def test_index_contains_only_ids_vectors_and_digest(
             "note_vectors",
             "comment_ids",
             "comment_vectors",
+            "project_ids",
+            "project_vectors",
         }
         assert saved["task_ids"].tolist() == [task.id]
         assert saved["task_vectors"].shape == (1, 512)
@@ -270,8 +272,8 @@ async def test_concurrent_builds_of_one_index_encode_once(monkeypatch: pytest.Mo
     tasks = [(1, "Reset password")]
     notes = [(1, "Password policy")]
     results = await asyncio.gather(
-        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, []),
-        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, []),
+        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, [], []),
+        asyncio.to_thread(embeddings.cached_indexes, "one-db", tasks, notes, [], []),
     )
     assert calls == [2]
     assert results[0][0].ids == results[1][0].ids == [1]
@@ -286,8 +288,8 @@ from pathlib import Path
 from backlog_mcp import embeddings
 root = embeddings.cache_root()
 assert root.is_dir() and root.parent == Path(tempfile.gettempdir())
-a, b, c = embeddings.cached_indexes(
-    'shared-db', [(1, 'Reset password')], [(1, 'Password policy')], []
+a, b, c, d = embeddings.cached_indexes(
+    'shared-db', [(1, 'Reset password')], [(1, 'Password policy')], [], []
 )
 assert a.ids == [1] and b.ids == [1]
 assert a.vectors.shape == b.vectors.shape == (1, 512)
@@ -331,7 +333,7 @@ async def test_model_cache_is_lazy_and_invalidated_by_local_and_external_writes(
     note = await backlog.store.add_note(project_id=project.id, title="Password policy")
     assert builds == 0
     assert not cache_directory.exists()
-    query = embeddings.Search(query="password", min_score=-1)
+    query = embeddings.Search(query="password", min_score=-1, kinds=["tasks", "memory", "comments"])
     assert (await embeddings.search(query, backlog)).count == 2
     assert builds == 1
     await embeddings.search(query, backlog)

@@ -68,7 +68,7 @@ architectural invariants, and past agreements.
 untracked work. Break user requests into discrete, verifiable tasks on the board. Mark the \
 active task as `doing` when starting, update details as progress happens, and mark `done` or \
 `cancelled` upon completion. Inspect open tasks with `task_list` to know what to do next.
-4. Proactively capture lasting context (`memory_save`, `memory_append`). Whenever the user states a \
+4. Proactively capture lasting context (`memory_save`, `memory_append`). When the user states a \
 preference, convention, constraint, or decision, save or update it promptly in a note so future \
 sessions remember it. Do not wait to be asked.
 
@@ -156,9 +156,12 @@ facts that may have changed. Avoid full listings and reading every task or note.
 use filters and pagination then. Use `stats` when only counts are needed.
 
 `search` combines full-text prefix matching and multilingual semantic search. Use `kinds`
-to select tasks, comments, notes, or several kinds. Task descriptions and comments are indexed
-separately; comment matches include the comment id and task_id. FTS matches come first,
+to select projects, tasks, comments, memory, or several kinds. Task descriptions and comments
+are indexed separately; comment matches include the comment id and task_id. FTS matches come first,
 then semantic matches, without duplicate IDs within each kind. Embeddings run locally.
+Project results include full_name and exclude archived projects. Membership and scope filter
+FTS and semantic candidates before ranking and limits. Use all_computers=true to discover
+accessible projects when no current project is selected.
 
 Writes. `task_add`, `task_comment_add`, `task_update`, `task_move`, `task_delete`,
 `memory_save`, `memory_append`, \
@@ -1206,8 +1209,8 @@ async def search(args: embeddings.Search, backlog: Backlog) -> embeddings.Matche
     Use frequently: at session start, before choosing an approach, before asking questions, and
     whenever you are uncertain what to do or what conventions apply. Combines full-text prefix
     matching and multilingual semantic search (FTS matches first).
-    Prefer targeted search over full listings. Read individual matches with `memory_get` or `task_get`
-    only when detail is needed."""
+    Prefer targeted search over full listings. Read individual matches with `memory_get` or
+    `task_get` only when detail is needed."""
     return await embeddings.search(args, backlog)
 
 

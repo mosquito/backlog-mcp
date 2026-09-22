@@ -487,6 +487,38 @@ class Store:
         )
         return await self.attach_roots([to_project(row) for row in rows])
 
+    async def search_projects(
+        self,
+        query: str,
+        *,
+        project_id: int | None = None,
+        computer: str | None = None,
+        limit: int = 20,
+    ) -> list[Project]:
+        """Apply membership and scope before ranking project matches."""
+        match = match_query(query)
+        if not match:
+            return []
+        clauses = [ACCESS, "p.archived = 0"]
+        parameters: list[Any] = [match, self.principal]
+        if project_id is not None:
+            clauses.append("p.id = ?")
+            parameters.append(project_id)
+        if computer is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM project_roots r WHERE r.project_id = p.id "
+                "AND r.principal = ? AND r.computer = ?)"
+            )
+            parameters.extend((self.principal, computer))
+        rows = await self.rows(
+            f"SELECT p.*, {COUNTS} FROM projects_fts JOIN projects p "
+            "ON p.id = projects_fts.rowid WHERE projects_fts MATCH ? AND "
+            + " AND ".join(clauses)
+            + " ORDER BY bm25(projects_fts), p.id LIMIT ?",
+            (*parameters, limit),
+        )
+        return await self.attach_roots([to_project(row) for row in rows])
+
     async def computers(self) -> list[str]:
         """Every computer with a registered project, sorted."""
         rows = await self.rows(

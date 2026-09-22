@@ -90,6 +90,23 @@ CREATE INDEX tasks_by_update ON tasks(updated_at DESC);
 CREATE INDEX notes_by_update ON notes(updated_at DESC);
 CREATE INDEX comments_by_task ON task_comments(task_id, created_at, id);
 
+CREATE VIRTUAL TABLE projects_fts USING fts5 (
+    slug, name, description, content='projects', content_rowid='id',
+    tokenize="unicode61 remove_diacritics 2"
+);
+CREATE TRIGGER projects_fts_insert AFTER INSERT ON projects BEGIN
+    INSERT INTO projects_fts(rowid, slug, name, description) VALUES (new.id, new.slug, new.name, new.description);
+END;
+CREATE TRIGGER projects_fts_delete AFTER DELETE ON projects BEGIN
+    INSERT INTO projects_fts(projects_fts, rowid, slug, name, description)
+    VALUES ('delete', old.id, old.slug, old.name, old.description);
+END;
+CREATE TRIGGER projects_fts_update AFTER UPDATE ON projects BEGIN
+    INSERT INTO projects_fts(projects_fts, rowid, slug, name, description)
+    VALUES ('delete', old.id, old.slug, old.name, old.description);
+    INSERT INTO projects_fts(rowid, slug, name, description) VALUES (new.id, new.slug, new.name, new.description);
+END;
+
 CREATE VIRTUAL TABLE tasks_fts USING fts5 (
     title, body, tags, content='tasks', content_rowid='id',
     tokenize="unicode61 remove_diacritics 2"

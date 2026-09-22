@@ -47,7 +47,7 @@ the configured database, state file, computer, and working directory.
 To use a running HTTP server:
 
 ```bash
-backlog --url https://backlog.example/mcp --project my-project list
+backlog --url https://backlog.example/mcp --project alice/my-project task list
 ```
 
 Set `url` in the global section of the TOML configuration, or set `BACKLOG_MCP_URL`,
@@ -73,7 +73,7 @@ cd ~/dev/my-project        # first use prompts for project registration
 backlog task add Write the release notes -t docs
 backlog task create             # the same, in $EDITOR
 backlog task list
-backlog search notes       # tasks, comments, and notes
+backlog search notes       # projects, tasks, comments, and memory
 backlog task show 1
 backlog task start 1            # doing
 backlog task block 1            # blocked
@@ -82,39 +82,18 @@ backlog task reopen 1           # todo again
 backlog stats              # open tasks, closed tasks, and notes
 ```
 
-Every command has a two-letter alias, shown in `--help`. Short forms are unique
-across the command tree. Full names and aliases can be mixed.
+Commands are grouped by domain. Global connection and project options come before the group.
+Each command has a two-letter alias shown in `--help`.
 
-| Command | Alias | Command | Alias |
-| --- | --- | --- | --- |
-| `add` | `ad` | `create` | `cr` |
-| `list` | `ls` | `search` | `se` |
-| `show` | `sh` | `edit` | `ed` |
-| `comment` | `co` | `comments` | `cm` |
-| `start` | `st` | `stats` | `ss` |
-| `block` | `bl` | `close` | `cl` |
-| `cancel` | `ca` | `reopen` | `re` |
-| `move` | `mv` | `delete` | `rm` |
-| `current` | `cu` | `init` | `in` |
-| `projects` | `pr` | `note` | `no` |
-| `skills` | `sk` | `watch` | `wa` |
-| `mcp` | `mc` | `install` | `is` |
+| Group | Commands | Alias |
+| --- | --- | --- |
+| `task` | `add`, `create`, `list`, `show`, `edit`, `comment`, `comments`, `start`, `block`, `close`, `cancel`, `reopen`, `move`, `delete` | `ta` |
+| `memory` | `add`, `append`, `list`, `show`, `edit`, `delete` | `mm` |
+| `projects` | list by default; `update`, `delete` | `pr` |
 
-Nested aliases start with `p` for projects and `n` for notes:
-
-| Command | Short form |
-| --- | --- |
-| `projects update` | `pr pu` |
-| `projects delete` | `pr pd` |
-| `note add` | `no na` |
-| `note append` | `no np` |
-| `note list` | `no nl` |
-| `note show` | `no ns` |
-| `note edit` | `no ne` |
-| `note delete` | `no nd` |
-
-For example, `backlog sh 1` shows a task and `backlog no na Convention -b "Use English"`
-saves a note. Arguments and options work the same with either spelling.
+`search`, `stats`, `current`, `init`, `watch`, `skills`, `install`, and `mcp` remain top-level commands.
+For example, `backlog ta sh 1` shows a task and
+`backlog mm na Convention -b "Use English"` saves a memory entry.
 
 `backlog task edit <id>` edits the task fields and description. Routine progress belongs
 in a separate comment:
@@ -139,15 +118,15 @@ and project moves create history entries without changing the description.
 Comments and automatic history entries record the writer's `principal` and `computer`.
 Projects, tasks and notes return `created_by` and `updated_by` actors.
 
-Search accepts `kinds=["tasks", "comments", "memory"]` by default. Select any subset to
-search task descriptions, comment text, or notes. Each kind has its own result list;
+Search accepts `kinds=["tasks", "comments", "memory", "projects"]` by default. Select any subset to
+search task descriptions, comment text, memory, or project names and descriptions. Each kind has its own result list;
 comment results include their id, task_id, project, snippet, and match score.
 
 Every command prints a table or a panel, in colour when the terminal takes it:
 
 ```
 $ backlog search notes
-1 task match(es) for 'memory' in my-project
+1 task match(es) for 'notes' in my-project
 ╭────┬────────┬────────┬─────────────────────────┬──────────────────────────────┬──────┬─────╮
 │ id │ status │ pri    │ title                   │ match                        │ tags │ age │
 ├────┼────────┼────────┼─────────────────────────┼──────────────────────────────┼──────┼─────┤
@@ -158,7 +137,7 @@ $ backlog search notes
 The title column always holds the title; `match` holds the excerpt of the description that the
 search hit, and it appears only when there is one. A second table follows when a note matched.
 
-`stats` reports `open` (todo, doing, blocked), `closed` (done, cancelled), and `notes`,
+`stats` reports `open` (todo, doing, blocked), `closed` (done, cancelled), and `memory`,
 plus the task total, status and priority breakdowns, and tags. Note counts include shared notes.
 
 ### Search
@@ -174,8 +153,12 @@ multilingual semantic search over titles, bodies and tags. FTS matches come firs
 BM25 order. Additional semantic matches follow in cosine similarity order. Each ID
 appears once per record kind. The limit applies separately to each selected content kind after merging.
 
-Project scope, task status and tag filters apply to both searches. Shared notes remain
-visible across projects. `min_score` (`--min-score` in the terminal) defaults to `0.15`
+Project membership and scope filter candidates before ranking and limits in both searches.
+Project results include their owner-qualified `full_name`; archived projects are excluded.
+Status filters apply to tasks and their comments. Tags apply to tasks, comments, and memory.
+Shared memory remains visible across projects only when the caller can access its source project.
+Use `backlog search orchestration --kind projects --all-computers` to find accessible projects
+without selecting a current project. `min_score` (`--min-score` in the terminal) defaults to `0.15`
 and filters semantic matches only; it never removes FTS matches. When FTS finds anything,
 additional semantic matches need a score of at least `0.25`. MCP results include `match`
 (`fts` or `semantic`) and a cosine `score` for semantic candidates (`null` for FTS-only
@@ -263,7 +246,7 @@ backlog task move 1 other-project
 `--project` goes before the subcommand and applies to every command:
 
 ```bash
-backlog --project other-project list
+backlog --project other-project task list
 backlog projects delete other-project  # every task and note on that board goes with it
 ```
 
@@ -697,3 +680,30 @@ make coverage
 ## License
 
 MIT
+
+## Upgrade from 0.1 to 0.2
+
+Version 0.2 uses a fresh database schema. The server does not migrate old databases on startup.
+Tool names changed from `note_*` to `memory_*`. Memory resources use `backlog://memory`,
+and memory notifications use `notifications/backlog/memory`. Search results and statistics
+use the `memory` field. Task CLI actions now live under `backlog task`; notes use `backlog memory`.
+Old tool and command names are not aliases.
+
+Import a single-user 0.1 installation from the 0.2 checkout:
+
+```bash
+uv run python scripts/migrate_db_from_0.1.py old.sqlite3 new.sqlite3 --user alice --computer old-host
+```
+
+The destination must not exist. The script opens the source read-only and publishes a new
+file only after SQLite, foreign-key, and FTS integrity checks pass. Stop the old server before
+importing the final copy so later writes cannot be missed.
+
+All imported projects belong to the specified Basic username and become `alice/<project>`.
+IDs, timestamps, tags, statuses, memory, and computer/root bindings are preserved.
+Existing comments retain their IDs. Legacy `---` / `# UPDATE:` blocks become separate comments
+with their original text and UTC timestamps. Code-fenced examples stay in descriptions.
+Malformed or ambiguous histories remain intact, and the script reports their task IDs. Historical actors use the specified owner and `--computer`
+(default: `unknown`); this is import attribution, not recovered authorship.
+Sessions and authentication state are not imported. Configure the same Basic username on the
+new server and reconnect clients. Keep the source file until you have checked the imported data.

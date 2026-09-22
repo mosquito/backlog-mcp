@@ -756,11 +756,11 @@ class List(Command):
 
 
 class Search(Command):
-    """FTS and semantic search across tasks, comments, and notes."""
+    """FTS and semantic search across projects, tasks, comments, and memory."""
 
     kind: list[str] = repeated(
         "--kind",
-        choices=("tasks", "comments", "memory"),
+        choices=("tasks", "comments", "memory", "projects"),
         help="Content to search; repeat for several kinds (default: all)",
     )
     query: list[str] = argclass.Argument("query", nargs="+", help="Words or meaning to search for")
@@ -790,22 +790,27 @@ class Search(Command):
             min_score=self.min_score,
         )
         where = self.label(matches)
-        console.print(
-            tasks_table(
-                matches.tasks,
-                title=f"{len(matches.tasks)} task match(es) for {text!r} in {where}",
-                wide=matches.project is None,
-                computer=self.connection.computer,
+        if not self.kind or "tasks" in self.kind:
+            console.print(
+                tasks_table(
+                    matches.tasks,
+                    title=f"{len(matches.tasks)} task match(es) for {text!r} in {where}",
+                    wide=matches.project is None,
+                    computer=self.connection.computer,
+                )
             )
-        )
-        if matches.comments:
+        if matches.projects or "projects" in self.kind:
+            table = projects_table(matches.projects, computer=self.connection.computer)
+            table.title = f"{len(matches.projects)} project match(es) for {text!r} in {where}"
+            console.print(table)
+        if matches.comments or "comments" in self.kind:
             console.print(
                 comments_table(
                     matches.comments,
                     title=f"{len(matches.comments)} comment match(es) for {text!r} in {where}",
                 )
             )
-        if matches.memory:
+        if matches.memory or "memory" in self.kind:
             console.print(
                 notes_table(
                     matches.memory,
@@ -1494,7 +1499,8 @@ class TaskCommands(Command):
         aliases=["ed"],
         help="Edit a task in $EDITOR",
         description=(
-            "Edit the task fields and description. Use `backlog task comment` for progress updates. "
+            "Edit the task fields and description. "
+            "Use `backlog task comment` for progress updates. "
             "Leaving the file unchanged changes nothing."
         ),
     )
@@ -1666,7 +1672,7 @@ class CLI(argclass.Parser):
         ),
     )
     projects = Projects(
-        aliases=["project", "pr"],
+        aliases=["pr"],
         help="List the registered projects",
         description=(
             "Print the projects of this computer with their root directory and their open and "
@@ -1675,10 +1681,10 @@ class CLI(argclass.Parser):
             "delete <slug>` removes a project with everything on its board."
         ),
     )
-    task = TaskCommands(help="Manage tasks and comments")
+    task = TaskCommands(aliases=["ta"], help="Manage tasks and comments")
     search = Search(
         aliases=["se"],
-        help="FTS and semantic search over tasks, comments, and notes",
+        help="FTS and semantic search over projects, tasks, comments, and memory",
         description=(
             "Search titles, bodies and tags with FTS prefixes and local multilingual embeddings. "
             "FTS matches come first, followed by semantic matches without duplicate IDs. "
@@ -1694,12 +1700,12 @@ class CLI(argclass.Parser):
         ),
     )
     memory = Notes(
-        aliases=["mem"],
+        aliases=["mm"],
         help="Lasting user context: preferences, agreements, and constraints",
         description=(
             "Code changes; notes remain. Keep lasting user context unavailable elsewhere, not "
-            "implementation details or documentation summaries. `note add` creates a note "
-            "or replaces the one with that title, `note append` adds a paragraph, and `backlog "
+            "implementation details or documentation summaries. `memory add` creates a note "
+            "or replaces the one with that title, `memory append` adds a paragraph, and `backlog "
             "search` finds notes as well as tasks. A note has an id for good, so a task body "
             "can say `note #3`."
         ),

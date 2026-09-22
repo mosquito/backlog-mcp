@@ -117,11 +117,11 @@ async def test_aliases_route_tasks_notes_and_projects(
     task = await backlog.store.task(1)
     assert task is not None and task.status == Status.DONE
 
-    assert (await remote("mem", "na", "Alias note", "-b", "Original text"))[0] == 0
+    assert (await remote("mm", "na", "Alias note", "-b", "Original text"))[0] == 0
     assert (await remote("memory", "np", "1", "More text"))[0] == 0
-    assert "More text" in (await remote("mem", "show", "1"))[1]
-    assert "Alias note" in (await remote("mem", "nl"))[1]
-    assert (await remote("mem", "nd", "1"))[0] == 0
+    assert "More text" in (await remote("mm", "show", "1"))[1]
+    assert "Alias note" in (await remote("mm", "nl"))[1]
+    assert (await remote("mm", "nd", "1"))[0] == 0
     assert await backlog.store.note(1) is None
 
     code, output = await remote("pr", "pu", "client-workspace", "--preferred-language", "ru")

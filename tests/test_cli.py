@@ -147,7 +147,7 @@ def test_statuses_move_back_and_forth(run: Runner) -> None:
         ("cancel", "cancelled"),
         ("reopen", "todo"),
     ]:
-        code, output = run(command, "1")
+        code, output = run("task", command, "1")
         assert code == 0
         assert f"#1 is {expected}" in output
     assert run("task", "close", "999") == (1, "no task #999\n")
@@ -637,11 +637,11 @@ def test_server_main_runs_the_server_command(monkeypatch: pytest.MonkeyPatch) ->
     assert seen == [["mcp", "--protocol", "stdio"]]
 
 
-@pytest.mark.parametrize("command", ["note", "no"])
+@pytest.mark.parametrize("command", ["memory", "mm"])
 def test_note_group_prints_its_help_and_opens_nothing(run: Runner, command: str) -> None:
     code, output = run(command)
     assert code == 0
-    assert "note [-h]" in output
+    assert "memory [-h]" in output
     assert "{list,nl,show,ns,add,na,append,np,edit,ne,delete,nd}" in output
     assert "List the notes of this project" in output
     assert "append" in output
@@ -794,8 +794,8 @@ def test_delete_confirms_other_project_only(
 ) -> None:
     other = tmp_path / "other"
     (other / ".git").mkdir(parents=True)
-    prefix = ["note"] if entity == "note" else []
-    assert run("--root", str(other), *prefix, "task", "add", "Elsewhere")[0] == 0
+    prefix = ["memory"] if entity == "note" else ["task"]
+    assert run("--root", str(other), *prefix, "add", "Elsewhere")[0] == 0
     prompts: list[str] = []
 
     def decline(prompt: str, **kwargs: object) -> bool:
@@ -804,15 +804,15 @@ def test_delete_confirms_other_project_only(
 
     monkeypatch.setattr(cli.Confirm, "ask", decline)
     if explicit_yes:
-        assert run(*prefix, "task", "delete", "1", "--yes")[0] == 0
+        assert run(*prefix, "delete", "1", "--yes")[0] == 0
         assert prompts == []
     else:
-        assert run(*prefix, "task", "delete", "1") == (1, "nothing deleted\n")
+        assert run(*prefix, "delete", "1") == (1, "nothing deleted\n")
         assert "other" in prompts[0]
-        assert run(*prefix, "task", "show", "1")[0] == 0
+        assert run(*prefix, "show", "1")[0] == 0
         monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: True)
-        assert run(*prefix, "task", "delete", "1")[0] == 0
-    assert run(*prefix, "task", "show", "1")[0] == 1
+        assert run(*prefix, "delete", "1")[0] == 0
+    assert run(*prefix, "show", "1")[0] == 1
 
 
 def test_note_bodies_are_limited_on_the_command_line(
@@ -898,3 +898,13 @@ async def test_watch_prints_each_event(
         assert await watching == 0
     output = capsys.readouterr().out
     assert "task #" in output and "added" in output and "'Watched'" in output
+
+
+def test_search_renders_projects_as_qualified_names(run: Runner) -> None:
+    run("task", "add", "A task")
+    code, output = run("search", "workspace", "--kind", "projects", "--all-computers")
+    assert code == 0
+    assert "@local/workspace" in output
+    assert "A task" not in output
+    assert "1 project match(es)" in output
+    assert "task match(es)" not in output
