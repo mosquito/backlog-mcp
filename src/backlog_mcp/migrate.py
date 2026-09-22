@@ -37,7 +37,6 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
     SQL files contain statements, without BEGIN/COMMIT. complete_statement preserves trigger
     bodies and quoted semicolons; executescript would implicitly commit an existing transaction.
     """
-    files = await asyncio.to_thread(candidates, directory)
     await connection.execute("BEGIN IMMEDIATE")
     try:
         async with connection.execute("PRAGMA application_id") as cursor:
@@ -54,19 +53,19 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
             "CREATE TABLE IF NOT EXISTS migrations "
             "(filename TEXT PRIMARY KEY, sha256 TEXT NOT NULL, applied_at REAL NOT NULL)"
         )
-        applied = {
-            row[0]: row[1]
-            for row in await connection.execute_fetchall("SELECT filename, sha256 FROM migrations")
-        }
-        for name, checksum in applied.items():
-            path = directory / name
-            if path not in files:
-                raise ValueError(f"applied migration is missing: {name}")
-            if files[path] != checksum:
-                raise ValueError(f"applied migration SHA-256 changed: {name}")
-        pending = files.keys() - {directory / name for name in applied}
-        for path in sorted(pending):
-            checksum = files[path]
+        files, rows = await asyncio.gather(
+            asyncio.to_thread(candidates, directory),
+            connection.execute_fetchall("SELECT filename, sha256 FROM migrations"),
+        )
+        applied = {directory / row[0]: row[1] for row in rows}
+        missing = applied.keys() - files.keys()
+        if missing:
+            raise ValueError(f"applied migration is missing: {min(missing).name}")
+        pending: set[tuple[Path, str]] = files.items() - applied.items()
+        changed = {path for path, _ in pending} & applied.keys()
+        if changed:
+            raise ValueError(f"applied migration SHA-256 changed: {min(changed).name}")
+        for path, checksum in sorted(pending):
             content = await asyncio.to_thread(path.read_bytes)
             if sha256(content).hexdigest() != checksum:
                 raise ValueError(f"migration changed after discovery: {path.name}")

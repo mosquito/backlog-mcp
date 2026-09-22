@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sqlite3
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -352,7 +353,16 @@ class Store:
                 try:
                     await connection.execute("PRAGMA foreign_keys=ON")
                     await migrate(connection)
-                    await connection.execute("PRAGMA journal_mode=WAL")
+                    # Switching journal mode can return BUSY immediately when another startup
+                    # enters its migration transaction. Release the failed attempt and retry.
+                    for attempt in range(5):
+                        try:
+                            await connection.execute_fetchall("PRAGMA journal_mode=WAL")
+                            break
+                        except sqlite3.OperationalError as error:
+                            if error.sqlite_errorcode != sqlite3.SQLITE_BUSY or attempt == 4:
+                                raise
+                            await asyncio.sleep(0.05)
                 except BaseException:
                     await connection.close()
                     raise

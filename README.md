@@ -723,7 +723,7 @@ MIT
 At startup, the migrator uses the existing aiosqlite connection to apply `src/backlog_mcp/migrations/*.sql` in numeric
 order. Filenames use four digits and a topic, for example `0001-initial.sql`.
 The `migrations` table records each applied filename, its SHA-256, and the application time.
-Pending files are the directory filenames minus the recorded filenames, sorted by filename.
+Pending migrations are the set difference of `(path, SHA-256)` pairs, sorted by path.
 Applied files are not run again. A changed checksum or missing applied file stops startup.
 Add a new numbered file for each subsequent schema change.
 
