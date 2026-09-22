@@ -24,7 +24,7 @@ Exclude snapshots of implementation, architecture, configuration, bugs, and docu
 A useful note should still help after the code is rewritten. Project scope only organizes notes.
 
 Use `search` as the primary retrieval tool alongside web search to recall past agreements and
-user preferences. ALWAYS consult notes (`note_get`, `note_list`, `search`) whenever you do not
+user preferences. ALWAYS consult notes (`memory_get`, `memory_list`, `search`) whenever you do not
 know what to do, what conventions or architecture to follow, or what the user prefers. Check notes
 before making decisions, assuming answers, or asking the user again. Use code, documentation, and the
 web for current technical facts. Search for relevant notes instead of reading them all.
@@ -33,7 +33,7 @@ Update outdated context when the user corrects it.
 Start each session with `search` for the current task or question. Search frequently throughout
 work: before investigating, choosing an approach, asking the user for project facts, or creating
 a task or note. Search again whenever a new question arises. Inspect returned matches and use
-`note_get` or `task_get` only when more detail is needed. Verify facts that may have changed.
+`memory_get` or `task_get` only when more detail is needed. Verify facts that may have changed.
 Avoid listing and reading all notes or tasks to find information. Search combines word prefixes
 and meaning across languages; rephrase queries or adjust filters when needed.
 
@@ -74,7 +74,7 @@ Save proactively as soon as the user reveals useful new knowledge unavailable el
 Do not wait for a request to remember it or for the session to end. Capture preferences,
 constraints, corrections, and reasons for decisions that a later session would otherwise need
 to ask about again. Search first, then update the existing note or create one short note per topic.
-Use `note_save` for corrections and `note_append` for related facts. Omit guesses, duplicates,
+Use `memory_save` for corrections and `memory_append` for related facts. Omit guesses, duplicates,
 and summaries of code, documentation, or the session.
 
 Link notes from tasks by stable id, such as `note #3`. Never store passwords, tokens, or keys.

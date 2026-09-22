@@ -13,24 +13,27 @@ import jwt
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
-from aiohttp_tiny_mcp import Principal
-from aiohttp_tiny_mcp.client import Client
+from aiohttp_tiny_mcp import Client, Principal
+from aiohttp_tiny_mcp.auth.jwt import HMACJWTVerifier, JWTVerifier, PublicKeyJWTVerifier
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
 from conftest import TEST_PSK, Credentials, KeyPair
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519
+from test_httpd import payload
 from yarl import URL
 
 from backlog_mcp import cli, httpd
-from backlog_mcp.auth import HMACJWTVerifier, JWTAuthentication, JWTVerifier, PublicKeyJWTVerifier
+from backlog_mcp.auth import JWTAuthentication
 from backlog_mcp.backlog import Backlog
 
 PSK = TEST_PSK
 
 
 def token(**claims: object) -> str:
-    return jwt.encode({"exp": int(time.time()) + 300, **claims}, PSK, algorithm="HS256")
+    return jwt.encode(
+        {"exp": int(time.time()) + 300, "sub": "user", **claims}, PSK, algorithm="HS256"
+    )
 
 
 def public_pem(key: object) -> str:
@@ -44,20 +47,20 @@ def public_pem(key: object) -> str:
 
 
 @pytest.mark.parametrize("algorithm", ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512"])
-def test_rsa_algorithms_follow_the_configured_key(
+async def test_rsa_algorithms_follow_the_configured_key(
     key_pair: KeyPair, jwt_verifier: JWTVerifier, algorithm: str, tmp_path: Path
 ) -> None:
     key_file = tmp_path / "public.pem"
     key_file.write_text(key_pair.public)
     signed = jwt.encode({"exp": time.time() + 300}, key_pair.private, algorithm=algorithm)
-    assert PublicKeyJWTVerifier(public_key=str(key_file)).verify(signed)
+    assert await PublicKeyJWTVerifier(public_key=str(key_file)).verify(signed)
     verifier = jwt_verifier
-    assert verifier.verify(signed)
-    assert not verifier.verify(token())
-    assert not verifier.verify(jwt.encode({"exp": time.time() + 300}, "", algorithm="none"))
+    assert await verifier.verify(signed)
+    assert not await verifier.verify(token())
+    assert not await verifier.verify(jwt.encode({"exp": time.time() + 300}, "", algorithm="none"))
     header, payload, signature = signed.split(".")
     changed = ("A" if signature[0] != "A" else "B") + signature[1:]
-    assert not verifier.verify(f"{header}.{payload}.{changed}")
+    assert not await verifier.verify(f"{header}.{payload}.{changed}")
     # DER public bytes used as an HMAC secret must never bypass RSA verification.
     der = key_pair.private.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
@@ -65,25 +68,25 @@ def test_rsa_algorithms_follow_the_configured_key(
     header, payload, _ = token().split(".")
     message = f"{header}.{payload}".encode()
     signature = urlsafe_b64encode(hmac.digest(der, message, hashlib.sha256)).rstrip(b"=")
-    assert not verifier.verify(f"{message.decode()}.{signature.decode()}")
+    assert not await verifier.verify(f"{message.decode()}.{signature.decode()}")
 
 
 @pytest.mark.parametrize(
     ("curve", "algorithm"),
     [(ec.SECP256R1(), "ES256"), (ec.SECP384R1(), "ES384"), (ec.SECP521R1(), "ES512")],
 )
-def test_ec_curve_selects_the_algorithm(curve: ec.EllipticCurve, algorithm: str) -> None:
+async def test_ec_curve_selects_the_algorithm(curve: ec.EllipticCurve, algorithm: str) -> None:
     key = ec.generate_private_key(curve)
     verifier = PublicKeyJWTVerifier(public_key=public_pem(key))
     assert verifier.algorithms == (algorithm,)
-    assert verifier.verify(jwt.encode({"exp": time.time() + 300}, key, algorithm=algorithm))
-    assert not verifier.verify(token())
+    assert await verifier.verify(jwt.encode({"exp": time.time() + 300}, key, algorithm=algorithm))
+    assert not await verifier.verify(token())
 
 
 @pytest.mark.parametrize("kind", [ed25519.Ed25519PrivateKey, ed448.Ed448PrivateKey])
-def test_eddsa_public_keys(kind: type) -> None:
+async def test_eddsa_public_keys(kind: type) -> None:
     key = kind.generate()
-    assert PublicKeyJWTVerifier(public_key=public_pem(key)).verify(
+    assert await PublicKeyJWTVerifier(public_key=public_pem(key)).verify(
         jwt.encode({"exp": time.time() + 300}, key, algorithm="EdDSA")
     )
 
@@ -101,19 +104,21 @@ def test_eddsa_public_keys(kind: type) -> None:
         {"aud": "wrong"},
     ],
 )
-def test_invalid_claims_are_rejected(claims: dict[str, object]) -> None:
+async def test_invalid_claims_are_rejected(claims: dict[str, object]) -> None:
     verifier = HMACJWTVerifier(pre_shared_key=PSK, issuer="issuer", audience="backlog")
-    assert not verifier.verify(token(**{"iss": "issuer", "aud": "backlog", **claims}))
+    assert not await verifier.verify(token(**{"iss": "issuer", "aud": "backlog", **claims}))
 
 
-def test_required_claims_and_hmac_algorithm() -> None:
+async def test_required_claims_and_hmac_algorithm() -> None:
     verifier = HMACJWTVerifier(pre_shared_key=PSK, issuer="issuer", audience="backlog")
-    assert verifier.verify(token(iss="issuer", aud=["backlog", "other"]))
-    assert not verifier.verify(token())
-    assert not verifier.verify(jwt.encode({"iss": "issuer", "aud": "backlog"}, PSK))
-    assert not verifier.verify(jwt.encode({"exp": time.time() + 300}, "x" * 32))
-    assert not verifier.verify(jwt.encode({"exp": time.time() + 300}, PSK * 2, algorithm="HS512"))
-    assert HMACJWTVerifier(pre_shared_key=PSK).verify(token(aud="unspecified"))
+    assert await verifier.verify(token(iss="issuer", aud=["backlog", "other"]))
+    assert not await verifier.verify(token())
+    assert not await verifier.verify(jwt.encode({"iss": "issuer", "aud": "backlog"}, PSK))
+    assert not await verifier.verify(jwt.encode({"exp": time.time() + 300}, "x" * 32))
+    assert not await verifier.verify(
+        jwt.encode({"exp": time.time() + 300}, PSK * 2, algorithm="HS512")
+    )
+    assert await HMACJWTVerifier(pre_shared_key=PSK).verify(token(aud="unspecified"))
     assert PSK not in repr(verifier)
 
 
@@ -122,7 +127,7 @@ def test_invalid_configuration_fails_before_serving(
 ) -> None:
     public_key = key_pair.public
     for options in (
-        {"jwt_public_key": public_key, "user": "user"},
+        {"jwt_public_key": public_key, "basic": ["user"]},
         {"jwt_issuer": "issuer"},
         {"jwt_audience": "backlog"},
         {"jwt_pre_shared_key": "short"},
@@ -169,7 +174,7 @@ async def test_authentication_policies(credentials: Credentials) -> None:
     request = make_mocked_request("GET", "/mcp", headers=credentials.headers)
     principal = await credentials.verifier.authenticate(request)
     assert principal is not None
-    assert principal.namespace == ""
+    assert principal.namespace is not None
     for value in ("invalid", ""):
         request = make_mocked_request(
             "GET", "/mcp", headers={"Authorization": f"{credentials.scheme} {value}"}
@@ -245,7 +250,9 @@ async def test_authenticated_mcp_handshake_and_calls(
             await client.initialize()
             result = await client.call_tool("task_add", {"title": "JWT task"})
             assert not result.is_error
-            assert (await backlog.store.task(1)).title == "JWT task"
+            read = await client.call_tool("task_get", {"id": 1})
+            assert not read.is_error
+            assert "JWT task" in read.content[0].text
             # An existing MCP session does not bypass authentication.
             session.headers["Authorization"] = f"{credentials.scheme} invalid"
             async with session.get(endpoint) as response:
@@ -263,17 +270,29 @@ async def test_cli_sends_bearer_or_query_token(
     authentication_options: dict[str, str],
 ) -> None:
     monkeypatch.setattr(cli.paths, "config_files", list)
-    await backlog.view(computer="client").save(root="", name="JWT project")
     async with TestServer(httpd.application(backlog, **authentication_options)) as server:
+        async with (
+            ClientSession(headers=credentials.headers) as session,
+            Client(
+                str(server.make_url("/mcp").with_query(computer="client")),
+                pick(None),
+                session=session,
+            ) as setup,
+        ):
+            await setup.initialize()
+            result = await setup.call_tool("project_save", {"root": "", "name": "JWT project"})
+            assert not result.is_error
         endpoint = server.make_url("/mcp").with_query(computer="client", project="jwt-project")
         auth = [] if query else credentials.cli
         if query:
             endpoint = endpoint.update_query(credentials.query)
         flags = ["--url", str(endpoint), "--state", str(tmp_path / "state.json"), *auth]
-        assert await asyncio.to_thread(cli.main, [*flags, "add", "CLI JWT task"]) == 0
-        assert "added #1 to jwt-project" in capsys.readouterr().out
+        assert await asyncio.to_thread(cli.main, [*flags, "task", "add", "CLI JWT task"]) == 0
+        assert f"added #1 to {payload(result)['full_name']}" in capsys.readouterr().out
         if credentials.scheme == "Bearer":
-            assert await asyncio.to_thread(cli.main, [*flags, "--user", "user", "list"]) == 1
+            assert (
+                await asyncio.to_thread(cli.main, [*flags, "--user", "user", "task", "list"]) == 1
+            )
             assert "not both" in capsys.readouterr().err
 
 
@@ -289,36 +308,71 @@ async def test_cli_sends_bearer_or_query_token(
         {"exp": "NaN"},
     ],
 )
-def test_invalid_principal_claims_are_rejected(claims: dict[str, object]) -> None:
+async def test_invalid_principal_claims_are_rejected(claims: dict[str, object]) -> None:
     encoded = jwt.api_jws.encode(
         json.dumps({"exp": time.time() + 300, **claims}).encode(), PSK, algorithm="HS256"
     )
-    assert HMACJWTVerifier(pre_shared_key=PSK).verify(encoded) is None
+    assert await HMACJWTVerifier(pre_shared_key=PSK).verify(encoded) is None
 
 
 @pytest.mark.parametrize(
     ("claims", "identity", "scopes"),
     [
-        ({}, "|client:", frozenset()),
+        ({}, "|user", frozenset()),
         (
             {"iss": "issuer", "sub": "alice", "scope": "read write"},
             "issuer|alice",
             frozenset({"read", "write"}),
         ),
-        ({"client_id": "cli", "scp": ["read"]}, "|client:cli", frozenset({"read"})),
-        ({"azp": "cli"}, "|client:cli", frozenset()),
+        ({"sub": "", "client_id": "cli", "scp": ["read"]}, "|client:cli", frozenset({"read"})),
+        ({"sub": "", "azp": "cli"}, "|client:cli", frozenset()),
     ],
 )
-def test_verified_claims_define_the_principal(
+async def test_verified_claims_define_the_principal(
     claims: dict[str, object], identity: str, scopes: frozenset[str]
 ) -> None:
-    principal = HMACJWTVerifier(pre_shared_key=PSK).verify(token(**claims))
+    policy = JWTAuthentication(HMACJWTVerifier(pre_shared_key=PSK))
+    request = make_mocked_request(
+        "GET", "/mcp", headers={"Authorization": f"Bearer {token(**claims)}"}
+    )
+    principal = await policy.authenticate(request)
     assert principal is not None
     assert principal.identity == identity
     assert principal.scopes == scopes
-    assert principal.namespace == ""
+    assert principal.namespace is not None
     assert principal.expires_at is not None
     assert principal.claims.items() >= claims.items()
+
+
+@pytest.mark.parametrize("subject", [None, ""])
+async def test_jwt_without_a_user_identity_is_rejected(
+    backlog: Backlog, subject: str | None
+) -> None:
+    async with TestClient(TestServer(httpd.application(backlog, jwt_pre_shared_key=PSK))) as client:
+        response = await client.post(
+            "/mcp", headers={"Authorization": f"Bearer {token(sub=subject)}"}, json={}
+        )
+        assert response.status == 401
+
+
+async def test_jwt_identity_namespaces_cannot_collide() -> None:
+    policy = JWTAuthentication(HMACJWTVerifier(PSK))
+    identities = [
+        {"iss": "a|b", "sub": "c"},
+        {"iss": "a", "sub": "b|c"},
+        {"sub": "client:alice"},
+        {"sub": "", "client_id": "alice"},
+    ]
+    namespaces = set()
+    for claims in identities:
+        principal = await policy.authenticate(
+            make_mocked_request(
+                "GET", "/mcp", headers={"Authorization": f"Bearer {token(**claims)}"}
+            )
+        )
+        assert principal is not None
+        namespaces.add(principal.namespace)
+    assert len(namespaces) == len(identities)
 
 
 @pytest.mark.parametrize("adapter", ["2025-03-26", "2025-06-18", "2025-11-25"])
@@ -361,7 +415,7 @@ async def test_applications_keep_auth_and_sessions_separate(backlog: Backlog) ->
 
     async with (
         TestServer(httpd.application(backlog, jwt_pre_shared_key=PSK)) as jwt_server,
-        TestServer(httpd.application(backlog, user="user", password="password")) as basic_server,
+        TestServer(httpd.application(backlog, basic=["user:password"])) as basic_server,
         TestServer(httpd.application(backlog)) as open_server,
         ClientSession(headers={"Authorization": f"Bearer {token(sub='alice')}"}) as http,
         Client(str(jwt_server.make_url("/mcp")), pick("2025-03-26"), session=http) as client,
@@ -394,10 +448,10 @@ async def test_http_request_verifies_jwt_once(
     original = JWTVerifier.verify
     calls = 0
 
-    def counted(self: JWTVerifier, credentials: str) -> Principal | None:
+    async def counted(self: JWTVerifier, credentials: str) -> Principal | None:
         nonlocal calls
         calls += 1
-        return original(self, credentials)
+        return await original(self, credentials)
 
     monkeypatch.setattr(JWTVerifier, "verify", counted)
     async with TestClient(TestServer(httpd.application(backlog, jwt_pre_shared_key=PSK))) as client:
@@ -408,7 +462,7 @@ async def test_http_request_verifies_jwt_once(
     assert calls == 1
 
 
-async def test_authenticated_users_share_http_and_stdio_notifications(backlog: Backlog) -> None:
+async def test_jwt_notifications_exclude_other_users_and_local_stdio(backlog: Backlog) -> None:
     from aiohttp_tiny_mcp.testing import connect
 
     from backlog_mcp.server import TASK_CHANGED, registry
@@ -437,9 +491,12 @@ async def test_authenticated_users_share_http_and_stdio_notifications(backlog: B
             for source, title in ((writer, "From Bob"), (stdio, "From stdio")):
                 result = await source.call_tool("task_add", {"title": title})
                 assert not result.is_error
-                frame = await asyncio.wait_for(frames.get(), 5)
-                assert frame["method"] == TASK_CHANGED
-                assert frame["params"]["title"] == title
+            result = await listener.call_tool("task_add", {"title": "From Alice"})
+            assert not result.is_error
+            frame = await asyncio.wait_for(frames.get(), 5)
+            assert frame["method"] == TASK_CHANGED
+            assert frame["params"]["title"] == "From Alice"
+            assert frames.empty()
         finally:
             collecting.cancel()
             await asyncio.gather(collecting, return_exceptions=True)
@@ -462,8 +519,7 @@ async def test_combined_policies_advertise_schemes_and_preserve_header_precedenc
     backlog: Backlog, key_pair: KeyPair
 ) -> None:
     options = {
-        "user": "user",
-        "password": "password",
+        "basic": ["user:password"],
         "jwt_pre_shared_key": PSK,
         "jwt_public_key": key_pair.public,
     }
@@ -505,8 +561,7 @@ async def test_combined_policies_preserve_session_ownership(
     ]
     app = httpd.application(
         backlog,
-        user="user",
-        password="password",
+        basic=["user:password"],
         jwt_pre_shared_key=PSK,
         jwt_public_key=key_pair.public,
     )
@@ -538,7 +593,7 @@ async def test_cached_principals_are_specific_to_each_policy(
 
     from backlog_mcp.auth import BasicAuthentication
 
-    basic = BasicAuthentication("user", "password")
+    basic = BasicAuthentication(("user", "password"))
     hmac_policy = JWTAuthentication(HMACJWTVerifier(PSK))
     rsa_policy = JWTAuthentication(PublicKeyJWTVerifier(key_pair.public))
     rsa_policy.required_scopes = ("read",)
@@ -550,9 +605,9 @@ async def test_cached_principals_are_specific_to_each_policy(
     calls: list[type] = []
     original = JWTVerifier.verify
 
-    def counted(self: JWTVerifier, credentials: str) -> Principal | None:
+    async def counted(self: JWTVerifier, credentials: str) -> Principal | None:
         calls.append(type(self))
-        return original(self, credentials)
+        return await original(self, credentials)
 
     monkeypatch.setattr(JWTVerifier, "verify", counted)
     endpoint = Endpoint(Registry("auth-test", "test", auth=[basic, hmac_policy, rsa_policy]))

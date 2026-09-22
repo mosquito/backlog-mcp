@@ -3,8 +3,8 @@ import json
 from typing import Any
 
 import pytest
-from aiohttp_tiny_mcp.client_base import BaseClient
-from aiohttp_tiny_mcp.models import CallToolResult, TextContent, TextResourceContents
+from aiohttp_tiny_mcp.client.base import BaseClient
+from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextResourceContents
 from aiohttp_tiny_mcp.testing import connect
 
 from backlog_mcp.backlog import Backlog
@@ -40,6 +40,8 @@ async def test_catalogue(client: BaseClient) -> None:
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert set(tools) == {
         "project_current",
+        "project_share",
+        "project_members",
         "project_list",
         "project_save",
         "project_delete",
@@ -51,11 +53,11 @@ async def test_catalogue(client: BaseClient) -> None:
         "task_update",
         "task_move",
         "task_delete",
-        "note_save",
-        "note_append",
-        "note_get",
-        "note_list",
-        "note_delete",
+        "memory_save",
+        "memory_append",
+        "memory_get",
+        "memory_list",
+        "memory_delete",
         "search",
         "stats",
     }
@@ -70,7 +72,7 @@ async def test_catalogue(client: BaseClient) -> None:
         "backlog://project",
         "backlog://projects",
         "backlog://tasks",
-        "backlog://notes",
+        "backlog://memory",
     }
 
 
@@ -86,9 +88,9 @@ async def test_scope_follows_the_directory(client: BaseClient, backlog: Backlog)
     #: Another registered project changes nothing: the directory still decides.
     assert (await call(client, "project_current"))["project"]["id"] == current["project"]["id"]
     task = await call(client, "task_add", title="Elsewhere", project=other["slug"])
-    assert task["project"] == other["slug"]
+    assert task["project"] == other["full_name"]
     task = await call(client, "task_add", title="Here")
-    assert task["project"] == current["project"]["slug"]
+    assert task["project"] == current["project"]["full_name"]
 
 
 async def test_the_fixed_project_beats_the_directory(client: BaseClient, backlog: Backlog) -> None:
@@ -235,15 +237,15 @@ async def test_move_preserves_task_and_changes_project_counts(client: BaseClient
     task = await call(client, "task_add", title="Move me", body="Keep this", tags=["api"])
     other = await call(client, "project_save", root="../other")
     moved = await call(client, "task_move", id=task["id"], project=other["slug"])
-    assert moved["project"] == other["slug"]
+    assert moved["project"] == other["full_name"]
     for field in ("id", "title", "status", "priority", "tags", "created_at"):
         assert moved[field] == task[field]
     assert (await call(client, "task_list"))["count"] == 0
     assert (await call(client, "task_list", project=other["slug"]))["count"] == 1
-    assert (await call(client, "task_get", id=task["id"]))["project"] == other["slug"]
+    assert (await call(client, "task_get", id=task["id"]))["project"] == other["full_name"]
     assert moved["body"] == "Keep this"
     history = await call(client, "task_comment_list", task_id=task["id"])
-    assert history["items"][0]["body"] == f"Moved: {task['project']} → {other['slug']}"
+    assert history["items"][0]["body"] == f"Moved: {task['project']} → {other['full_name']}"
 
 
 async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient) -> None:
@@ -295,17 +297,17 @@ async def test_task_status_changes_create_separate_history(client: BaseClient) -
 
 async def test_statistics(client: BaseClient) -> None:
     empty = await call(client, "stats")
-    assert (empty["total"], empty["open"], empty["closed"], empty["notes"]) == (0, 0, 0, 0)
+    assert (empty["total"], empty["open"], empty["closed"], empty["memory"]) == (0, 0, 0, 0)
     await call(client, "task_add", title="Open", priority="urgent", tags=["api"])
     for status in ("doing", "blocked", "done", "cancelled"):
         await call(client, "task_add", title=status, status=status, tags=["docs"])
-    await call(client, "note_save", title="Local preference")
+    await call(client, "memory_save", title="Local preference")
     other = await call(client, "project_save", root="../other")
     await call(client, "task_add", title="Elsewhere", status="blocked", project=other["slug"])
-    await call(client, "note_save", title="Shared agreement", project=other["slug"], shared=True)
-    await call(client, "note_save", title="Private agreement", project=other["slug"])
+    await call(client, "memory_save", title="Shared agreement", project=other["slug"], shared=True)
+    await call(client, "memory_save", title="Private agreement", project=other["slug"])
     stats = await call(client, "stats")
-    assert (stats["total"], stats["open"], stats["closed"], stats["notes"]) == (5, 3, 2, 2)
+    assert (stats["total"], stats["open"], stats["closed"], stats["memory"]) == (5, 3, 2, 2)
     assert stats["by_status"] == {"todo": 1, "doing": 1, "blocked": 1, "done": 1, "cancelled": 1}
     assert stats["by_priority"] == {"urgent": 1, "normal": 4}
     assert set(stats["tags"]) == {"api", "docs"}
@@ -315,11 +317,11 @@ async def test_statistics(client: BaseClient) -> None:
         global_stats["total"],
         global_stats["open"],
         global_stats["closed"],
-        global_stats["notes"],
+        global_stats["memory"],
     ) == (6, 4, 2, 3)
     assert global_stats["by_status"]["blocked"] == 2
     scoped = await call(client, "stats", project=other["slug"])
-    assert (scoped["total"], scoped["open"], scoped["closed"], scoped["notes"]) == (1, 1, 0, 2)
+    assert (scoped["total"], scoped["open"], scoped["closed"], scoped["memory"]) == (1, 1, 0, 2)
 
 
 async def test_resources(client: BaseClient) -> None:
@@ -330,7 +332,7 @@ async def test_resources(client: BaseClient) -> None:
     )
     assert [item["id"] for item in await resource(client, "backlog://tasks")] == [task["id"]]
     current = await resource(client, "backlog://project")
-    assert current["project"]["slug"] == task["project"]
+    assert current["project"]["full_name"] == task["project"]
     assert (await resource(client, "backlog://projects"))[0]["total_tasks"] == 2
     assert "invalid task id" in (await resource(client, "backlog://tasks/invalid"))["error"]
     assert "no task #999" in (await resource(client, "backlog://tasks/999"))["error"]
@@ -372,7 +374,7 @@ async def test_scoped_completions(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Local", tags=["api"])
     other = await call(client, "project_save", root="../other", name="Other")
     await call(client, "task_add", title="Remote", tags=["away"], project=other["slug"])
-    for argument, prefix, expected in [("tag", "a", ["api"]), ("project", "ot", ["other"])]:
+    for argument, prefix, expected in [("tag", "a", ["api"]), ("project", "ot", ["@local/other"])]:
         result = await client.complete(
             {"type": "ref/prompt", "name": "groom"}, {"name": argument, "value": prefix}
         )
@@ -382,9 +384,9 @@ async def test_scoped_completions(client: BaseClient) -> None:
     )
     assert result.completion.values == [str(task["id"])]
     #: The note template names its argument `id` as well; the URI says which ids are wanted.
-    saved = await call(client, "note_save", title="dev vm")
+    saved = await call(client, "memory_save", title="dev vm")
     result = await client.complete(
-        {"type": "ref/resource", "uri": "backlog://notes/{id}"}, {"name": "id", "value": ""}
+        {"type": "ref/resource", "uri": "backlog://memory/{id}"}, {"name": "id", "value": ""}
     )
     assert result.completion.values == [str(saved["id"])]
 
@@ -397,10 +399,10 @@ async def test_scoped_completions(client: BaseClient) -> None:
         ("task_comment_list", {"task_id": 999}, "no task #999"),
         ("task_update", {"id": 999, "title": "Missing"}, "no task #999"),
         ("task_delete", {"id": 999}, "no task #999"),
-        ("note_get", {"id": 999}, "no note #999"),
-        ("note_save", {"id": 999, "body": "Missing"}, "no note #999"),
-        ("note_append", {"id": 999, "text": "Missing"}, "no note #999"),
-        ("note_delete", {"id": 999}, "no note #999"),
+        ("memory_get", {"id": 999}, "no note #999"),
+        ("memory_save", {"id": 999, "body": "Missing"}, "no note #999"),
+        ("memory_append", {"id": 999, "text": "Missing"}, "no note #999"),
+        ("memory_delete", {"id": 999}, "no note #999"),
         ("task_add", {"title": "Wrong project", "project": "missing"}, "no project"),
     ],
 )
@@ -437,8 +439,8 @@ async def test_delete_asks_only_across_projects(
         connect(registry, adapter=adapter, answers={"Delete note": answer}) as client,
     ):
         project = await call(client, "project_save", root="../other" if cross_project else ".")
-        saved = await call(client, "note_save", title="Delete candidate", project=project["slug"])
-        deleted = await call(client, "note_delete", id=saved["id"])
+        saved = await call(client, "memory_save", title="Delete candidate", project=project["slug"])
+        deleted = await call(client, "memory_delete", id=saved["id"])
         expected = not cross_project or answer == {"ok": True}
         assert deleted["deleted"] is expected
         assert deleted["title"] == "Delete candidate"
@@ -459,89 +461,89 @@ async def test_delete_without_elicitation(client: BaseClient, backlog: Backlog) 
 
 
 async def test_notes_save_replace_rename_and_append(client: BaseClient) -> None:
-    saved = await call(client, "note_save", title="dev vm", body="host: vm-3", tags=["Infra"])
+    saved = await call(client, "memory_save", title="dev vm", body="host: vm-3", tags=["Infra"])
     assert saved["tags"] == ["infra"]
     assert saved["shared"] is False
-    assert saved["project"] == (await call(client, "project_current"))["project"]["slug"]
+    assert saved["project"] == (await call(client, "project_current"))["project"]["full_name"]
 
     #: The same title in the same project is the same note; the body is replaced, not added to.
-    replaced = await call(client, "note_save", title="dev vm", body="host: vm-4")
+    replaced = await call(client, "memory_save", title="dev vm", body="host: vm-4")
     assert replaced["id"] == saved["id"]
     assert replaced["body"] == "host: vm-4"
-    assert (await call(client, "note_list"))["count"] == 1
+    assert (await call(client, "memory_list"))["count"] == 1
 
-    renamed = await call(client, "note_save", id=saved["id"], title="dev host", shared=True)
+    renamed = await call(client, "memory_save", id=saved["id"], title="dev host", shared=True)
     assert (renamed["title"], renamed["body"], renamed["shared"]) == (
         "dev host",
         "host: vm-4",
         True,
     )
 
-    appended = await call(client, "note_append", id=saved["id"], text="port 2222")
+    appended = await call(client, "memory_append", id=saved["id"], text="port 2222")
     assert appended["body"] == "host: vm-4\n\nport 2222"
-    by_title = await call(client, "note_append", title="dev host", text="user: deploy")
+    by_title = await call(client, "memory_append", title="dev host", text="user: deploy")
     assert by_title["body"].endswith("port 2222\n\nuser: deploy")
 
-    assert await call(client, "note_get", id=saved["id"]) == by_title
-    assert await call(client, "note_get", title="dev host") == by_title
-    assert (await call(client, "stats"))["notes"] == 1
+    assert await call(client, "memory_get", id=saved["id"]) == by_title
+    assert await call(client, "memory_get", title="dev host") == by_title
+    assert (await call(client, "stats"))["memory"] == 1
 
 
 async def test_search_covers_tasks_and_notes_together(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Move the dev vm", status="done")
-    saved = await call(client, "note_save", title="dev vm", body="host: vm-3.internal")
-    await call(client, "note_save", title="staging", body="https://staging.example")
+    saved = await call(client, "memory_save", title="dev vm", body="host: vm-3.internal")
+    await call(client, "memory_save", title="staging", body="https://staging.example")
 
     found = await call(client, "search", query="vm", limit=1)
     assert found["count"] == 2
     assert [item["id"] for item in found["tasks"]] == [task["id"]]
-    assert [item["id"] for item in found["notes"]] == [saved["id"]]
+    assert [item["id"] for item in found["memory"]] == [saved["id"]]
     #: The excerpt marks the hit, and the id is what a task body links to as `note #id`.
-    assert "[vm]" in found["notes"][0]["snippet"]
+    assert "[vm]" in found["memory"][0]["snippet"]
     assert (await call(client, "search", query="vm", status=["todo"]))["tasks"] == []
-    assert (await call(client, "search", query="staging"))["notes"][0]["title"] == "staging"
+    assert (await call(client, "search", query="staging"))["memory"][0]["title"] == "staging"
     assert (await call(client, "search", query="nothing here", min_score=1))["count"] == 0
 
-    await call(client, "note_append", id=saved["id"], text="port 2222")
-    assert (await call(client, "search", query="port"))["notes"][0]["id"] == saved["id"]
+    await call(client, "memory_append", id=saved["id"], text="port 2222")
+    assert (await call(client, "search", query="port"))["memory"][0]["id"] == saved["id"]
 
 
 async def test_shared_notes_cross_projects(client: BaseClient) -> None:
     other = await call(client, "project_save", root="../other", name="Other")
     theirs = await call(
-        client, "note_save", title="staging", body="theirs", shared=True, project=other["slug"]
+        client, "memory_save", title="staging", body="theirs", shared=True, project=other["slug"]
     )
-    await call(client, "note_save", title="private", body="theirs only", project=other["slug"])
+    await call(client, "memory_save", title="private", body="theirs only", project=other["slug"])
 
-    listed = await call(client, "note_list")
+    listed = await call(client, "memory_list")
     assert [item["id"] for item in listed["items"]] == [theirs["id"]]
-    assert (await call(client, "note_get", title="staging"))["project"] == other["slug"]
+    assert (await call(client, "memory_get", title="staging"))["project"] == other["full_name"]
     assert (await call(client, "search", query="theirs"))["count"] == 1
 
     #: Saving by title from here creates a local note; the shared note of the other project stays.
-    mine = await call(client, "note_save", title="staging", body="mine")
+    mine = await call(client, "memory_save", title="staging", body="mine")
     assert mine["id"] != theirs["id"]
-    assert (await call(client, "note_get", title="staging"))["id"] == mine["id"]
-    assert (await call(client, "note_list"))["count"] == 2
-    assert (await call(client, "note_list", shared=True))["count"] == 1
-    assert (await call(client, "note_list", shared=False))["count"] == 1
-    assert (await call(client, "note_list", all_projects=True))["count"] == 3
+    assert (await call(client, "memory_get", title="staging"))["id"] == mine["id"]
+    assert (await call(client, "memory_list"))["count"] == 2
+    assert (await call(client, "memory_list", shared=True))["count"] == 1
+    assert (await call(client, "memory_list", shared=False))["count"] == 1
+    assert (await call(client, "memory_list", all_projects=True))["count"] == 3
     assert (await call(client, "search", query="theirs", all_projects=True, min_score=1))[
         "count"
     ] == 2
 
-    result = await client.call_tool("note_get", {"title": "nowhere"})
+    result = await client.call_tool("memory_get", {"title": "nowhere"})
     assert isinstance(result, CallToolResult) and result.is_error
     assert isinstance(result.content[0], TextContent)
     assert "no note 'nowhere'" in result.content[0].text
-    result = await client.call_tool("note_save", {"body": "no title"})
+    result = await client.call_tool("memory_save", {"body": "no title"})
     assert isinstance(result, CallToolResult) and result.is_error
 
 
 async def test_note_list_is_compact_unless_full_requested(client: BaseClient) -> None:
     note = await call(
         client,
-        "note_save",
+        "memory_save",
         title="List note",
         body=(
             "## Context\n\nThis note starts with enough prose to demonstrate a readable compact "
@@ -550,7 +552,7 @@ async def test_note_list_is_compact_unless_full_requested(client: BaseClient) ->
         ),
     )
 
-    compact = await call(client, "note_list")
+    compact = await call(client, "memory_list")
     item = compact["items"][0]
     assert "body" not in item
     assert item["snippet"].startswith("This note starts")
@@ -558,16 +560,16 @@ async def test_note_list_is_compact_unless_full_requested(client: BaseClient) ->
     assert len(item["snippet"]) <= 150
     assert "Ignored second paragraph" not in item["snippet"]
 
-    full = await call(client, "note_list", full=True)
+    full = await call(client, "memory_list", full=True)
     assert full["items"][0]["body"] == note["body"]
 
 
 async def test_note_resources(client: BaseClient) -> None:
-    saved = await call(client, "note_save", title="dev vm", body="host: vm-3")
-    assert await resource(client, f"backlog://notes/{saved['id']}") == saved
-    assert [item["id"] for item in await resource(client, "backlog://notes")] == [saved["id"]]
-    assert "invalid note id" in (await resource(client, "backlog://notes/x"))["error"]
-    assert "no note #999" in (await resource(client, "backlog://notes/999"))["error"]
+    saved = await call(client, "memory_save", title="dev vm", body="host: vm-3")
+    assert await resource(client, f"backlog://memory/{saved['id']}") == saved
+    assert [item["id"] for item in await resource(client, "backlog://memory")] == [saved["id"]]
+    assert "invalid note id" in (await resource(client, "backlog://memory/x"))["error"]
+    assert "no note #999" in (await resource(client, "backlog://memory/999"))["error"]
 
 
 @pytest.mark.parametrize("adapter", ["2025-11-25", "2026-07-28"])
@@ -581,8 +583,8 @@ async def test_note_delete_asks_only_across_projects(
         connect(registry, adapter=adapter, answers={"Delete note": answer}) as client,
     ):
         project = await call(client, "project_save", root="../other" if cross_project else ".")
-        saved = await call(client, "note_save", title="Delete candidate", project=project["slug"])
-        deleted = await call(client, "note_delete", id=saved["id"])
+        saved = await call(client, "memory_save", title="Delete candidate", project=project["slug"])
+        deleted = await call(client, "memory_delete", id=saved["id"])
         expected = not cross_project or answer == {"ok": True}
         assert deleted["deleted"] is expected
         assert deleted["title"] == "Delete candidate"
@@ -608,7 +610,7 @@ async def test_project_delete_asks_the_user(
         result = await call(client, "project_delete", project=other["slug"])
         expected = answer == {"ok": True}
         assert result["deleted"] is expected
-        assert (result["slug"], result["tasks"], result["notes"]) == (other["slug"], 1, 0)
+        assert (result["slug"], result["tasks"], result["memory"]) == (other["slug"], 1, 0)
         assert result["detail"] == ("" if expected else "cancelled")
         assert (await backlog.store.task(task["id"]) is None) is expected
         assert (await call(client, "project_list"))["count"] == (1 if expected else 2)
@@ -634,14 +636,14 @@ async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
         other = await call(client, "project_save", root="../other")
         task = await call(client, "task_add", title="Doomed", project=other["slug"])
         shared = await call(
-            client, "note_save", title="Kept in mind", project=other["slug"], shared=True
+            client, "memory_save", title="Kept in mind", project=other["slug"], shared=True
         )
-        private = await call(client, "note_save", title="Private", project=other["slug"])
+        private = await call(client, "memory_save", title="Private", project=other["slug"])
         assert (await call(client, "project_list"))["count"] == 2
 
         deleted = await call(client, "project_delete", project=other["slug"])
         assert deleted["deleted"] is True
-        assert (deleted["slug"], deleted["tasks"], deleted["notes"]) == (other["slug"], 1, 2)
+        assert (deleted["slug"], deleted["tasks"], deleted["memory"]) == (other["slug"], 1, 2)
         assert (await call(client, "project_list"))["count"] == 1
         assert await backlog.store.task(task["id"]) is None
         assert await backlog.store.note(shared["id"]) is None
@@ -663,8 +665,8 @@ async def test_project_delete_keeps_the_fixed_project(backlog: Backlog) -> None:
 
 
 async def test_note_delete_without_elicitation(client: BaseClient, backlog: Backlog) -> None:
-    saved = await call(client, "note_save", title="Delete me")
-    result = await call(client, "note_delete", id=saved["id"])
+    saved = await call(client, "memory_save", title="Delete me")
+    result = await call(client, "memory_delete", id=saved["id"])
     assert result["deleted"] is True
     assert await backlog.store.note(saved["id"]) is None
 
@@ -672,28 +674,28 @@ async def test_note_delete_without_elicitation(client: BaseClient, backlog: Back
 async def test_search_combines_prefix_and_semantic_matches(client: BaseClient) -> None:
     lexical = await call(client, "task_add", title="Password rotation", body="Rotate password")
     semantic = await call(client, "task_add", title="Сбросить пароль")
-    note = await call(client, "note_save", title="Password policy", body="Change password")
+    note = await call(client, "memory_save", title="Password policy", body="Change password")
     result = await call(client, "search", query="password")
     assert [item["id"] for item in result["tasks"]] == [lexical["id"], semantic["id"]]
     assert len({item["id"] for item in result["tasks"]}) == 2
     assert "[password]" in result["tasks"][0]["snippet"]
     assert result["tasks"][1]["score"] > 0
     assert result["tasks"][1]["snippet"] is None
-    assert [item["id"] for item in result["notes"]] == [note["id"]]
+    assert [item["id"] for item in result["memory"]] == [note["id"]]
     strict = await call(client, "search", query="passw", min_score=1)
     assert [item["id"] for item in strict["tasks"]] == [lexical["id"]]
     assert strict["tasks"][0]["score"] is None
-    assert [item["id"] for item in strict["notes"]] == [note["id"]]
+    assert [item["id"] for item in strict["memory"]] == [note["id"]]
     limited = await call(client, "search", query="password", limit=1)
     assert [item["id"] for item in limited["tasks"]] == [lexical["id"]]
-    assert [item["id"] for item in limited["notes"]] == [note["id"]]
+    assert [item["id"] for item in limited["memory"]] == [note["id"]]
 
 
 @pytest.mark.parametrize("entity", ["task", "note"])
 async def test_cross_project_delete_requires_capable_client(backlog: Backlog, entity: str) -> None:
     async with connect(registry, adapter="2024-11-05") as client:
         other = await call(client, "project_save", root="../other")
-        tool = "task_add" if entity == "task" else "note_save"
+        tool = "task_add" if entity == "task" else "memory_save"
         args: dict[str, Any] = {"title": "Elsewhere", "project": other["slug"]}
         if entity == "note":
             args["shared"] = True
@@ -705,10 +707,10 @@ async def test_cross_project_delete_requires_capable_client(backlog: Backlog, en
             assert task is not None
             assert task.status == Status.DELETED
         else:
-            result = await client.call_tool("note_delete", {"id": saved["id"]})
+            result = await client.call_tool("memory_delete", {"id": saved["id"]})
             assert isinstance(result, CallToolResult) and result.is_error
             assert "cannot ask" in str(result.content)
-            assert (await call(client, "note_get", id=saved["id"]))["title"] == "Elsewhere"
+            assert (await call(client, "memory_get", id=saved["id"]))["title"] == "Elsewhere"
 
 
 async def test_note_delete_with_no_project_chosen_needs_a_question(backlog: Backlog) -> None:
@@ -719,8 +721,8 @@ async def test_note_delete_with_no_project_chosen_needs_a_question(backlog: Back
             scope = await call(client, "project_current")
             assert (scope["project"], scope["origin"]) == (None, "none")
             app = await call(client, "project_save", root="/srv/app", name="App")
-            saved = await call(client, "note_save", title="Nowhere", project=app["slug"])
-            refused = await client.call_tool("note_delete", {"id": saved["id"]})
+            saved = await call(client, "memory_save", title="Nowhere", project=app["slug"])
+            refused = await client.call_tool("memory_delete", {"id": saved["id"]})
             assert isinstance(refused, CallToolResult) and refused.is_error
             assert "cannot ask" in str(refused.content)
             assert await backlog.store.note(saved["id"]) is not None
@@ -738,8 +740,8 @@ async def test_note_delete_with_no_project_chosen_asks(
             registry, adapter="2025-11-25", answers={"No project is chosen": answer}
         ) as client:
             app = await call(client, "project_save", root="/srv/app", name="App")
-            saved = await call(client, "note_save", title="Nowhere", project=app["slug"])
-            deleted = await call(client, "note_delete", id=saved["id"])
+            saved = await call(client, "memory_save", title="Nowhere", project=app["slug"])
+            deleted = await call(client, "memory_delete", id=saved["id"])
             assert deleted["deleted"] is answer["ok"]
             assert (await backlog.store.note(saved["id"]) is None) is answer["ok"]
     finally:
@@ -747,14 +749,14 @@ async def test_note_delete_with_no_project_chosen_asks(
 
 
 async def test_note_bodies_are_limited_to_1024_characters(client: BaseClient) -> None:
-    saved = await call(client, "note_save", title="limit", body="x" * 1024)
+    saved = await call(client, "memory_save", title="limit", body="x" * 1024)
     assert len(saved["body"]) == 1024
     for name, arguments in [
-        ("note_save", {"title": "limit", "body": "x" * 1025}),
-        ("note_append", {"id": saved["id"], "text": "y"}),
+        ("memory_save", {"title": "limit", "body": "x" * 1025}),
+        ("memory_append", {"id": saved["id"], "text": "y"}),
     ]:
         result = await client.call_tool(name, arguments)
         assert isinstance(result, CallToolResult) and result.is_error
         assert isinstance(result.content[0], TextContent)
         assert "1024" in result.content[0].text
-    assert (await call(client, "note_get", id=saved["id"]))["body"] == "x" * 1024
+    assert (await call(client, "memory_get", id=saved["id"]))["body"] == "x" * 1024

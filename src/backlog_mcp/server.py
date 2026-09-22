@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import Sequence
 from contextvars import ContextVar
 from typing import Any, Literal
 
-from aiohttp_tiny_mcp import Exchange, Extension, Hint, NeedInput, Registry, elicit
-from aiohttp_tiny_mcp.hub import NOTIFICATIONS, topic
-from aiohttp_tiny_mcp.models import CompleteParams, TextResourceContents
+from aiohttp_tiny_mcp import Authentication, Exchange, Extension, Hint, NeedInput, Registry, elicit
+from aiohttp_tiny_mcp.protocol.models import CompleteParams, TextResourceContents
+from aiohttp_tiny_mcp.storage.hub import NOTIFICATIONS, topic
+from aiohttp_tiny_mcp.storage.sqlite import SqliteHub, SqliteSessionStore, SqliteStorage
 from pydantic import BaseModel, Field
 
 from . import embeddings, skills
@@ -57,7 +60,7 @@ Core agent principles:
 before choosing an approach or writing code, and before asking the user for project facts or \
 clarifications, ALWAYS search the backlog. Search reveals existing tasks, prior decisions, \
 architectural context, and user constraints. Search again whenever a new question arises.
-2. ALWAYS consult notes when uncertain (`note_get`, `note_list`, `search`). If you do not know \
+2. ALWAYS consult notes when uncertain (`memory_get`, `memory_list`, `search`). If you do not know \
 what to do, how to proceed, or what rules to follow, ALWAYS check saved notes before guessing \
 or asking questions. Notes record canonical user preferences, engineering conventions, \
 architectural invariants, and past agreements.
@@ -65,7 +68,7 @@ architectural invariants, and past agreements.
 untracked work. Break user requests into discrete, verifiable tasks on the board. Mark the \
 active task as `doing` when starting, update details as progress happens, and mark `done` or \
 `cancelled` upon completion. Inspect open tasks with `task_list` to know what to do next.
-4. Proactively capture lasting context (`note_save`, `note_append`). Whenever the user states a \
+4. Proactively capture lasting context (`memory_save`, `memory_append`). Whenever the user states a \
 preference, convention, constraint, or decision, save or update it promptly in a note so future \
 sessions remember it. Do not wait to be asked.
 
@@ -86,10 +89,19 @@ its bindings in `roots` and says `here: true` only when this computer has a non-
 empty root is a contextual binding with no files. Do not read, edit, build or run a path belonging \
 to another computer. Tasks and notes belong to the logical project, not to one computer.
 
-Naming a project. A `project` argument takes a slug, such as `backlog-mcp`, or any path inside \
-the project, such as `.` or `~/dev/thing`. A name that matches nothing is an error and creates \
-nothing; `project_save` is the tool that registers a directory, and `project_list` shows every \
-project with its open and total task counts.
+Projects are private to their creator until shared with project_share. Owners manage access
+and deletion; editors change project content; readers can read it. project_members lists
+members. Lists, direct IDs, resources, search and notifications require project membership.
+Shared notes do not bypass membership. IDs are unique in the common database. Roots belong
+to a principal and computer. project_current reports the authenticated principal. Comments
+record principal and computer; records expose created_by and updated_by actors.
+Use owner/slug names, such as alice/foo, to distinguish projects. Short slugs work only
+when unambiguous; #42 selects a stable numeric ID.
+
+Naming a project. A `project` argument accepts owner/slug, an unambiguous short slug,
+#id, or an explicit path such as `./src`, `/srv/app`, or `~/dev/thing`.
+Unknown names are errors and create nothing. Use `project_save` to register a directory.
+`project_list` shows accessible projects with their full names and task counts.
 
 Project language. A project's nullable `preferred_language` specifies the language for project \
 work. Follow it when writing task titles, descriptions, and progress updates. Read it from \
@@ -122,25 +134,25 @@ search instead of reading them all. Recheck an old agreement when the user provi
 
 Save useful new context proactively as soon as the user supplies it. Do not wait for a request \
 to remember it or for the session to end. Search first, then update an existing note or create \
-one short note per topic. Use `note_save` to replace outdated context and `note_append` for \
+one short note per topic. Use `memory_save` to replace outdated context and `memory_append` for \
 related facts. A supplied body replaces the whole body. Omit guesses, duplicates, and secrets. \
 Shared notes are visible across projects. Link notes by stable id, such as `note #3`.
 
-Reach. `task_list`, `note_list`, `search` and `stats` stay inside one project, cover every \
+Reach. `task_list`, `memory_list`, `search` and `stats` stay inside one project, cover every \
 project of this computer with `all_projects=true`, every project of another computer with \
 `computer=<name>`, and everything with `all_computers=true`; `project_list` takes the same two \
 computer arguments. Shared notes are visible from every project and every computer. Task and \
 note ids are unique across projects and computers, so `task_get`, `task_update`, `task_move`, \
-`task_delete`, `note_get`, `note_append` and `note_delete` take an id and no project.
+`task_delete`, `memory_get`, `memory_append` and `memory_delete` take an id and no project.
 
 Search. `search` is the default retrieval tool for project knowledge, previous work, and user \
 preferences. Search at session start, before investigating a problem or choosing an approach, \
 before asking the user for project facts, and before creating a task or note. Search again \
 whenever any uncertainty or question arises during work. Use a short natural-language question \
 or specific terms; try another phrasing if the results are weak. Inspect returned matches and \
-fetch individual records with `note_get` or `task_get` only when more detail is needed. Check \
+fetch individual records with `memory_get` or `task_get` only when more detail is needed. Check \
 facts that may have changed. Avoid full listings and reading every task or note. Reserve \
-`task_list` and `note_list` for an explicitly requested inventory or a complete review; \
+`task_list` and `memory_list` for an explicitly requested inventory or a complete review; \
 use filters and pagination then. Use `stats` when only counts are needed.
 
 `search` combines full-text prefix matching and multilingual semantic search. Use `kinds`
@@ -149,17 +161,17 @@ separately; comment matches include the comment id and task_id. FTS matches come
 then semantic matches, without duplicate IDs within each kind. Embeddings run locally.
 
 Writes. `task_add`, `task_comment_add`, `task_update`, `task_move`, `task_delete`,
-`note_save`, `note_append`, \
-`note_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
+`memory_save`, `memory_append`, \
+`memory_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
 one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
 notification says what the write did: kind, action, id, project, title, status, priority and \
 the writer's computer. The extension `backlog-mcp/events` sends the same event to every \
-listener as `notifications/backlog/task`, `notifications/backlog/note` (multicast by project \
+listener as `notifications/backlog/task`, `notifications/backlog/memory` (multicast by project \
 slug) and `notifications/backlog/project`; a 2026-07-28 client asks for them in \
 `subscriptions/listen`, older streams get them all. `task_delete` marks a task's status as \
-`deleted` without removing the record. `note_delete` and `project_delete` are destructive and \
+`deleted` without removing the record. `memory_delete` and `project_delete` are destructive and \
 irreversible: call them only when the user asked for exactly that, never on your own initiative. \
-`note_delete` deletes at once within the current project and asks the user to confirm when the \
+`memory_delete` deletes at once within the current project and asks the user to confirm when the \
 note belongs to another project or no project is chosen. `project_delete` removes a project with \
 every task and note it holds and always asks the user to confirm. Nothing stands in for the \
 user's answer: a client that cannot ask is refused. Archive with `project_save` when the history \
@@ -173,7 +185,7 @@ then read the file URIs in that catalogue. Older clients see ordinary namespaced
 Skills are instructions only: read them, then use the tools above to do the work.
 
 Also available: the resources `backlog://project`, `backlog://projects`, `backlog://tasks`, \
-`backlog://tasks/{id}`, `backlog://notes` and `backlog://notes/{id}` for reading without a tool \
+`backlog://tasks/{id}`, `backlog://memory` and `backlog://memory/{id}` for reading without a tool \
 call, and the prompts `standup`, which drafts an update from recent work, and `groom`, which \
 reviews the open backlog.
 """.strip()
@@ -194,15 +206,43 @@ registry.extension(embeddings.extension)
 #: The extension that carries the change notifications; see `changed`.
 EVENTS = "backlog-mcp/events"
 TASK_CHANGED = "notifications/backlog/task"
-NOTE_CHANGED = "notifications/backlog/note"
+NOTE_CHANGED = "notifications/backlog/memory"
 PROJECT_CHANGED = "notifications/backlog/project"
-#: Task and note events are multicast by project slug; a project event goes to every listener.
+#: Task and note events use owner-qualified project topics.
+#: Project events go to every authorized listener.
 events = Extension(
     EVENTS,
     notifications={TASK_CHANGED: "project", NOTE_CHANGED: "project", PROJECT_CHANGED: None},
 )
 registry.extension(events)
 METHODS = {Kind.TASK: TASK_CHANGED, Kind.NOTE: NOTE_CHANGED, Kind.PROJECT: PROJECT_CHANGED}
+
+
+ACTIVE_REGISTRY: ContextVar[Registry] = ContextVar("backlog_registry", default=registry)
+
+
+def persistent_registry(
+    backlog: Backlog, policies: Sequence[Authentication] = ()
+) -> tuple[Registry, SqliteStorage]:
+    """Use the application database for protocol sessions and notification events."""
+    storage = SqliteStorage(backlog.store.path)
+    configured = Registry(
+        "backlog",
+        VERSION,
+        instructions=registry.instructions,
+        hub=SqliteHub(storage),
+        session_store=SqliteSessionStore(storage),
+        auth=policies or None,
+    )
+    configured.tools = registry.tools
+    configured.resources_fixed = registry.resources_fixed
+    configured.resources_templated = registry.resources_templated
+    configured.prompts = registry.prompts
+    configured.completer = registry.completer
+    configured.providers = registry.providers
+    configured.extensions = registry.extensions
+    configured.resource_aliases = registry.resource_aliases
+    return configured, storage
 
 
 def use(backlog: Backlog) -> None:
@@ -220,6 +260,9 @@ def project_out(project: Project, *, computer: str) -> ProjectOut:
     return ProjectOut(
         id=project.id,
         slug=project.slug,
+        full_name=project.full_name,
+        owner=project.owner,
+        role=project.role,
         name=project.name,
         roots=[ProjectRootOut(computer=root.computer, root=root.root) for root in project.roots],
         here=any(root.computer == computer and root.root for root in project.roots),
@@ -228,6 +271,8 @@ def project_out(project: Project, *, computer: str) -> ProjectOut:
         archived=project.archived,
         open_tasks=project.open_tasks,
         total_tasks=project.total_tasks,
+        created_by=project.created_by,
+        updated_by=project.updated_by,
         created_at=project.created_at,
         updated_at=project.updated_at,
     )
@@ -242,11 +287,12 @@ def task_out(task: Task) -> TaskOut:
         status=task.status,
         priority=task.priority,
         tags=task.tags,
+        created_by=task.created_by,
+        updated_by=task.updated_by,
         created_at=task.created_at,
         updated_at=task.updated_at,
         closed_at=task.closed_at,
         snippet=task.snippet,
-        history_warning=task.history_warning,
     )
 
 
@@ -276,6 +322,8 @@ def comment_out(comment: Comment) -> CommentOut:
         project=comment.project,
         body=comment.body,
         kind=comment.kind,
+        principal=comment.principal,
+        computer=comment.computer,
         created_at=comment.created_at,
     )
 
@@ -297,6 +345,8 @@ def task_list_item(task: Task) -> TaskListItem:
         status=task.status,
         priority=task.priority,
         tags=task.tags,
+        created_by=task.created_by,
+        updated_by=task.updated_by,
         created_at=task.created_at,
         updated_at=task.updated_at,
         closed_at=task.closed_at,
@@ -312,6 +362,8 @@ def note_out(note: Note) -> NoteOut:
         body=note.body,
         tags=note.tags,
         shared=note.shared,
+        created_by=note.created_by,
+        updated_by=note.updated_by,
         created_at=note.created_at,
         updated_at=note.updated_at,
         snippet=note.snippet,
@@ -326,6 +378,8 @@ def note_list_item(note: Note) -> NoteListItem:
         title=note.title,
         tags=note.tags,
         shared=note.shared,
+        created_by=note.created_by,
+        updated_by=note.updated_by,
         created_at=note.created_at,
         updated_at=note.updated_at,
         snippet=compact_snippet(note.body),
@@ -338,6 +392,7 @@ async def scope_of(backlog: Backlog) -> Scope:
     return Scope(
         project=project_out(project, computer=backlog.computer) if project else None,
         origin=origin,
+        principal=backlog.store.principal,
         computer=backlog.computer,
         computers=await backlog.store.computers(),
         cwd=str(backlog.cwd),
@@ -367,7 +422,7 @@ async def stats_of(backlog: Backlog, reach: Reach) -> Stats:
             if int(rank) in PRIORITIES
         },
         tags=await backlog.store.tags(project_id=project_id, computer=computer),
-        notes=await backlog.store.count_notes(project_id=project_id, computer=computer),
+        memory=await backlog.store.count_notes(project_id=project_id, computer=computer),
     )
 
 
@@ -386,7 +441,7 @@ async def stale(uris: list[str], event: Event) -> None:
     """
     meta = {EVENT_KEY: event.model_dump(mode="json", exclude_none=True)}
     for uri in uris:
-        await registry.hub.publish(
+        await ACTIVE_REGISTRY.get().hub.publish(
             topic(NOTIFICATIONS),
             {
                 "jsonrpc": "2.0",
@@ -396,7 +451,7 @@ async def stale(uris: list[str], event: Event) -> None:
         )
 
 
-async def changed(event: Event) -> None:
+async def publish_change(event: Event) -> None:
     """One write: the resources it touched went stale, and every listener hears the event.
 
     Subscribers by URI get `resources/updated` with the event in `_meta`; listeners of the
@@ -408,14 +463,37 @@ async def changed(event: Event) -> None:
             uris = ["backlog://tasks", "backlog://projects", "backlog://project"]
             uris.append(f"backlog://tasks/{event.id}")
         case Kind.NOTE:
-            uris = ["backlog://notes", f"backlog://notes/{event.id}"]
+            uris = ["backlog://memory", f"backlog://memory/{event.id}"]
         case Kind.PROJECT:
             uris = ["backlog://tasks", "backlog://projects", "backlog://project"]
             if event.action is Action.DELETED:
                 #: The notes of the project went with it.
-                uris.append("backlog://notes")
+                uris.append("backlog://memory")
     await stale(uris, event)
-    await registry.broadcast(METHODS[event.kind], event.model_dump(mode="json", exclude_none=True))
+    await ACTIVE_REGISTRY.get().broadcast(
+        METHODS[event.kind], event.model_dump(mode="json", exclude_none=True)
+    )
+
+
+async def changed(event: Event, *, recipients: list[str] | None = None) -> None:
+    """Publish only to the current members of the affected project."""
+    from aiohttp_tiny_mcp.storage.namespaces import namespace
+
+    store = bound().store
+    event.principal = store.principal
+    if recipients is None:
+        recipients = [store.principal]
+        if event.project_id is not None:
+            with contextlib.suppress(LookupError):
+                recipients = [
+                    member["principal"] for member in await store.members(event.project_id)
+                ]
+    for identity in recipients:
+        token = namespace.set(None if identity == '["local"]' else identity)
+        try:
+            await publish_change(event)
+        finally:
+            namespace.reset(token)
 
 
 def task_event(task: Task, action: Action, *, computer: str) -> Event:
@@ -424,10 +502,12 @@ def task_event(task: Task, action: Action, *, computer: str) -> Event:
         action=action,
         id=task.id,
         project=task.project,
+        project_id=task.project_id,
         title=task.title,
         status=task.status,
         priority=task.priority,
         computer=computer,
+        principal=bound().store.principal,
     )
 
 
@@ -437,8 +517,10 @@ def note_event(note: Note, action: Action, *, computer: str) -> Event:
         action=action,
         id=note.id,
         project=note.project,
+        project_id=note.project_id,
         title=note.title,
         computer=computer,
+        principal=bound().store.principal,
     )
 
 
@@ -447,7 +529,8 @@ def project_event(project: Project, action: Action, *, computer: str) -> Event:
         kind=Kind.PROJECT,
         action=action,
         id=project.id,
-        project=project.slug,
+        project=project.full_name,
+        project_id=project.id,
         title=project.name,
         computer=computer,
     )
@@ -474,7 +557,7 @@ async def note_of(
         shared = [item for item in await backlog.store.notes(shared=True) if item.title == title]
         found = shared[0] if shared else None
     if found is None:
-        raise LookupError(f"no note {title!r} in {owner.slug}")
+        raise LookupError(f"no note {title!r} in {owner.full_name}")
     return found
 
 
@@ -484,8 +567,41 @@ class Nothing(BaseModel):
 
 class ProjectRef(BaseModel):
     project: str | None = Field(
-        default=None, description="Project slug, or any path inside it. Defaults to the current."
+        default=None,
+        description="Project owner/slug, unique short slug, #id, or path. Defaults to current.",
     )
+
+
+class ShareProject(ProjectRef):
+    principal: str = Field(
+        description="Principal from project_current, or a configured Basic username."
+    )
+    role: Literal["reader", "editor"] = "reader"
+
+
+class Members(BaseModel):
+    items: list[dict[str, str]]
+
+
+@registry.tool()
+async def project_members(args: ProjectRef, backlog: Backlog) -> Members:
+    """List principals with access to a project and their roles."""
+    project = await backlog.resolve(args.project)
+    return Members(items=await backlog.store.members(project.id))
+
+
+@registry.tool()
+async def project_share(args: ShareProject, backlog: Backlog) -> Members:
+    """Grant read or edit access to a registered principal. Only the owner can share."""
+    from .auth import basic_namespace
+
+    project = await backlog.resolve(args.project)
+    principal = (
+        args.principal if args.principal.startswith("[") else basic_namespace(args.principal)
+    )
+    await backlog.store.share(project.id, principal, args.role)
+    await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
+    return Members(items=await backlog.store.members(project.id))
 
 
 class ListProjects(BaseModel):
@@ -518,7 +634,9 @@ class SaveProject(BaseModel):
 
 
 class DeleteProject(BaseModel):
-    project: str = Field(description="Project slug, or any path inside it.")
+    project: str = Field(
+        description="Project owner/slug, unique short slug, #id, or explicit path."
+    )
 
 
 class AddTask(BaseModel):
@@ -596,7 +714,9 @@ class UpdateTask(BaseModel):
 
 class MoveTask(BaseModel):
     id: int
-    project: str = Field(description="Project to move the task into: a slug or a path inside it.")
+    project: str = Field(
+        description="Destination project: owner/slug, unique short slug, #id, or explicit path."
+    )
 
 
 class SaveNote(BaseModel):
@@ -730,18 +850,20 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
     confirm. A client that cannot ask is refused; the terminal command `backlog projects delete`
     asks there instead."""
     project = await backlog.lookup(args.project)
+    await backlog.store.require(project.id, role="owner")
     contents = await backlog.store.project_contents(project.id)
     found = ProjectDeleted(
         id=project.id,
         slug=project.slug,
+        full_name=project.full_name,
         name=project.name,
         tasks=contents.tasks,
-        notes=contents.notes,
+        memory=contents.notes,
         shared_notes=contents.shared_notes,
         deleted=False,
     )
     held = (
-        f"{project.slug!r} with {contents.tasks} task(s) and {contents.notes} note(s), "
+        f"{project.full_name!r} with {contents.tasks} task(s) and {contents.notes} note(s), "
         f"{contents.shared_notes} of them shared"
     )
     key = f"delete-project:{project.id}"
@@ -763,8 +885,11 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
     if not answer.get("ok"):
         found.detail = "cancelled"
         return found
+    recipients = [member["principal"] for member in await backlog.store.members(project.id)]
     await backlog.delete(project)
-    await changed(project_event(project, Action.DELETED, computer=backlog.computer))
+    await changed(
+        project_event(project, Action.DELETED, computer=backlog.computer), recipients=recipients
+    )
     found.deleted = True
     return found
 
@@ -932,9 +1057,11 @@ async def confirm_cross_project_delete(
     if not ex.can_ask:
         raise PermissionError(
             f"this client cannot ask the user, so it cannot delete note #{record.id} from "
-            f"{where!r}; use a client with elicitation, or `backlog note delete`"
+            f"{where!r}; use a client with elicitation, or `backlog memory delete`"
         )
-    chosen = f"The current project is {current.slug!r}." if current else "No project is chosen."
+    chosen = (
+        f"The current project is {current.full_name!r}." if current else "No project is chosen."
+    )
     raise NeedInput(
         {
             key: elicit(
@@ -962,7 +1089,7 @@ async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
 
 
 @registry.tool(title="Save a note", annotations=Hint.IDEMPOTENT)
-async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
+async def memory_save(args: SaveNote, backlog: Backlog) -> NoteOut:
     """Save lasting user context: preferences, agreements, architectural invariants, or constraints.
 
     Proactively save useful new knowledge as soon as the user supplies it; do not wait.
@@ -995,10 +1122,10 @@ async def note_save(args: SaveNote, backlog: Backlog) -> NoteOut:
 
 
 @registry.tool(title="Append to a note")
-async def note_append(args: AppendNote, backlog: Backlog) -> NoteOut:
+async def memory_append(args: AppendNote, backlog: Backlog) -> NoteOut:
     """Append a related fact, preference, or constraint to lasting user context.
 
-    Find the note with `search` first. Use `note_save` to correct or replace existing content."""
+    Find the note with `search` first. Use `memory_save` to correct or replace existing content."""
     found = await note_of(backlog, args.id, args.title, args.project)
     updated = await backlog.store.append_note(found.id, args.text)
     if updated is None:
@@ -1008,7 +1135,7 @@ async def note_append(args: AppendNote, backlog: Backlog) -> NoteOut:
 
 
 @registry.tool(title="Read a note", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def note_get(args: ReadNote, backlog: Backlog) -> NoteOut:
+async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
     """Read saved user context, preferences, conventions, or past agreements.
 
     ALWAYS check notes whenever you do not know what to do, what style or architecture to follow,
@@ -1018,7 +1145,7 @@ async def note_get(args: ReadNote, backlog: Backlog) -> NoteOut:
 
 
 @registry.tool(title="List notes", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
+async def memory_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
     """List persistent notes containing user context, preferences, and agreements.
 
     Browse notes whenever you lack direction, are unsure how to proceed, or need rules.
@@ -1056,7 +1183,7 @@ async def note_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
 
 
 @registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
-async def note_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
+async def memory_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted:
     """Delete a note permanently. DESTRUCTIVE: call it only when the user asked for exactly that.
 
     Never delete a note on your own initiative. A note of the current project goes at once. A
@@ -1079,7 +1206,7 @@ async def search(args: embeddings.Search, backlog: Backlog) -> embeddings.Matche
     Use frequently: at session start, before choosing an approach, before asking questions, and
     whenever you are uncertain what to do or what conventions apply. Combines full-text prefix
     matching and multilingual semantic search (FTS matches first).
-    Prefer targeted search over full listings. Read individual matches with `note_get` or `task_get`
+    Prefer targeted search over full listings. Read individual matches with `memory_get` or `task_get`
     only when detail is needed."""
     return await embeddings.search(args, backlog)
 
@@ -1136,7 +1263,7 @@ async def one_task(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
     return (await task_details(task, backlog)).model_dump()
 
 
-@registry.resource("backlog://notes", mime_type="application/json")
+@registry.resource("backlog://memory", mime_type="application/json")
 async def known_notes(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
     """Notes of the current project plus every shared note, most recently changed first."""
     project = await backlog.resolve(None)
@@ -1144,7 +1271,7 @@ async def known_notes(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
     return [note_out(item).model_dump() for item in found]
 
 
-@registry.resource("backlog://notes/{id}", name="note", mime_type="application/json")
+@registry.resource("backlog://memory/{id}", name="note", mime_type="application/json")
 async def one_note(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
     """One note by id."""
     if not args.id.isdigit():
@@ -1258,7 +1385,7 @@ async def groom(args: Groom, backlog: Backlog) -> str:
         for item in found
     ]
     return (
-        f"Open backlog of {project.slug}:\n\n"
+        f"Open backlog of {project.full_name}:\n\n"
         + ("\n".join(lines) or "- nothing open")
         + "\n\nReview it: what should be done first, what duplicates what, "
         "and which items are too vague to start. Suggest concrete edits."
@@ -1267,13 +1394,17 @@ async def groom(args: Groom, backlog: Backlog) -> str:
 
 @registry.completions
 async def complete(args: CompleteParams, backlog: Backlog) -> list[str]:
-    """Complete project slugs, tags, statuses, priorities, task ids and note ids."""
+    """Complete owner-qualified project names, tags, statuses, priorities, task ids and note ids."""
     value = args.argument.value
     #: The task and the note templates both call their argument `id`; the URI tells them apart.
-    about_notes = "notes" in (args.ref.uri or "")
+    about_notes = "memory" in (args.ref.uri or "")
     match args.argument.name, args.ref.type:
         case "project", _:
-            return [slug for slug in await backlog.store.slugs() if slug.startswith(value)]
+            return [
+                name
+                for name in await backlog.store.slugs()
+                if name.startswith(value) or name.split("/", 1)[1].startswith(value)
+            ]
         case "computer", _:
             return [name for name in await backlog.store.computers() if name.startswith(value)]
         case "tag", _:

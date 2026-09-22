@@ -70,15 +70,15 @@ The server's working directory never determines the CLI's local checkout.
 
 ```bash
 cd ~/dev/my-project        # first use prompts for project registration
-backlog add Write the release notes -t docs
-backlog create             # the same, in $EDITOR
-backlog list
+backlog task add Write the release notes -t docs
+backlog task create             # the same, in $EDITOR
+backlog task list
 backlog search notes       # tasks, comments, and notes
-backlog show 1
-backlog start 1            # doing
-backlog block 1            # blocked
-backlog close 1            # done
-backlog reopen 1           # todo again
+backlog task show 1
+backlog task start 1            # doing
+backlog task block 1            # blocked
+backlog task close 1            # done
+backlog task reopen 1           # todo again
 backlog stats              # open tasks, closed tasks, and notes
 ```
 
@@ -116,18 +116,18 @@ Nested aliases start with `p` for projects and `n` for notes:
 For example, `backlog sh 1` shows a task and `backlog no na Convention -b "Use English"`
 saves a note. Arguments and options work the same with either spelling.
 
-`backlog edit <id>` edits the task fields and description. Routine progress belongs
+`backlog task edit <id>` edits the task fields and description. Routine progress belongs
 in a separate comment:
 
 ```bash
-backlog comment 1 "Implemented the parser; checking error handling."
-backlog comments 1
+backlog task comment 1 "Implemented the parser; checking error handling."
+backlog task comments 1
 backlog search parser --kind comments
 backlog search parser --kind tasks --kind comments
 ```
 
-`backlog show <id>` displays the description and all comments as separate Markdown
-blocks. Dates and entry types appear outside the comment text. `backlog comments <id>`
+`backlog task show <id>` displays the description and all comments as separate Markdown
+blocks. Dates and entry types appear outside the comment text. `backlog task comments <id>`
 shows the complete history without the task description.
 
 Over MCP, `task_comment_add(task_id, body)` adds a comment. `task_update(body=...)`
@@ -136,11 +136,10 @@ in a separate `comments` list. `task_comment_list(task_id)` returns the complete
 on its own. Entries sort by creation time, then id. Status transitions
 and project moves create history entries without changing the description.
 
-The database migration extracts recognized legacy `# UPDATE` blocks and keeps an exact
-copy of each affected body in `task_history_originals`. Ambiguous histories stay intact
-and set `history_warning` for manual review. Code fences are preserved.
+Comments and automatic history entries record the writer's `principal` and `computer`.
+Projects, tasks and notes return `created_by` and `updated_by` actors.
 
-Search accepts `kinds=["tasks", "comments", "notes"]` by default. Select any subset to
+Search accepts `kinds=["tasks", "comments", "memory"]` by default. Select any subset to
 search task descriptions, comment text, or notes. Each kind has its own result list;
 comment results include their id, task_id, project, snippet, and match score.
 
@@ -148,7 +147,7 @@ Every command prints a table or a panel, in colour when the terminal takes it:
 
 ```
 $ backlog search notes
-1 task match(es) for 'notes' in my-project
+1 task match(es) for 'memory' in my-project
 ╭────┬────────┬────────┬─────────────────────────┬──────────────────────────────┬──────┬─────╮
 │ id │ status │ pri    │ title                   │ match                        │ tags │ age │
 ├────┼────────┼────────┼─────────────────────────┼──────────────────────────────┼──────┼─────┤
@@ -258,7 +257,7 @@ project. Omit the field to keep its current value; send `null` to clear it.
 ```bash
 backlog current            # which project, and why that one
 backlog projects           # every registered project
-backlog move 1 other-project
+backlog task move 1 other-project
 ```
 
 `--project` goes before the subcommand and applies to every command:
@@ -280,9 +279,9 @@ renamed host keeps its projects.
 backlog current                    # names this computer and lists the others
 backlog projects                   # the projects of this computer
 backlog projects --all-computers   # every project, with a column for the other computers
-backlog list --computer laptop     # open tasks of every project on the laptop
+backlog task list --computer laptop     # open tasks of every project on the laptop
 backlog search deploy --all-computers
-backlog move 3 laptop-app          # a task moves between computers like between projects
+backlog task move 3 laptop-app          # a task moves between computers like between projects
 ```
 
 Listings stay on this computer unless `--computer` or `--all-computers` widens them, and shared
@@ -309,8 +308,8 @@ pinned or remembered, so one client never redirects another. `project_current` a
 (null for an installed package), so a stale deploy shows from the client. `backlog current`
 prints the same. `project_save` with an explicit `root`
 checks that the directory exists on this computer; for another computer it takes the path as
-given. Every client shares the credentials and may name any computer: the server tells the
-computers apart, it does not keep them from each other.
+given. A user may name any computer within their own data. Computer selection never
+switches the authenticated user or exposes another user's projects.
 
 ### Notes
 
@@ -338,13 +337,13 @@ tasks. Never write a secret into a note, only where the secret lives.
 
 ```bash
 # Save this only if the user supplied it and it is unavailable elsewhere.
-backlog note add release coordination -b "Ask Anna before scheduling a customer rollout." -t people
-backlog note append 1 "Anna prefers one day of advance notice."
-backlog note list                      # this project plus every shared note
-backlog note show 1
-backlog note edit 1                    # the same form, in $EDITOR
+backlog memory add release coordination -b "Ask Anna before scheduling a customer rollout." -t people
+backlog memory append 1 "Anna prefers one day of advance notice."
+backlog memory list                      # this project plus every shared note
+backlog memory show 1
+backlog memory edit 1                    # the same form, in $EDITOR
 backlog search release coordination    # relevant tasks and past agreements
-backlog note add communication --shared # visible from every project
+backlog memory add communication --shared # visible from every project
 ```
 
 ## Serve it to an agent
@@ -352,13 +351,13 @@ backlog note add communication --shared # visible from every project
 ```bash
 backlog mcp                                        # stdio, what a client starts itself
 backlog mcp --protocol=http --http-port=3009       # endpoint /mcp, console /
-backlog-mcp --protocol=http --http-user=me --http-password=secret
+backlog-mcp --protocol=http --auth-basic=alice:secret --auth-basic=bob:another-secret
 ```
 
 `backlog-mcp` is `backlog mcp` without the word. A config file holds these options in its
-`[mcp]` table, and the environment as `BACKLOG_MCP_HTTP_PORT` and friends; `--config FILE` is
-accepted before and after `mcp`. Over HTTP the
-endpoint lives at `/mcp` and the bundled console at `/`. Configure Basic credentials or a JWT
+`[mcp]` table and nested groups. Environment variables use `BACKLOG_MCP_HTTP_PORT` and
+related names. `--config FILE` is accepted before and after `mcp`. Over HTTP the endpoint
+lives at `/mcp` and the bundled console at `/`. Configure Basic credentials or a JWT
 verification key to protect MCP requests. The console HTML, JS, and CSS are public;
 they contain no backlog data. Without authentication, bind to `127.0.0.1`.
 The endpoint refuses a browser
@@ -366,17 +365,78 @@ The endpoint refuses a browser
 scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
 validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
 
+Server options use the same group structure in each configuration source:
+
+| CLI flag | TOML table and key | Environment variable |
+| --- | --- | --- |
+| `--http-port` | `[mcp.http] port` | `BACKLOG_MCP_HTTP_PORT` |
+| `--auth-basic` | `[mcp.auth] basic` | `BACKLOG_MCP_AUTH_BASIC` |
+| `--auth-jwt-public-key` | `[mcp.auth.jwt] public_key` | `BACKLOG_MCP_AUTH_JWT_PUBLIC_KEY` |
+
+Move flat HTTP settings to `[mcp.http]`, Basic accounts to `[mcp.auth]`, and JWT
+settings to `[mcp.auth.jwt]`. Replace `--basic` with `--auth-basic` and
+`--http-jwt-*` with `--auth-jwt-*` in existing launch commands.
+
 HTTP authentication uses the
 [aiohttp-tiny-mcp policies](https://github.com/mosquito/aiohttp-tiny-mcp/blob/master/docs/guide/auth.md).
+The dependency `aiohttp-tiny-mcp[jwt]~=0.5.0` supplies Basic authentication and
+asynchronous JWT verifiers. Backlog adds header/query credential handling and isolates
+stored data and notifications by authenticated identity.
 Basic and JWT policies accept the existing header and query credentials. Basic rejection
 responses include `charset="UTF-8"`. These policies do not publish OAuth metadata.
 Each HTTP application has its own authentication policy and session storage; stdio stays
-independent. Authenticated users share backlog data and change notifications.
+independent. Each authenticated identity sees only its own projects, tasks, comments,
+notes, search results and notifications. Shared notes and `all_computers` remain inside
+that user's data. Record IDs are local to each user's database.
+
+`--auth-basic` accepts several `username:password` values or repeated flags. Passwords may
+contain colons; usernames must be unique. The `[mcp.auth]` key `basic` is an array:
+
+```toml
+[mcp]
+protocol = "http"
+
+[mcp.auth]
+basic = ["alice:secret", "bob:another-secret"]
+```
+
+Use `[mcp.http]` for HTTP settings and `[mcp.auth]` for credentials.
+`BACKLOG_MCP_AUTH_BASIC` accepts a shell-quoted list, such as
+`alice:secret 'bob:password with spaces'`. CLI values extend the configured account list.
+
+All principals use one SQLite file. It holds projects, memberships, tasks, comments,
+notes, MCP sessions and notification events. New projects belong to their creator.
+Account order does not grant ownership. Basic and JWT identities remain distinct.
+Local stdio and HTTP without authentication use the local principal.
+
+Use `project_share(project="example", principal="bob", role="reader")` to give a configured
+Basic user read access. Use `role="editor"` for task, comment, note and project edits.
+Only the owner can share or delete a project. `project_members(project="example")`
+lists its members. JWT principals register on first authenticated use; pass their exact
+identity from `project_current` when sharing. Basic users register at server startup.
+
+Project roots belong to a principal and computer. Use `project_list(all_computers=true)`
+to discover shared projects, then register your own root with `project_save`.
+Projects retain a short `slug` and expose `full_name` in `{owner}/{slug}` form: `alice/foo`, `bob/foo`.
+Use that name for tools, CLI `--project`, and notification filters. Short slugs work only
+when one accessible project matches. `project="#<id>"` also selects a stable ID.
+Basic owner names use percent encoding for special characters. The local owner is
+`@local`; JWT owners have stable `@jwt-` names that include their authentication identity.
+Prefix relative filesystem paths with `./` to distinguish them from project names.
+
+Lists, direct IDs, resources, FTS5 and vector search only expose accessible projects.
+Search filters candidates before ranking and limits. A shared note remains limited to
+members of its source project. Notifications go to project members; sessions stay
+principal-scoped. Existing streams and stored event replay have no revocation machinery.
+
+This release creates a fresh schema. It refuses old databases without migrating them.
+Import the old installation later with a separate ad hoc script. Back up the SQLite
+file with SQLite's backup API when the server is running.
 
 ### JWT authentication
 
-Configure one or both JWT verification methods. `http_jwt_public_key` accepts a PEM public key or the
-path to a PEM file. `http_jwt_pre_shared_key` accepts an HS256 shared secret of at least
+Configure one or both verification methods in `[mcp.auth.jwt]`. `public_key` accepts a PEM
+public key or its file path. `pre_shared_key` accepts an HS256 shared secret of at least
 32 bytes. Basic, JWT-HMAC, and public-key JWT are independent server policies;
 enable any combination by supplying their credentials or keys. Each request must
 pass one policy. Each JWT verifier accepts only its configured key family.
@@ -384,20 +444,22 @@ pass one policy. Each JWT verifier accepts only its configured key family.
 ```toml
 [mcp]
 protocol = "http"
-http_jwt_public_key = "/etc/backlog/jwt-public.pem"
-http_jwt_issuer = "https://identity.example"
-http_jwt_audience = "backlog"
+
+[mcp.auth.jwt]
+public_key = "/etc/backlog/jwt-public.pem"
+issuer = "https://identity.example"
+audience = "backlog"
 ```
 
-To also accept Basic and HS256 on the same endpoint, configure `http_user`,
-`http_password`, and `http_jwt_pre_shared_key` alongside `http_jwt_public_key`.
+To also accept Basic and HS256 on the same endpoint, configure `[mcp.auth].basic` and
+`[mcp.auth.jwt].pre_shared_key` alongside `public_key`.
 Both JWT policies use the configured issuer and audience checks. The CLI still
 sends one authentication scheme per request. Rejected requests advertise the
 configured schemes in `WWW-Authenticate`.
 
-The corresponding flags are `--http-jwt-public-key`, `--http-jwt-pre-shared-key`,
-`--http-jwt-issuer`, and `--http-jwt-audience`. Environment variables use the
-`BACKLOG_MCP_` prefix, for example `BACKLOG_MCP_HTTP_JWT_PRE_SHARED_KEY`.
+The corresponding flags are `--auth-jwt-public-key`, `--auth-jwt-pre-shared-key`,
+`--auth-jwt-issuer`, and `--auth-jwt-audience`. Environment variables use the
+`BACKLOG_MCP_` prefix, for example `BACKLOG_MCP_AUTH_JWT_PRE_SHARED_KEY`.
 `issuer` and `audience` checks are optional; omit their settings to disable those checks.
 
 The configured key determines the accepted algorithms:
@@ -415,10 +477,10 @@ invalid, missing, or expired credentials receive HTTP 401, including on existing
 
 Session ownership uses the verified `iss` and `sub`, or `client_id`/`azp` when `sub` is
 absent. Renewed tokens with the same identity can reuse a session; another identity
-receives HTTP 404. Tokens without either identity claim retain shared-account behavior
-within their issuer. Issue tokens with `sub` or `client_id` for separate session owners.
+receives HTTP 404. Tokens without a non-empty `sub`, `client_id`, or `azp` are rejected.
+The verified issuer and subject or client identifier select the user's isolated data.
 The verifier maps `scope` (a space-separated string) or `scp` (a list) to the principal.
-These claims do not create project or computer permissions.
+Scope claims do not grant access to another user's projects or computers.
 
 ```bash
 backlog --url https://backlog.example/mcp --token "$JWT" list
@@ -437,19 +499,19 @@ require valid credentials, including after a session has been established.
 
 The agent gets 19 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
 `task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,
-`task_move`, `task_delete`, `note_save`,
-`note_append`, `note_get`, `note_list`, `note_delete`, `search`, `stats`), the same
+`task_move`, `task_delete`, `memory_save`,
+`memory_append`, `memory_get`, `memory_list`, `memory_delete`, `search`, `stats`), the same
 boards, and the same database. `search` is the one search: it answers with the tasks, comments, and
 notes that match, so a new kind of record later is one more list in the result, not a new
 tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`,
-`backlog://tasks/{id}`, `backlog://notes` and `backlog://notes/{id}` read the same data without a
+`backlog://tasks/{id}`, `backlog://memory` and `backlog://memory/{id}` read the same data without a
 tool call, and a write publishes `notifications/resources/updated` for the ones it touched. Each
 such notification carries `_meta["backlog/event"]`, what the write did: `kind` (task, note or
 project), `action` (added, updated, moved or deleted), `id`, `project`, `title`, for tasks `status`
 and `priority`, and the writer's `computer`. A subscriber learns what happened without reading
 the resource again.
 
-`task_delete` and `note_delete` delete immediately within the current project. Deleting
+`task_delete` and `memory_delete` delete immediately within the current project. Deleting
 a record owned by another project asks the user to confirm, including shared notes; a client
 that cannot ask is refused. Terminal commands follow the same rule; `--yes` confirms deletion
 from another project. `project_delete` removes a project with every task and note on its board
@@ -508,7 +570,7 @@ backlog skills triage   # the instructions in full
 Every write announces itself. A client that subscribes to a resource by URI gets
 `notifications/resources/updated` with the event in `_meta["backlog/event"]`, as above. A client
 that wants the events without subscribing to resources asks for the notifications of the
-`backlog-mcp/events` extension: `notifications/backlog/task` and `notifications/backlog/note`,
+`backlog-mcp/events` extension: `notifications/backlog/task` and `notifications/backlog/memory`,
 multicast by project slug, and `notifications/backlog/project`, sent to every listener. On
 2026-07-28 the client names them in `subscriptions/listen`, with `{"method": ..., "topics":
 ["<slug>"]}` to keep one project; a `GET` stream of an older revision gets every event of every
@@ -557,8 +619,10 @@ computer = "laptop"
 
 [mcp]
 protocol = "http"
-http_listen = "127.0.0.1"
-http_port = 3009
+
+[mcp.http]
+listen = "127.0.0.1"
+port = 3009
 ```
 
 ## The library

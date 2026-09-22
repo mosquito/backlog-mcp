@@ -49,7 +49,7 @@ class Reach:
 
     @property
     def slug(self) -> str | None:
-        return self.project.slug if self.project else None
+        return self.project.full_name if self.project else None
 
     @property
     def scope_computer(self) -> str | None:
@@ -60,7 +60,7 @@ class Reach:
     def label(self) -> str:
         """The scope as a phrase, for titles."""
         if self.project:
-            return self.project.slug
+            return self.project.full_name
         if self.computer:
             return f"every project on {self.computer}"
         return "every project on every computer"
@@ -96,13 +96,19 @@ class Backlog:
         if store.computer is None:
             store.computer = self.computer
 
-    def view(self, *, computer: str | None = None, project: str | None = None) -> Backlog:
+    def view(
+        self,
+        *,
+        computer: str | None = None,
+        project: str | None = None,
+        principal: str | None = None,
+    ) -> Backlog:
         """The same store and state, seen from a computer, with a project fixed when given.
 
         One HTTP server answers for several computers: each request gets its own view.
         """
         seen = Backlog(
-            self.store,
+            self.store.view(principal=principal, computer=computer or self.computer),
             self.state,
             cwd=self.cwd,
             project=project or self.named,
@@ -162,11 +168,15 @@ class Backlog:
         return await self.choose()
 
     async def lookup(self, reference: str) -> Project:
-        """A project by slug, or by any path inside it on this computer. Raises `UnknownProject`."""
-        found = await self.store.project_by_slug(reference)
+        """Resolve an owner/slug name, unique short slug, #id, or explicit filesystem path."""
+        found = (
+            await self.store.project(int(reference[1:]))
+            if reference.startswith("#") and reference[1:].isdigit()
+            else await self.store.project_by_slug(reference)
+        )
         if found is not None:
             return found
-        if reference.startswith((".", "/", "~")) or "/" in reference:
+        if reference.startswith((".", "/", "~")):
             path = self.absolute(reference)
             found = await self.store.project_by_root(path, computer=self.computer)
             if found is None:
@@ -219,7 +229,7 @@ class Backlog:
         return Reach(project=await self.resolve(project))
 
     async def free_slug(self, wanted: str) -> str:
-        taken = set(await self.store.slugs())
+        taken = set(await self.store.slugs(owned=True))
         if wanted not in taken:
             return wanted
         for suffix in range(2, len(taken) + 3):

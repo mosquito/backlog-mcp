@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientResponse, ClientSession, ClientTimeout
 from aiohttp_tiny_mcp import AdapterSet, Client, StdioClient
-from aiohttp_tiny_mcp.client_base import BaseClient, Elicitor
-from aiohttp_tiny_mcp.models import CallToolResult, TextContent, TextResourceContents
+from aiohttp_tiny_mcp.client.base import BaseClient, Elicitor
+from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextResourceContents
 from pydantic import BaseModel
 from yarl import URL
 
@@ -156,7 +156,7 @@ async def stop(process: asyncio.subprocess.Process) -> None:
 
 
 def project_reference(reference: str, root: Path) -> str:
-    if reference.startswith((".", "/", "~")) or "/" in reference:
+    if reference.startswith((".", "/", "~")):
         return str((root / Path(reference).expanduser()).resolve())
     return reference
 
@@ -218,7 +218,7 @@ async def bind_directory(connection: Connection, register: Registrar) -> Project
             )
     if isinstance(connection.client, Client):
         connection.client.base_url = str(
-            URL(connection.client.base_url).update_query(project=project.slug)
+            URL(connection.client.base_url).update_query(project=project.full_name)
         )
     if connection.computer != original_computer and connection.state is not None:
         connection.state.update(computer=connection.computer)

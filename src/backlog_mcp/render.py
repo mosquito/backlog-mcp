@@ -182,7 +182,7 @@ def projects_table(items: Sequence[ProjectOut], *, computer: str | None = None) 
     table.add_column("name", overflow="fold", style="dim")
     table.add_column("language")
     for item in items:
-        slug = Text(item.slug, style="dim strike" if item.archived else "bold magenta")
+        slug = Text(item.full_name, style="dim strike" if item.archived else "bold magenta")
         cells: list[str | Text] = [slug]
         root = Text(", ".join(f"{root.computer}:{root.root or '—'}" for root in item.roots))
         cells.extend(
@@ -245,10 +245,6 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
     body = task.body.strip()
     parts: list[RenderableType] = [fields(rows), Rule(style="dim")]
     parts.append(Markdown(body) if body else Text("no description", style="dim italic"))
-    if task.history_warning:
-        parts.append(
-            Text("Legacy history needs review; its original text was preserved.", style="yellow")
-        )
     if isinstance(task, TaskDetails) and task.comments:
         parts.append(Rule(f"comments and history ({len(task.comments)})", style="dim"))
         parts.extend(comment_panel(item) for item in task.comments)
@@ -267,11 +263,11 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
 def comment_panel(comment: CommentOut) -> Panel:
     when = datetime.fromtimestamp(comment.created_at).astimezone().isoformat(timespec="seconds")
     return Panel(
-        Markdown(comment.body) if comment.body.strip() else Text("empty legacy entry", style="dim"),
+        Markdown(comment.body) if comment.body.strip() else Text("empty comment", style="dim"),
         title=Text(f"{comment.kind} #{comment.id} · {when}"),
         title_align="left",
         box=ROUNDED,
-        subtitle=Text(f"task #{comment.task_id}"),
+        subtitle=Text(f"{comment.principal} · {comment.computer} · task #{comment.task_id}"),
         width=width(),
     )
 
@@ -292,7 +288,7 @@ def note_panel(item: NoteOut, *, computer: str | None = None) -> Panel:
     if item.tags:
         rows.append(("tags", Text(", ".join(item.tags), style="blue")))
     if item.shared:
-        rows.append(("shared", Text("yes, every project sees it", style="green")))
+        rows.append(("shared", Text("yes, within accessible projects", style="green")))
     rows.append(("created", Text(since(item.created_at), style="dim")))
     if item.updated_at > item.created_at:
         rows.append(("changed", Text(since(item.updated_at), style="dim")))
@@ -349,7 +345,7 @@ def stats_view(stats: Stats) -> Table:
     table.add_row(Text("open tasks", style="bold"), str(stats.open))
     table.add_row(Text("closed tasks", style="bold"), str(stats.closed))
     table.add_row(Text("total tasks", style="bold"), str(stats.total))
-    table.add_row(Text("notes", style="bold"), str(stats.notes))
+    table.add_row(Text("memory", style="bold"), str(stats.memory))
     table.add_section()
     for status in Status:
         table.add_row(status_text(status), str(stats.by_status.get(status.value, 0)))
@@ -377,7 +373,7 @@ def scope_panel(scope: Scope) -> Panel:
     else:
         rows.extend(
             [
-                ("project", Text(project.slug, style="bold magenta")),
+                ("project", Text(project.full_name, style="bold magenta")),
                 ("chosen by", Text(scope.origin.value, style="dim")),
                 (
                     "roots",

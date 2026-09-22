@@ -22,7 +22,7 @@ Exclude snapshots of implementation, architecture, configuration, bugs, and docu
 A useful note should still help after the code is rewritten. Project scope only organizes notes.
 
 Use `search` as the primary retrieval tool alongside web search to recall past agreements and
-user preferences. ALWAYS consult notes (`note_get`, `note_list`, `search`) whenever you do not
+user preferences. ALWAYS consult notes (`memory_get`, `memory_list`, `search`) whenever you do not
 know what to do, what conventions or architecture to follow, or what the user prefers. Check notes
 before making decisions, assuming answers, or asking the user again. Use code, documentation, and the
 web for current technical facts. Search for relevant notes instead of reading them all.
@@ -70,7 +70,7 @@ Follow the project's `preferred_language` for task and comment text.
 Proactively save useful new knowledge from the user that is unavailable elsewhere: constraints,
 preferences, corrections, and reasons for decisions. Save it as it arises; do not wait for a
 request to remember it or for the session to end. Search first, then update the existing note
-or create one short note per topic. Use `note_save` for corrections and `note_append` for related
+or create one short note per topic. Use `memory_save` for corrections and `memory_append` for related
 facts. Omit guesses, duplicates, secrets, and summaries of code, documentation, or the plan.
 Link relevant notes from tasks as `note #3`.
 

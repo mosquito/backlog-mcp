@@ -5,195 +5,52 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Any, Literal
 
+import aiosql
 import aiosqlite
 
 from .computer import hostname
-from .history import split_history
-from .models import CLOSED_STATUSES, OPEN_STATUSES, PRIORITIES, RANKS, Priority, Status
+from .models import CLOSED_STATUSES, OPEN_STATUSES, PRIORITIES, RANKS, Actor, Priority, Status
+from .names import owner_name, project_name
 
-#: Applied in order; the file's `user_version` says how many already ran. `:computer` is the
-#: name of this computer, given to the projects registered before projects had one.
-MIGRATIONS: tuple[tuple[str, ...], ...] = (
-    (
-        """CREATE TABLE projects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slug TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            root TEXT NOT NULL UNIQUE,
-            description TEXT NOT NULL DEFAULT '',
-            archived INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )""",
-        """CREATE TABLE tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            title TEXT NOT NULL,
-            body TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'todo',
-            priority INTEGER NOT NULL DEFAULT 2,
-            tags TEXT NOT NULL DEFAULT '',
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            closed_at REAL
-        )""",
-        "CREATE INDEX tasks_by_project ON tasks (project_id, status, priority)",
-        "CREATE INDEX tasks_by_update ON tasks (updated_at DESC)",
-        """CREATE VIRTUAL TABLE tasks_fts USING fts5 (
-            title, body, tags,
-            content='tasks', content_rowid='id',
-            tokenize="unicode61 remove_diacritics 2"
-        )""",
-        """CREATE TRIGGER tasks_fts_insert AFTER INSERT ON tasks BEGIN
-            INSERT INTO tasks_fts (rowid, title, body, tags)
-            VALUES (new.id, new.title, new.body, new.tags);
-        END""",
-        """CREATE TRIGGER tasks_fts_delete AFTER DELETE ON tasks BEGIN
-            INSERT INTO tasks_fts (tasks_fts, rowid, title, body, tags)
-            VALUES ('delete', old.id, old.title, old.body, old.tags);
-        END""",
-        """CREATE TRIGGER tasks_fts_update AFTER UPDATE ON tasks BEGIN
-            INSERT INTO tasks_fts (tasks_fts, rowid, title, body, tags)
-            VALUES ('delete', old.id, old.title, old.body, old.tags);
-            INSERT INTO tasks_fts (rowid, title, body, tags)
-            VALUES (new.id, new.title, new.body, new.tags);
-        END""",
-    ),
-    (
-        """CREATE TABLE notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-            title TEXT NOT NULL,
-            body TEXT NOT NULL DEFAULT '',
-            tags TEXT NOT NULL DEFAULT '',
-            shared INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )""",
-        "CREATE UNIQUE INDEX notes_by_title ON notes (project_id, title)",
-        "CREATE INDEX notes_by_update ON notes (updated_at DESC)",
-        """CREATE VIRTUAL TABLE notes_fts USING fts5 (
-            title, body, tags,
-            content='notes', content_rowid='id',
-            tokenize="unicode61 remove_diacritics 2"
-        )""",
-        """CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes BEGIN
-            INSERT INTO notes_fts (rowid, title, body, tags)
-            VALUES (new.id, new.title, new.body, new.tags);
-        END""",
-        """CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes BEGIN
-            INSERT INTO notes_fts (notes_fts, rowid, title, body, tags)
-            VALUES ('delete', old.id, old.title, old.body, old.tags);
-        END""",
-        """CREATE TRIGGER notes_fts_update AFTER UPDATE ON notes BEGIN
-            INSERT INTO notes_fts (notes_fts, rowid, title, body, tags)
-            VALUES ('delete', old.id, old.title, old.body, old.tags);
-            INSERT INTO notes_fts (rowid, title, body, tags)
-            VALUES (new.id, new.title, new.body, new.tags);
-        END""",
-    ),
-    (
-        """CREATE TABLE projects_v3 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slug TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            computer TEXT NOT NULL,
-            root TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            archived INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            UNIQUE (computer, root)
-        )""",
-        """INSERT INTO projects_v3
-            (id, slug, name, computer, root, description, archived, created_at, updated_at)
-            SELECT id, slug, name, :computer, root, description, archived, created_at, updated_at
-            FROM projects""",
-        "DROP TABLE projects",
-        "ALTER TABLE projects_v3 RENAME TO projects",
-    ),
-    (
-        """CREATE TABLE projects_v4 (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slug TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            archived INTEGER NOT NULL DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )""",
-        """INSERT INTO projects_v4
-            (id, slug, name, description, archived, created_at, updated_at)
-            SELECT id, slug, name, description, archived, created_at, updated_at FROM projects""",
-        """CREATE TABLE project_roots (
-            project_id INTEGER NOT NULL REFERENCES projects_v4(id) ON DELETE CASCADE,
-            computer TEXT NOT NULL,
-            root TEXT NOT NULL,
-            PRIMARY KEY (project_id, computer, root)
-        )""",
-        """INSERT INTO project_roots (project_id, computer, root)
-            SELECT id, computer, root FROM projects""",
-        "CREATE UNIQUE INDEX project_roots_unique_path "
-        "ON project_roots (computer, root) WHERE root != ''",
-        "DROP TABLE projects",
-        "ALTER TABLE projects_v4 RENAME TO projects",
-    ),
-    ("ALTER TABLE projects ADD COLUMN preferred_language TEXT DEFAULT NULL",),
-    (
-        "ALTER TABLE tasks ADD COLUMN history_warning INTEGER NOT NULL DEFAULT 0",
-        """CREATE TABLE task_comments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-            body TEXT NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'comment',
-            created_at REAL NOT NULL
-        )""",
-        "CREATE INDEX comments_by_task ON task_comments (task_id, created_at, id)",
-        """CREATE VIRTUAL TABLE comments_fts USING fts5 (
-            body, content='task_comments', content_rowid='id',
-            tokenize="unicode61 remove_diacritics 2"
-        )""",
-        """CREATE TRIGGER comments_fts_insert AFTER INSERT ON task_comments BEGIN
-            INSERT INTO comments_fts (rowid, body) VALUES (new.id, new.body);
-        END""",
-        """CREATE TRIGGER comments_fts_delete AFTER DELETE ON task_comments BEGIN
-            INSERT INTO comments_fts (comments_fts, rowid, body)
-            VALUES ('delete', old.id, old.body);
-        END""",
-        """CREATE TRIGGER comments_fts_update AFTER UPDATE ON task_comments BEGIN
-            INSERT INTO comments_fts (comments_fts, rowid, body)
-            VALUES ('delete', old.id, old.body);
-            INSERT INTO comments_fts (rowid, body) VALUES (new.id, new.body);
-        END""",
-        """CREATE TABLE task_history_originals (
-            task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-            body TEXT NOT NULL
-        )""",
-        """CREATE TRIGGER task_status_history AFTER UPDATE OF status ON tasks
-        WHEN old.status != new.status BEGIN
-            INSERT INTO task_comments (task_id, body, kind, created_at)
-            VALUES (new.id, 'Status changed: ' || old.status || ' → ' || new.status,
-                    'status', new.updated_at);
-        END""",
-        """CREATE TRIGGER task_move_history AFTER UPDATE OF project_id ON tasks
-        WHEN old.project_id != new.project_id BEGIN
-            INSERT INTO task_comments (task_id, body, kind, created_at)
-            VALUES (new.id, 'Moved: ' || (SELECT slug FROM projects WHERE id = old.project_id)
-                    || ' → ' || (SELECT slug FROM projects WHERE id = new.project_id),
-                    'move', new.updated_at);
-        END""",
-        """CREATE TRIGGER comment_updates_task AFTER INSERT ON task_comments
-        WHEN new.kind = 'comment' BEGIN
-            UPDATE tasks SET updated_at = new.created_at WHERE id = new.task_id;
-        END""",
-    ),
+QUERIES = aiosql.from_path(Path(__file__).with_name("queries.sql"), "aiosqlite")
+LOCAL_PRINCIPAL = '["local"]'
+ACCESS = (
+    "EXISTS (SELECT 1 FROM project_members membership "
+    "WHERE membership.project_id = p.id AND membership.principal = ?)"
 )
+
+
+def write[**P, T](method: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]:
+    """Serialize complete mutations, including their authorization and history."""
+
+    @wraps(method)
+    async def wrapped(*args: P.args, **kwargs: P.kwargs) -> T:
+        store = args[0]
+        assert isinstance(store, Store)
+        root = store.database
+        task = asyncio.current_task()
+        if root.writer is task:
+            return await method(*args, **kwargs)
+        async with root.task_writes:
+            root.writer = task
+            try:
+                return await method(*args, **kwargs)
+            except BaseException:
+                if root.connection is not None:
+                    await root.connection.rollback()
+                raise
+            finally:
+                root.writer = None
+
+    return wrapped
+
 
 OPEN_LIST = ", ".join(f"'{status.value}'" for status in OPEN_STATUSES)
 
@@ -203,9 +60,11 @@ COUNTS = (
     f"AND t.status IN ({OPEN_LIST})) AS open_tasks"
 )
 
-TASK_COLUMNS = "t.*, p.slug AS project"
+PROJECT_NAME = "(SELECT handle FROM principals WHERE identity = p.owner) || '/' || p.slug"
 
-NOTE_COLUMNS = "n.*, p.slug AS project"
+TASK_COLUMNS = f"t.*, {PROJECT_NAME} AS project"
+
+NOTE_COLUMNS = f"n.*, {PROJECT_NAME} AS project"
 
 PROJECTS_JOIN = "JOIN projects p ON p.id = t.project_id"
 
@@ -258,8 +117,10 @@ class Comment:
     project_id: int
     project: str
     body: str
-    kind: Literal["comment", "status", "move", "legacy"]
+    kind: Literal["comment", "status", "move"]
     created_at: float
+    principal: str = LOCAL_PRINCIPAL
+    computer: str = ""
     snippet: str | None = None
 
 
@@ -276,6 +137,14 @@ class Project:
     open_tasks: int = 0
     roots: list[ProjectRoot] = field(default_factory=list)
     preferred_language: str | None = None
+    owner: str = LOCAL_PRINCIPAL
+    role: str = "owner"
+    created_by: Actor | None = None
+    updated_by: Actor | None = None
+
+    @property
+    def full_name(self) -> str:
+        return project_name(self.owner, self.slug)
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,7 +176,8 @@ class Task:
     updated_at: float
     closed_at: float | None = None
     snippet: str | None = None
-    history_warning: bool = False
+    created_by: Actor | None = None
+    updated_by: Actor | None = None
 
 
 @dataclass(slots=True)
@@ -322,13 +192,18 @@ class Note:
     created_at: float
     updated_at: float
     snippet: str | None = None
+    created_by: Actor | None = None
+    updated_by: Actor | None = None
 
 
 def to_project(row: aiosqlite.Row) -> Project:
     keys = row.keys()
     return Project(
         id=row["id"],
+        created_by=Actor(principal=row["created_principal"], computer=row["created_computer"]),
+        updated_by=Actor(principal=row["updated_principal"], computer=row["updated_computer"]),
         slug=row["slug"],
+        owner=row["owner"],
         name=row["name"],
         description=row["description"],
         preferred_language=row["preferred_language"],
@@ -344,8 +219,9 @@ def to_task(row: aiosqlite.Row) -> Task:
     keys = row.keys()
     return Task(
         id=row["id"],
+        created_by=Actor(principal=row["created_principal"], computer=row["created_computer"]),
+        updated_by=Actor(principal=row["updated_principal"], computer=row["updated_computer"]),
         project_id=row["project_id"],
-        history_warning=bool(row["history_warning"]),
         project=row["project"],
         title=row["title"],
         body=row["body"],
@@ -363,6 +239,8 @@ def to_note(row: aiosqlite.Row) -> Note:
     keys = row.keys()
     return Note(
         id=row["id"],
+        created_by=Actor(principal=row["created_principal"], computer=row["created_computer"]),
+        updated_by=Actor(principal=row["updated_principal"], computer=row["updated_computer"]),
         project_id=row["project_id"],
         project=row["project"],
         title=row["title"],
@@ -379,13 +257,18 @@ class Store:
     """One SQLite file holding every project and every task.
 
     The connection opens on first use, so a `Store` can be built before there is an event loop.
-    `computer` names this computer; it is given to the projects of a file written before
-    projects had a computer, and defaults to the host name.
+    Each view binds an authenticated principal and a client computer.
     """
 
-    def __init__(self, path: Path | str, *, computer: str | None = None) -> None:
+    def __init__(
+        self, path: Path | str, *, computer: str | None = None, principal: str = LOCAL_PRINCIPAL
+    ) -> None:
         self.path = Path(path) if path != ":memory:" else Path(":memory:")
         self.computer = computer
+        self.principal = principal
+        self.database = self
+        self.writer: asyncio.Task[Any] | None = None
+        self.views: dict[tuple[str, str | None], Store] = {}
         self.connection: aiosqlite.Connection | None = None
         self.opening = asyncio.Lock()
         self.task_writes = asyncio.Lock()
@@ -394,7 +277,60 @@ class Store:
     def in_memory(self) -> bool:
         return str(self.path) == ":memory:"
 
+    def view(self, *, principal: str | None = None, computer: str | None = None) -> Store:
+        key = (principal or self.principal, computer or self.computer)
+        if key not in self.database.views:
+            scoped = Store(self.path, computer=key[1], principal=key[0])
+            scoped.database = self.database
+            self.database.views[key] = scoped
+        return self.database.views[key]
+
+    @property
+    def actor(self) -> dict[str, str]:
+        return {"principal": self.principal, "computer": self.computer or hostname()}
+
+    @write
+    async def register(self, identity: str, name: str) -> None:
+        connection = await self.open()
+        await QUERIES.register_principal(
+            connection, identity=identity, handle=owner_name(identity), name=name
+        )
+        await connection.commit()
+
+    async def require(self, project_id: int, *, role: str = "reader") -> str:
+        row = await QUERIES.membership(
+            await self.open(), project_id=project_id, principal=self.principal
+        )
+        if row is None:
+            raise LookupError(f"no project #{project_id}")
+        actual = str(row["role"])
+        if role == "owner" and actual != "owner" or role == "editor" and actual == "reader":
+            raise PermissionError(f"project #{project_id} requires {role} access")
+        return actual
+
+    async def members(self, project_id: int) -> list[dict[str, str]]:
+        await self.require(project_id)
+        return [
+            dict(row) async for row in QUERIES.members(await self.open(), project_id=project_id)
+        ]
+
+    @write
+    async def share(self, project_id: int, principal: str, role: str) -> None:
+        await self.require(project_id, role="owner")
+        if role not in {"reader", "editor"}:
+            raise ValueError("membership role must be reader or editor")
+        connection = await self.open()
+        if await QUERIES.principal(connection, identity=principal) is None:
+            raise LookupError("unknown principal; use a registered authentication identity")
+        current = await QUERIES.membership(connection, project_id=project_id, principal=principal)
+        if current and current["role"] == "owner":
+            raise ValueError("the project owner cannot be changed")
+        await QUERIES.save_member(connection, project_id=project_id, principal=principal, role=role)
+        await connection.commit()
+
     async def open(self) -> aiosqlite.Connection:
+        if self.database is not self:
+            return await self.database.open()
         async with self.opening:
             if self.connection is None:
                 if not self.in_memory:
@@ -402,61 +338,41 @@ class Store:
                 connection = await aiosqlite.connect(str(self.path))
                 connection.row_factory = aiosqlite.Row
                 try:
+                    async with connection.execute("PRAGMA application_id") as cursor:
+                        marker = await cursor.fetchone()
+                    if marker is None or marker[0] != 1112296275:
+                        async with connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table' AND "
+                            "name NOT LIKE 'mcp_%'"
+                        ) as cursor:
+                            existing = await cursor.fetchall()
+                        if existing:
+                            raise ValueError(
+                                "Unsupported database schema. Use a fresh database; "
+                                "import old data separately."
+                            )
+                        await connection.executescript(
+                            Path(__file__).with_name("schema.sql").read_text()
+                        )
                     await connection.execute("PRAGMA journal_mode=WAL")
                     await connection.execute("PRAGMA busy_timeout=5000")
-                    await self.migrate(connection)
                     await connection.execute("PRAGMA foreign_keys=ON")
                 except BaseException:
                     await connection.close()
                     raise
+                await QUERIES.register_principal(
+                    connection,
+                    identity=self.principal,
+                    handle=owner_name(self.principal),
+                    name="local",
+                )
+                await connection.commit()
                 self.connection = connection
             return self.connection
 
-    async def migrate(self, connection: aiosqlite.Connection) -> None:
-        """Run the migrations this file has not seen yet.
-
-        Foreign keys must be off here: one migration rebuilds `projects`, and a cascade would
-        else delete every task and note.
-        """
-        async with connection.execute("PRAGMA user_version") as cursor:
-            row = await cursor.fetchone()
-        done = int(row[0]) if row else 0
-        parameters = {"computer": self.computer or hostname()}
-        for number, steps in enumerate(MIGRATIONS[done:], start=done + 1):
-            await connection.execute("BEGIN IMMEDIATE")
-            try:
-                for statement in steps:
-                    await connection.execute(statement, parameters)
-                if number == 6:
-                    await self.migrate_history(connection)
-                await connection.execute(f"PRAGMA user_version={number}")
-                await connection.commit()
-            except BaseException:
-                await connection.rollback()
-                raise
-
-    async def migrate_history(self, connection: aiosqlite.Connection) -> None:
-        async with connection.execute("SELECT id, body FROM tasks") as cursor:
-            rows = await cursor.fetchall()
-        for row in rows:
-            description, entries, warning = split_history(row["body"])
-            if not entries and not warning:
-                continue
-            await connection.execute(
-                "INSERT INTO task_history_originals (task_id, body) VALUES (?, ?)",
-                (row["id"], row["body"]),
-            )
-            await connection.execute(
-                "UPDATE tasks SET body = ?, history_warning = ? WHERE id = ?",
-                (description, int(warning), row["id"]),
-            )
-            await connection.executemany(
-                "INSERT INTO task_comments (task_id, body, kind, created_at) "
-                "VALUES (?, ?, 'legacy', ?)",
-                [(row["id"], entry.body, entry.created_at) for entry in entries],
-            )
-
     async def close(self) -> None:
+        if self.database is not self:
+            return
         if self.connection is not None:
             await self.connection.close()
             self.connection = None
@@ -479,14 +395,15 @@ class Store:
         ids = ", ".join("?" for _ in projects)
         rows = await self.rows(
             f"SELECT project_id, computer, root FROM project_roots "
-            f"WHERE project_id IN ({ids}) ORDER BY computer, root",
-            [project.id for project in projects],
+            f"WHERE project_id IN ({ids}) AND principal = ? ORDER BY computer, root",
+            [*(project.id for project in projects), self.principal],
         )
         by_id: dict[int, list[ProjectRoot]] = {project.id: [] for project in projects}
         for row in rows:
             by_id[row["project_id"]].append(ProjectRoot(row["computer"], row["root"]))
         for project in projects:
             project.roots = by_id[project.id]
+            project.role = await self.require(project.id)
         return projects
 
     async def roots(self, project_id: int) -> list[ProjectRoot]:
@@ -494,19 +411,36 @@ class Store:
         return project.roots if project else []
 
     async def project(self, project_id: int) -> Project | None:
-        row = await self.row(f"SELECT p.*, {COUNTS} FROM projects p WHERE p.id = ?", (project_id,))
+        row = await self.row(
+            f"SELECT p.*, {COUNTS} FROM projects p WHERE p.id = ? AND {ACCESS}",
+            (project_id, self.principal),
+        )
         return (await self.attach_roots([to_project(row)]))[0] if row else None
 
     async def project_by_slug(self, slug: str) -> Project | None:
-        row = await self.row(f"SELECT p.*, {COUNTS} FROM projects p WHERE p.slug = ?", (slug,))
-        return (await self.attach_roots([to_project(row)]))[0] if row else None
+        if "/" in slug:
+            handle, local_slug = slug.split("/", 1)
+            rows = await self.rows(
+                f"SELECT p.*, {COUNTS} FROM projects p JOIN principals u ON u.identity=p.owner "
+                f"WHERE u.handle = ? AND p.slug = ? AND {ACCESS}",
+                (handle, local_slug, self.principal),
+            )
+        else:
+            rows = await self.rows(
+                f"SELECT p.*, {COUNTS} FROM projects p WHERE p.slug = ? AND {ACCESS}",
+                (slug, self.principal),
+            )
+        if len(rows) > 1:
+            references = ", ".join(project_name(row["owner"], row["slug"]) for row in rows)
+            raise ValueError(f"ambiguous project {slug!r}; use its full name: {references}")
+        return (await self.attach_roots([to_project(rows[0])]))[0] if rows else None
 
     async def project_by_root(self, root: Path | str, *, computer: str) -> Project | None:
         """The project registered for exactly this directory of that computer."""
         row = await self.row(
             f"SELECT p.*, {COUNTS} FROM projects p JOIN project_roots r ON r.project_id = p.id "
-            "WHERE r.computer = ? AND r.root = ?",
-            (computer, str(root)),
+            f"WHERE r.computer = ? AND r.root = ? AND r.principal = ? AND {ACCESS}",
+            (computer, str(root), self.principal, self.principal),
         )
         return (await self.attach_roots([to_project(row)]))[0] if row else None
 
@@ -516,8 +450,9 @@ class Store:
         holes = ", ".join("?" for _ in candidates)
         rows = await self.rows(
             f"SELECT p.*, {COUNTS} FROM projects p JOIN project_roots r ON r.project_id = p.id "
-            f"WHERE r.computer = ? AND r.root != '' AND r.root IN ({holes})",
-            (computer, *candidates),
+            f"WHERE r.computer = ? AND r.root != '' AND r.root IN ({holes}) AND "
+            f"r.principal = ? AND {ACCESS}",
+            (computer, *candidates, self.principal, self.principal),
         )
         found = await self.attach_roots([to_project(row) for row in rows])
         return (
@@ -535,16 +470,16 @@ class Store:
         self, *, archived: bool = False, computer: str | None = None
     ) -> list[Project]:
         """Every project of one computer, or of all of them when `computer` is None."""
-        clauses: list[str] = []
-        parameters: list[Any] = []
+        clauses: list[str] = [ACCESS]
+        parameters: list[Any] = [self.principal]
         if not archived:
             clauses.append("p.archived = 0")
         if computer is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM project_roots r "
-                "WHERE r.project_id = p.id AND r.computer = ?)"
+                "WHERE r.project_id = p.id AND r.principal = ? AND r.computer = ?)"
             )
-            parameters.append(computer)
+            parameters.extend((self.principal, computer))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
             f"SELECT p.*, {COUNTS} FROM projects p {where} ORDER BY p.archived, p.slug",
@@ -554,12 +489,21 @@ class Store:
 
     async def computers(self) -> list[str]:
         """Every computer with a registered project, sorted."""
-        rows = await self.rows("SELECT DISTINCT computer FROM project_roots ORDER BY computer")
+        rows = await self.rows(
+            f"SELECT DISTINCT r.computer FROM project_roots r JOIN projects p ON "
+            f"p.id=r.project_id WHERE r.principal = ? AND {ACCESS} ORDER BY r.computer",
+            (self.principal, self.principal),
+        )
         return [row["computer"] for row in rows]
 
-    async def slugs(self) -> list[str]:
-        return [row["slug"] for row in await self.rows("SELECT slug FROM projects ORDER BY slug")]
+    async def slugs(self, *, owned: bool = False) -> list[str]:
+        """Owned short slugs for creation, or qualified accessible names for completion."""
+        if owned:
+            rows = await self.rows("SELECT slug FROM projects WHERE owner = ?", (self.principal,))
+            return [row["slug"] for row in rows]
+        return sorted(project.full_name for project in await self.projects(archived=True))
 
+    @write
     async def add_project(
         self,
         *,
@@ -572,28 +516,41 @@ class Store:
     ) -> Project:
         connection = await self.open()
         now = time.time()
-        cursor = await connection.execute(
-            "INSERT INTO projects "
-            "(slug, name, description, preferred_language, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (slug, name, description, preferred_language, now, now),
+        inserted_id = await QUERIES.add_project(
+            connection,
+            slug=slug,
+            name=name,
+            description=description,
+            preferred_language=preferred_language,
+            created_at=now,
+            updated_at=now,
+            owner=self.principal,
+            created_principal=self.principal,
+            created_computer=self.actor["computer"],
+            updated_principal=self.principal,
+            updated_computer=self.actor["computer"],
+        )
+        await QUERIES.save_member(
+            connection, project_id=inserted_id, principal=self.principal, role="owner"
         )
         await connection.execute(
-            "INSERT INTO project_roots (project_id, computer, root) VALUES (?, ?, ?)",
-            (cursor.lastrowid, computer, str(root)),
+            "INSERT INTO project_roots (project_id, principal, computer, root) VALUES (?, ?, ?, ?)",
+            (inserted_id, self.principal, computer, str(root)),
         )
         await connection.commit()
-        created = await self.project(cursor.lastrowid or 0)
+        created = await self.project(inserted_id or 0)
         assert created is not None, "the project just written is not there"
         return created
 
+    @write
     async def add_root(self, project_id: int, *, computer: str, root: Path | str) -> Project:
         """Bind a project to one location; non-empty paths belong to only one project."""
+        await self.require(project_id)
         connection = await self.open()
         existing = await self.row(
             "SELECT project_id FROM project_roots "
-            "WHERE project_id = ? AND computer = ? AND root = ?",
-            (project_id, computer, str(root)),
+            "WHERE project_id = ? AND principal = ? AND computer = ? AND root = ?",
+            (project_id, self.principal, computer, str(root)),
         )
         if existing is not None:
             project = await self.project(project_id)
@@ -601,8 +558,9 @@ class Store:
             return project
         try:
             await connection.execute(
-                "INSERT INTO project_roots (project_id, computer, root) VALUES (?, ?, ?)",
-                (project_id, computer, str(root)),
+                "INSERT INTO project_roots (project_id, principal, computer, root) "
+                "VALUES (?, ?, ?, ?)",
+                (project_id, self.principal, computer, str(root)),
             )
             await connection.commit()
         except aiosqlite.IntegrityError as error:
@@ -613,6 +571,7 @@ class Store:
 
     async def project_contents(self, project_id: int) -> ProjectContents:
         """Count the tasks and the notes of a project, deleted tasks included."""
+        await self.require(project_id)
         row = await self.row(
             "SELECT (SELECT COUNT(*) FROM tasks WHERE project_id = ?) AS tasks, "
             "(SELECT COUNT(*) FROM notes WHERE project_id = ?) AS notes, "
@@ -622,12 +581,16 @@ class Store:
         assert row is not None, "an aggregate query always returns one row"
         return ProjectContents(row["tasks"], row["notes"], row["shared_notes"])
 
+    @write
     async def delete_project(self, project_id: int) -> bool:
         """Delete a project with its roots, tasks and notes. Nothing of it stays.
 
         The rows go one table at a time, so the FTS triggers see every task and note.
         """
         connection = await self.open()
+        if await self.project(project_id) is None:
+            return False
+        await self.require(project_id, role="owner")
         await connection.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
         await connection.execute("DELETE FROM notes WHERE project_id = ?", (project_id,))
         await connection.execute("DELETE FROM project_roots WHERE project_id = ?", (project_id,))
@@ -635,6 +598,7 @@ class Store:
         await connection.commit()
         return bool(cursor.rowcount)
 
+    @write
     async def update_project(
         self,
         project_id: int,
@@ -657,6 +621,9 @@ class Store:
         if preferred_language is not Unset.VALUE:
             changes["preferred_language"] = preferred_language
         if changes:
+            await self.require(project_id, role="editor")
+            changes["updated_principal"] = self.principal
+            changes["updated_computer"] = self.actor["computer"]
             changes["updated_at"] = time.time()
             assignments = ", ".join(f"{column} = ?" for column in changes)
             connection = await self.open()
@@ -672,11 +639,12 @@ class Store:
     async def task(self, task_id: int) -> Task | None:
         row = await self.row(
             f"SELECT {TASK_COLUMNS} FROM tasks t JOIN projects p ON p.id = t.project_id "
-            "WHERE t.id = ?",
-            (task_id,),
+            f"WHERE t.id = ? AND {ACCESS}",
+            (task_id, self.principal),
         )
         return to_task(row) if row else None
 
+    @write
     async def add_task(
         self,
         *,
@@ -687,30 +655,32 @@ class Store:
         priority: Priority = Priority.NORMAL,
         tags: Iterable[str] = (),
     ) -> Task:
+        await self.require(project_id, role="editor")
         connection = await self.open()
         now = time.time()
         closed = now if status in CLOSED_STATUSES else None
-        cursor = await connection.execute(
-            "INSERT INTO tasks "
-            "(project_id, title, body, status, priority, tags, created_at, updated_at, closed_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                project_id,
-                title,
-                body,
-                status.value,
-                RANKS[priority],
-                join_tags(tags),
-                now,
-                now,
-                closed,
-            ),
+        inserted_id = await QUERIES.add_task(
+            connection,
+            project_id=project_id,
+            title=title,
+            body=body,
+            status=status.value,
+            priority=RANKS[priority],
+            tags=join_tags(tags),
+            created_at=now,
+            updated_at=now,
+            closed_at=closed,
+            created_principal=self.principal,
+            created_computer=self.actor["computer"],
+            updated_principal=self.principal,
+            updated_computer=self.actor["computer"],
         )
         await connection.commit()
-        created = await self.task(cursor.lastrowid or 0)
+        created = await self.task(inserted_id or 0)
         assert created is not None, "the task just written is not there"
         return created
 
+    @write
     async def update_task(
         self,
         task_id: int,
@@ -722,40 +692,43 @@ class Store:
         tags: Iterable[str] | None = None,
         project_id: int | None = None,
     ) -> Task | None:
-        async with self.task_writes:
-            connection = await self.open()
-            existing = await self.task(task_id)
-            if existing is None:
-                return None
-            changes: dict[str, Any] = {}
-            now = time.time()
-            if title is not None:
-                changes["title"] = title
-            if body is not None:
-                changes["body"] = body
-                changes["history_warning"] = 0
-            if status is not None and status != existing.status:
-                changes["status"] = status.value
-                changes["closed_at"] = now if status in CLOSED_STATUSES else None
-            if priority is not None:
-                changes["priority"] = RANKS[priority]
-            if tags is not None:
-                changes["tags"] = join_tags(tags)
-            if project_id is not None and project_id != existing.project_id:
-                destination = await self.project(project_id)
-                if destination is None:
-                    raise ValueError(f"no project #{project_id}")
-                changes["project_id"] = project_id
-            if changes:
-                changes["updated_at"] = now
-                assignments = ", ".join(f"{column} = ?" for column in changes)
-                await connection.execute(
-                    f"UPDATE tasks SET {assignments} WHERE id = ?",
-                    (*changes.values(), task_id),
-                )
-            await connection.commit()
-            return await self.task(task_id)
+        connection = await self.open()
+        existing = await self.task(task_id)
+        if existing is None:
+            return None
+        await self.require(existing.project_id, role="editor")
+        changes: dict[str, Any] = {}
+        now = time.time()
+        if title is not None:
+            changes["title"] = title
+        if body is not None:
+            changes["body"] = body
+        if status is not None and status != existing.status:
+            changes["status"] = status.value
+            changes["closed_at"] = now if status in CLOSED_STATUSES else None
+        if priority is not None:
+            changes["priority"] = RANKS[priority]
+        if tags is not None:
+            changes["tags"] = join_tags(tags)
+        if project_id is not None and project_id != existing.project_id:
+            await self.require(project_id, role="editor")
+            destination = await self.project(project_id)
+            if destination is None:
+                raise ValueError(f"no project #{project_id}")
+            changes["project_id"] = project_id
+        if changes:
+            changes["updated_principal"] = self.principal
+            changes["updated_computer"] = self.actor["computer"]
+            changes["updated_at"] = now
+            assignments = ", ".join(f"{column} = ?" for column in changes)
+            await connection.execute(
+                f"UPDATE tasks SET {assignments} WHERE id = ?",
+                (*changes.values(), task_id),
+            )
+        await connection.commit()
+        return await self.task(task_id)
 
+    @write
     async def delete_task(self, task_id: int) -> bool:
         task = await self.task(task_id)
         if task is None or task.status == Status.DELETED:
@@ -764,31 +737,39 @@ class Store:
 
     async def comment(self, comment_id: int) -> Comment | None:
         row = await self.row(
-            "SELECT c.*, t.project_id, p.slug AS project FROM task_comments c "
+            f"SELECT c.*, t.project_id, {PROJECT_NAME} AS project FROM task_comments c "
             "JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id "
-            "WHERE c.id = ?",
-            (comment_id,),
+            f"WHERE c.id = ? AND {ACCESS}",
+            (comment_id, self.principal),
         )
         return Comment(**dict(row)) if row else None
 
+    @write
     async def add_comment(self, task_id: int, body: str) -> Comment:
         if not body.strip():
             raise ValueError("a comment must not be empty")
-        async with self.task_writes:
-            connection = await self.open()
-            if await self.task(task_id) is None:
-                raise LookupError(f"no task #{task_id}")
-            now = time.time()
-            cursor = await connection.execute(
-                "INSERT INTO task_comments (task_id, body, created_at) VALUES (?, ?, ?)",
-                (task_id, body, now),
-            )
-            await connection.commit()
-            saved = await self.comment(cursor.lastrowid or 0)
-            assert saved is not None
-            return saved
+        connection = await self.open()
+        task = await self.task(task_id)
+        if task is None:
+            raise LookupError(f"no task #{task_id}")
+        await self.require(task.project_id, role="editor")
+        now = time.time()
+        inserted_id = await QUERIES.add_comment(
+            connection,
+            task_id=task_id,
+            body=body,
+            created_at=now,
+            principal=self.principal,
+            computer=self.actor["computer"],
+        )
+        await connection.commit()
+        saved = await self.comment(inserted_id or 0)
+        assert saved is not None
+        return saved
 
     async def count_comments(self, task_id: int) -> int:
+        if await self.task(task_id) is None:
+            return 0
         row = await self.row("SELECT COUNT(*) FROM task_comments WHERE task_id = ?", (task_id,))
         return int(row[0]) if row else 0
 
@@ -826,7 +807,7 @@ class Store:
             order = "bm25(comments_fts), c.created_at, c.id"
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await self.rows(
-            f"SELECT c.*, t.project_id, p.slug AS project {snippet} FROM {source} "
+            f"SELECT c.*, t.project_id, {PROJECT_NAME} AS project {snippet} FROM {source} "
             "JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id "
             f"{where} ORDER BY {order} LIMIT ?",
             (*parameters, limit),
@@ -843,17 +824,17 @@ class Store:
         computer: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         """The WHERE clauses of a task query over `tasks t` joined with `projects p`."""
-        clauses: list[str] = []
-        parameters: list[Any] = []
+        clauses: list[str] = [ACCESS]
+        parameters: list[Any] = [self.principal]
         if project_id is not None:
             clauses.append("t.project_id = ?")
             parameters.append(project_id)
         if computer is not None:
             clauses.append(
                 "EXISTS (SELECT 1 FROM project_roots r "
-                "WHERE r.project_id = p.id AND r.computer = ?)"
+                "WHERE r.project_id = p.id AND r.principal = ? AND r.computer = ?)"
             )
-            parameters.append(computer)
+            parameters.extend((self.principal, computer))
         if status:
             clauses.append(f"t.status IN ({', '.join('?' for _ in status)})")
             parameters.extend(item.value for item in status)
@@ -964,6 +945,8 @@ class Store:
     async def group(
         self, column: str, *, project_id: int | None = None, computer: str | None = None
     ) -> dict[str, int]:
+        if column not in {"status", "priority"}:
+            raise ValueError("unsupported grouping column")
         clauses, parameters = self.filters(
             project_id=project_id, status=None, tag=None, priority=None, computer=computer
         )
@@ -980,8 +963,8 @@ class Store:
     async def note(self, note_id: int) -> Note | None:
         row = await self.row(
             f"SELECT {NOTE_COLUMNS} FROM notes n JOIN projects p ON p.id = n.project_id "
-            "WHERE n.id = ?",
-            (note_id,),
+            f"WHERE n.id = ? AND {ACCESS}",
+            (note_id, self.principal),
         )
         return to_note(row) if row else None
 
@@ -989,11 +972,12 @@ class Store:
         """The note of one project with that title; a title is unique inside a project."""
         row = await self.row(
             f"SELECT {NOTE_COLUMNS} FROM notes n JOIN projects p ON p.id = n.project_id "
-            "WHERE n.project_id = ? AND n.title = ?",
-            (project_id, title),
+            f"WHERE n.project_id = ? AND n.title = ? AND {ACCESS}",
+            (project_id, title, self.principal),
         )
         return to_note(row) if row else None
 
+    @write
     async def add_note(
         self,
         *,
@@ -1004,18 +988,29 @@ class Store:
         shared: bool = False,
     ) -> Note:
         check_note(body)
+        await self.require(project_id, role="editor")
         connection = await self.open()
         now = time.time()
-        cursor = await connection.execute(
-            "INSERT INTO notes (project_id, title, body, tags, shared, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (project_id, title, body, join_tags(tags), int(shared), now, now),
+        inserted_id = await QUERIES.add_note(
+            connection,
+            project_id=project_id,
+            title=title,
+            body=body,
+            tags=join_tags(tags),
+            shared=int(shared),
+            created_at=now,
+            updated_at=now,
+            created_principal=self.principal,
+            created_computer=self.actor["computer"],
+            updated_principal=self.principal,
+            updated_computer=self.actor["computer"],
         )
         await connection.commit()
-        created = await self.note(cursor.lastrowid or 0)
+        created = await self.note(inserted_id or 0)
         assert created is not None, "the note just written is not there"
         return created
 
+    @write
     async def update_note(
         self,
         note_id: int,
@@ -1026,6 +1021,12 @@ class Store:
         shared: bool | None = None,
         project_id: int | None = None,
     ) -> Note | None:
+        existing = await self.note(note_id)
+        if existing is None:
+            return None
+        await self.require(existing.project_id, role="editor")
+        if project_id is not None:
+            await self.require(project_id, role="editor")
         changes: dict[str, Any] = {}
         if title is not None:
             changes["title"] = title
@@ -1039,6 +1040,8 @@ class Store:
         if project_id is not None:
             changes["project_id"] = project_id
         if changes:
+            changes["updated_principal"] = self.principal
+            changes["updated_computer"] = self.actor["computer"]
             changes["updated_at"] = time.time()
             assignments = ", ".join(f"{column} = ?" for column in changes)
             connection = await self.open()
@@ -1048,6 +1051,7 @@ class Store:
             await connection.commit()
         return await self.note(note_id)
 
+    @write
     async def append_note(self, note_id: int, text: str) -> Note | None:
         """Add a paragraph at the end of a note.
 
@@ -1057,17 +1061,23 @@ class Store:
         existing = await self.note(note_id)
         if existing is None:
             return None
+        await self.require(existing.project_id, role="editor")
         check_note(f"{existing.body}\n\n{text}" if existing.body else text)
         connection = await self.open()
         await connection.execute(
             "UPDATE notes SET body = CASE WHEN body = '' THEN ? ELSE body || ? END, "
-            "updated_at = ? WHERE id = ?",
-            (text, f"\n\n{text}", time.time(), note_id),
+            "updated_at = ?, updated_principal = ?, updated_computer = ? WHERE id = ?",
+            (text, f"\n\n{text}", time.time(), *self.actor.values(), note_id),
         )
         await connection.commit()
         return await self.note(note_id)
 
+    @write
     async def delete_note(self, note_id: int) -> bool:
+        existing = await self.note(note_id)
+        if existing is None:
+            return False
+        await self.require(existing.project_id, role="editor")
         connection = await self.open()
         cursor = await connection.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         await connection.commit()
@@ -1082,17 +1092,17 @@ class Store:
         computer: str | None = None,
     ) -> tuple[list[str], list[Any]]:
         """A project, or a computer, sees its own notes and every shared note of the others."""
-        clauses: list[str] = []
-        parameters: list[Any] = []
+        clauses: list[str] = [ACCESS]
+        parameters: list[Any] = [self.principal]
         if project_id is not None:
             clauses.append("(n.project_id = ? OR n.shared = 1)")
             parameters.append(project_id)
         if computer is not None:
             clauses.append(
                 "(EXISTS (SELECT 1 FROM project_roots r "
-                "WHERE r.project_id = p.id AND r.computer = ?) OR n.shared = 1)"
+                "WHERE r.project_id = p.id AND r.principal = ? AND r.computer = ?) OR n.shared = 1)"
             )
-            parameters.append(computer)
+            parameters.extend((self.principal, computer))
         if shared is not None:
             clauses.append("n.shared = ?")
             parameters.append(int(shared))
@@ -1176,7 +1186,6 @@ class Store:
 
 
 __all__ = [
-    "MIGRATIONS",
     "NOTE_LIMIT",
     "Note",
     "Project",

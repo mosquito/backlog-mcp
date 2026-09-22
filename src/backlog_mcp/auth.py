@@ -1,24 +1,12 @@
 """Basic and JWT credentials verified against trusted server configuration."""
 
-import math
+import json
 from base64 import b64decode
-from dataclasses import dataclass, field, replace
-from pathlib import Path
+from dataclasses import replace
 
-import jwt
 from aiohttp import web
 from aiohttp_tiny_mcp import Authentication, Principal, StaticBasicAuth, Unauthorized
-from cryptography.exceptions import UnsupportedAlgorithm
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, rsa
-
-type VerificationKey = (
-    bytes
-    | rsa.RSAPublicKey
-    | ec.EllipticCurvePublicKey
-    | ed25519.Ed25519PublicKey
-    | ed448.Ed448PublicKey
-)
+from aiohttp_tiny_mcp.auth import TokenVerifier
 
 
 def decode_pair(token: str) -> tuple[str, str] | None:
@@ -36,6 +24,13 @@ def decode_pair(token: str) -> tuple[str, str] | None:
 
 
 REALM = "backlog-mcp"
+
+
+def basic_namespace(username: str) -> str:
+    """A stable identity that cannot collide with a JWT identity."""
+    return json.dumps(["basic", username], ensure_ascii=True, separators=(",", ":"))
+
+
 # Trusted request-local result from the pre-dispatch authentication middleware.
 VERIFIED: web.RequestKey[dict[Authentication, Principal | None]] = web.RequestKey(
     "backlog_verified_principals", dict
@@ -59,8 +54,8 @@ def credentials(request: web.Request) -> tuple[str, str] | None:
 class BasicAuthentication(StaticBasicAuth):
     """Use library verification with Backlog's header and query transports."""
 
-    def __init__(self, user: str, password: str) -> None:
-        super().__init__(user, password, realm=REALM)
+    def __init__(self, *accounts: tuple[str, str]) -> None:
+        super().__init__(*accounts, realm=REALM)
 
     async def authenticate(self, request: web.Request) -> Principal | None:
         verified: dict[Authentication, Principal | None] = request.setdefault(VERIFIED, {})
@@ -71,108 +66,16 @@ class BasicAuthentication(StaticBasicAuth):
             verified[self] = None
             return None
         principal = await self.verify(*given)
-        # Empty namespace preserves the shared Hub used by HTTP and stdio writers.
-        verified[self] = replace(principal, namespace="") if principal else None
+        verified[self] = (
+            replace(principal, namespace=basic_namespace(given[0])) if principal else None
+        )
         return verified[self]
-
-
-@dataclass(frozen=True)
-class JWTVerifier:
-    key: VerificationKey = field(repr=False)
-    algorithms: tuple[str, ...]
-    issuer: str = ""
-    audience: str = ""
-
-    def verify(self, credentials: str) -> Principal | None:
-        """Check the signature, required expiry, and configured issuer and audience."""
-        try:
-            claims = jwt.decode(
-                credentials,
-                self.key,
-                algorithms=self.algorithms,
-                issuer=self.issuer or None,
-                audience=self.audience or None,
-                options={"require": ["exp"], "verify_aud": bool(self.audience)},
-            )
-            subject = claims.get("sub")
-            issuer = claims.get("iss")
-            client_id = claims.get("client_id", claims.get("azp", ""))
-            if subject is not None and not isinstance(subject, str):
-                return None
-            if issuer is not None and not isinstance(issuer, str):
-                return None
-            if not isinstance(client_id, str):
-                return None
-            scope = claims.get("scope", claims.get("scp", []))
-            if isinstance(scope, str):
-                scopes = frozenset(scope.split())
-            elif isinstance(scope, list) and all(isinstance(item, str) for item in scope):
-                scopes = frozenset(scope)
-            else:
-                return None
-            expires_at = float(claims["exp"])
-            if not math.isfinite(expires_at):
-                return None
-            return Principal(
-                subject=subject,
-                issuer=issuer,
-                client_id=client_id,
-                scopes=scopes,
-                expires_at=expires_at,
-                claims=claims,
-                namespace="",
-            )
-        except jwt.InvalidTokenError, ValueError, TypeError, OverflowError:
-            return None
-
-
-class HMACJWTVerifier(JWTVerifier):
-    """Verify HS256 JWTs with a configured pre-shared key."""
-
-    def __init__(self, pre_shared_key: str, *, issuer: str = "", audience: str = "") -> None:
-        hmac = jwt.algorithms.HMACAlgorithm(jwt.algorithms.HMACAlgorithm.SHA256)
-        try:
-            key = hmac.prepare_key(pre_shared_key)
-        except jwt.InvalidKeyError as error:
-            raise ValueError("the JWT pre-shared key must not be an asymmetric key") from error
-        if len(key) < 32:
-            raise ValueError("the JWT pre-shared key must contain at least 32 bytes")
-        super().__init__(key, ("HS256",), issuer, audience)
-
-
-class PublicKeyJWTVerifier(JWTVerifier):
-    """Verify RSA, EC, or EdDSA JWTs with a configured public key."""
-
-    def __init__(self, public_key: str, *, issuer: str = "", audience: str = "") -> None:
-        material = public_key.strip()
-        if not material.startswith("-----BEGIN "):
-            material = Path(material).expanduser().read_text(encoding="utf-8")
-        try:
-            loaded = serialization.load_pem_public_key(material.encode("utf-8"))
-        except (ValueError, TypeError, UnsupportedAlgorithm) as error:
-            raise ValueError("the JWT public key must be a supported PEM public key") from error
-        algorithms: tuple[str, ...]
-        if isinstance(loaded, rsa.RSAPublicKey):
-            if loaded.key_size < 2048:
-                raise ValueError("the JWT RSA public key must contain at least 2048 bits")
-            algorithms = ("RS256", "RS384", "RS512", "PS256", "PS384", "PS512")
-        elif isinstance(loaded, ec.EllipticCurvePublicKey):
-            curves = {"secp256r1": "ES256", "secp384r1": "ES384", "secp521r1": "ES512"}
-            algorithm = curves.get(loaded.curve.name)
-            if algorithm is None:
-                raise ValueError("unsupported JWT elliptic curve")
-            algorithms = (algorithm,)
-        elif isinstance(loaded, (ed25519.Ed25519PublicKey, ed448.Ed448PublicKey)):
-            algorithms = ("EdDSA",)
-        else:
-            raise ValueError("unsupported JWT public key type")
-        super().__init__(loaded, algorithms, issuer, audience)
 
 
 class JWTAuthentication(Authentication):
     """Authenticate externally issued JWTs without advertising an OAuth server."""
 
-    def __init__(self, verifier: JWTVerifier) -> None:
+    def __init__(self, verifier: TokenVerifier) -> None:
         super().__init__()
         self.verifier = verifier
 
@@ -181,7 +84,19 @@ class JWTAuthentication(Authentication):
         if self in verified:
             return verified[self]
         token = request_token(request, scheme="Bearer", query_parameter="token")
-        verified[self] = self.verifier.verify(token) if token else None
+        principal = await self.verifier.verify(token) if token else None
+        if principal and (principal.subject or principal.client_id):
+            identity = [
+                "jwt",
+                principal.issuer or "",
+                "subject" if principal.subject else "client",
+                principal.subject or principal.client_id,
+            ]
+            verified[self] = replace(
+                principal, namespace=json.dumps(identity, ensure_ascii=True, separators=(",", ":"))
+            )
+        else:
+            verified[self] = None
         return verified[self]
 
     def challenge(self, refusal: Unauthorized) -> str:

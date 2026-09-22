@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
-from aiohttp_tiny_mcp.client_base import BaseClient
-from aiohttp_tiny_mcp.models import CallToolResult, TextContent
+from aiohttp_tiny_mcp.client.base import BaseClient
+from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent
 from test_server import call
 
 from backlog_mcp.backlog import Backlog, UnknownProject
@@ -158,7 +158,7 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
     assert theirs["items"][0]["roots"] == [{"computer": "laptop", "root": "/srv/app"}]
 
     local = await call(client, "task_add", title="Local work")
-    assert local["project"] == mine
+    assert local["project"] == current["project"]["full_name"]
     #: A listing of one project names that project's computer, not the filter given.
     assert (await call(client, "task_list"))["computer"] is None
     assert (await call(client, "stats"))["computer"] is None
@@ -171,24 +171,24 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
     assert (await call(client, "search", query="laptop", min_score=1))["count"] == 0
     found = await call(client, "search", query="laptop", all_computers=True)
     assert found["computer"] is None
-    assert found["tasks"][0]["project"] == "app"
+    assert found["tasks"][0]["project"] == "@local/app"
 
     counted = await call(client, "stats", computer="laptop")
     assert (counted["computer"], counted["total"]) == ("laptop", 1)
     scoped_task = await call(client, "task_list", project="app", computer="laptop")
     assert (scoped_task["project"], scoped_task["computer"], scoped_task["count"]) == (
-        "app",
+        "@local/app",
         "laptop",
         1,
     )
     scoped_stats = await call(client, "stats", project="app", computer="laptop")
     assert (scoped_stats["project"], scoped_stats["computer"], scoped_stats["total"]) == (
-        "app",
+        "@local/app",
         "laptop",
         1,
     )
     scoped_search = await call(client, "search", query="laptop", project="app", computer="laptop")
-    assert (scoped_search["project"], scoped_search["computer"]) == ("app", "laptop")
+    assert (scoped_search["project"], scoped_search["computer"]) == ("@local/app", "laptop")
     assert [item["id"] for item in scoped_search["tasks"]] == [away["items"][0]["id"]]
     assert counted["this_computer"] == "here"
     assert (await call(client, "stats", all_computers=True))["total"] == 2

@@ -2,26 +2,21 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import jwt
 import pytest
 from aiohttp import encode_basic_auth
 from aiohttp_tiny_mcp import Authentication
-from aiohttp_tiny_mcp.client_base import BaseClient
-from aiohttp_tiny_mcp.hub import MemoryHub
+from aiohttp_tiny_mcp.auth.jwt import HMACJWTVerifier, JWTVerifier, PublicKeyJWTVerifier
+from aiohttp_tiny_mcp.client.base import BaseClient
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
+from aiohttp_tiny_mcp.storage.hub import MemoryHub
 from aiohttp_tiny_mcp.testing import connect
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from backlog_mcp.auth import (
-    BasicAuthentication,
-    HMACJWTVerifier,
-    JWTAuthentication,
-    JWTVerifier,
-    PublicKeyJWTVerifier,
-)
+from backlog_mcp.auth import BasicAuthentication, JWTAuthentication
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.server import ACTIVE, registry
 from backlog_mcp.state import State
@@ -92,13 +87,13 @@ def hmac_verifier() -> JWTVerifier:
 
 @pytest.fixture(scope="session")
 def basic_verifier() -> BasicAuthentication:
-    return BasicAuthentication("user", "password")
+    return BasicAuthentication(("user", "password"))
 
 
 @dataclass
 class Credentials:
     verifier: Authentication
-    options: dict[str, str]
+    options: dict[str, Any]
     token: str
 
     @property
@@ -110,17 +105,18 @@ class Credentials:
         return "auth" if self.scheme == "Basic" else "token"
 
     @property
-    def headers(self) -> dict[str, str]:
+    def headers(self) -> dict[str, Any]:
         return {"Authorization": f"{self.scheme} {self.token}"}
 
     @property
-    def query(self) -> dict[str, str]:
+    def query(self) -> dict[str, Any]:
         return {self.query_parameter: self.token}
 
     @property
     def cli(self) -> list[str]:
         if self.scheme == "Basic":
-            return ["--user", self.options["user"], "--password", self.options["password"]]
+            user, _, password = self.options["basic"][0].partition(":")
+            return ["--user", user, "--password", password]
         return ["--token", self.token]
 
 
@@ -132,12 +128,12 @@ def credentials(
     hmac_verifier: JWTVerifier,
     basic_verifier: BasicAuthentication,
 ) -> Credentials:
-    claims = {"exp": int(time.time()) + 300}
+    claims = {"exp": int(time.time()) + 300, "sub": "user"}
     match request.param:
         case "basic":
             return Credentials(
                 basic_verifier,
-                {"user": "user", "password": "password"},
+                {"basic": ["user:password"]},
                 encode_basic_auth("user", "password").split()[1],
             )
         case "hs256":
@@ -157,11 +153,10 @@ def credentials(
 @pytest.fixture(params=[False, True], ids=["single-policy", "all-policies"])
 def authentication_options(
     request: pytest.FixtureRequest, credentials: Credentials, key_pair: KeyPair
-) -> dict[str, str]:
+) -> dict[str, Any]:
     if request.param:
         return {
-            "user": "user",
-            "password": "password",
+            "basic": ["user:password"],
             "jwt_pre_shared_key": TEST_PSK,
             "jwt_public_key": key_pair.public,
         }

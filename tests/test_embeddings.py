@@ -11,8 +11,8 @@ from typing import Any
 import numpy as np
 import pytest
 from aiohttp.test_utils import TestServer
-from aiohttp_tiny_mcp.client import Client
-from aiohttp_tiny_mcp.client_base import BaseClient, ClientError
+from aiohttp_tiny_mcp import Client
+from aiohttp_tiny_mcp.client.base import BaseClient, ClientError
 from aiohttp_tiny_mcp.testing import connect, pick
 
 from backlog_mcp import embeddings
@@ -136,8 +136,8 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
     result = await embeddings.search(embeddings.Search(query="Сбросить пароль", limit=1), backlog)
     assert result.tasks[0].id == task.id
     assert result.tasks[0].title == task.title
-    assert result.notes[0].id == note.id
-    assert result.notes[0].shared
+    assert result.memory[0].id == note.id
+    assert result.memory[0].shared
     assert result.count == 2
     filtered = await embeddings.search(
         embeddings.Search(query="Сбросить пароль", status=[Status.TODO], tag="auth"), backlog
@@ -342,7 +342,7 @@ async def test_model_cache_is_lazy_and_invalidated_by_local_and_external_writes(
     assert builds == 1
     result = await embeddings.search(query, backlog)
     assert builds == 2
-    assert result.notes[0].body == "Updated policy"
+    assert result.memory[0].body == "Updated policy"
     await backlog.store.delete_task(task.id)
     await backlog.store.delete_note(note.id)
     assert builds == 2

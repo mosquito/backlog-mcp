@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from aiohttp_tiny_mcp import Extension
-from aiohttp_tiny_mcp.core import Failure, FailureKind, Rejected
-from aiohttp_tiny_mcp.models import (
+from aiohttp_tiny_mcp.protocol.core import Failure, FailureKind, Rejected
+from aiohttp_tiny_mcp.protocol.models import (
     CacheableResult,
     ListParams,
     ReadResourceParams,

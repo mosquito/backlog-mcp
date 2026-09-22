@@ -17,8 +17,8 @@ from zipfile import BadZipFile
 
 import numpy as np
 from aiohttp_tiny_mcp import Extension
-from aiohttp_tiny_mcp.core import Failure, FailureKind, Rejected
-from aiohttp_tiny_mcp.models import ResultModel
+from aiohttp_tiny_mcp.protocol.core import Failure, FailureKind, Rejected
+from aiohttp_tiny_mcp.protocol.models import ResultModel
 from numpy.typing import NDArray
 from pydantic import BaseModel, Field, StringConstraints
 
@@ -95,8 +95,8 @@ class Encoded(ResultModel):
 
 
 class Search(BaseModel):
-    kinds: list[Literal["tasks", "comments", "notes"]] = Field(
-        default=["tasks", "comments", "notes"],
+    kinds: list[Literal["tasks", "comments", "memory"]] = Field(
+        default=["tasks", "comments", "memory"],
         min_length=1,
         description="Content to search. Task descriptions and comments are indexed separately.",
     )
@@ -150,7 +150,7 @@ class CommentHit(CommentOut):
 class Matches(BaseModel):
     model: str = MODEL_NAME
     tasks: list[TaskHit]
-    notes: list[NoteHit]
+    memory: list[NoteHit]
     comments: list[CommentHit]
     count: int
     project: str | None
@@ -190,10 +190,13 @@ class VectorIndex:
     ) -> list[tuple[int, float]]:
         if not np.any(query):
             return []
-        scores = np.clip(self.vectors @ query, -1, 1)
+        positions = [index for index, record_id in enumerate(self.ids) if record_id in allowed]
+        vectors = self.vectors[positions]
+        ids = [self.ids[index] for index in positions]
+        scores = np.clip(vectors @ query, -1, 1)
         eligible = [
             (record_id, float(score))
-            for record_id, score, vector in zip(self.ids, scores, self.vectors, strict=True)
+            for record_id, score, vector in zip(ids, scores, vectors, strict=True)
             if record_id in allowed and score >= min_score and np.any(vector)
         ]
         return sorted(eligible, key=lambda item: (-item[1], item[0]))[:limit]
@@ -294,8 +297,8 @@ def load_or_build(
 
 def database_key(backlog: Backlog) -> str:
     if backlog.store.in_memory:
-        return f"memory:{os.getpid()}:{id(backlog.store)}"
-    return str(backlog.store.path.resolve())
+        return f"memory:{os.getpid()}:{id(backlog.store.database)}:{backlog.store.principal}"
+    return f"{backlog.store.path.resolve()}:{backlog.store.principal}"
 
 
 async def snapshot(backlog: Backlog) -> tuple[list[Task], list[Note], list[Comment]]:
@@ -397,7 +400,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     )
     if "tasks" not in args.kinds:
         lexical_tasks = []
-    if "notes" not in args.kinds:
+    if "memory" not in args.kinds:
         lexical_notes = []
     comment_snippets = {item.id: item.snippet for item in lexical_comments}
     task_snippets = {item.id: item.snippet for item in lexical_tasks}
@@ -441,7 +444,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     allowed_comments = {item.id for item in comments}
     if "tasks" not in args.kinds:
         allowed_tasks = set()
-    if "notes" not in args.kinds:
+    if "memory" not in args.kinds:
         allowed_notes = set()
     del tasks, notes, comments
     task_ids, note_ids, comment_ids = await asyncio.to_thread(
@@ -530,7 +533,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
     return Matches(
         comments=comment_hits,
         tasks=task_hits,
-        notes=note_hits,
+        memory=note_hits,
         count=len(task_hits) + len(note_hits) + len(comment_hits),
         project=reach.slug,
         computer=reach.scope_computer,

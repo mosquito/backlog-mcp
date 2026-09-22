@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import dataclasses
@@ -9,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -129,6 +131,26 @@ def repeated(*aliases: str, help: str, choices: tuple[str, ...] | None = None) -
     if choices is not None:
         settings["choices"] = choices
     return cast(list[str], argclass.Argument(*aliases, **settings))
+
+
+def secret_accounts(value: str | Sequence[str]) -> list[str]:
+    """Normalize environment defaults and keep every account masked in repr."""
+    values = shlex.split(value) if isinstance(value, str) else value
+    return [argclass.SecretString(str(item)) for item in values]
+
+
+class BasicAccountsAction(argparse.Action):
+    """Extend nargs values, including string defaults supplied by the environment."""
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        accounts = secret_accounts(getattr(namespace, self.dest, []) or [])
+        setattr(namespace, self.dest, [*accounts, *secret_accounts(values)])
 
 
 def build(options: CLI) -> Backlog:
@@ -340,10 +362,62 @@ class Command(argclass.Parser):
         raise NotImplementedError
 
 
+class HTTPOptions(argclass.Group):
+    """HTTP listener and browser access settings."""
+
+    listen: str = argclass.Argument(default="127.0.0.1", help="Address to listen on, HTTP only")
+    port: int = argclass.Argument(default=3009, help="Port to listen on, HTTP only")
+    no_console: bool = argclass.Argument(
+        default=False, help="Do not serve the bundled MCP console at /"
+    )
+    trust_proxy: bool = argclass.Argument(
+        default=False,
+        help=(
+            "Behind a TLS-terminating reverse proxy: skip the Origin check of the endpoint, "
+            "the proxy validates origins instead"
+        ),
+    )
+
+
+class JWTOptions(argclass.Group):
+    """Independent JWT verification keys and common claim requirements."""
+
+    public_key: str = argclass.Argument(
+        default="", help="JWT PEM public key or path to its file; algorithms follow the key type"
+    )
+    pre_shared_key: str = argclass.Secret(
+        default="",
+        help="JWT HS256 pre-shared key, at least 32 bytes; independent of public-key JWT",
+    )
+    issuer: str = argclass.Argument(
+        default="", help="Required JWT issuer; empty accepts any issuer"
+    )
+    audience: str = argclass.Argument(
+        default="", help="Required JWT audience; empty disables the audience check"
+    )
+
+
+class AuthOptions(argclass.Group):
+    """Credentials accepted by the HTTP server."""
+
+    basic: list[str] = argclass.Secret(
+        action=BasicAccountsAction,
+        nargs="+",
+        type=str,
+        converter=secret_accounts,
+        default=[],
+        metavar="USERNAME:PASSWORD",
+        help="Basic accounts, HTTP only; accepts multiple values or repeated flags alongside JWT",
+    )
+
+    jwt = JWTOptions(title="JWT authentication")
+
+
 class Serve(Command):
     """Run the MCP server: on stdio by default, or over HTTP with `--protocol=http`.
 
-    These options also come from the `[mcp]` table of a config file and from `BACKLOG_MCP_*`.
+    Groups map to `[mcp.http]`, `[mcp.auth]` and `[mcp.auth.jwt]` in TOML.
+    Environment variables use the same group prefixes after `BACKLOG_MCP_`.
     """
 
     @property
@@ -355,44 +429,14 @@ class Serve(Command):
         choices=("stdio", "http"),
         help="stdio speaks MCP on stdin and stdout; http serves the endpoint and the console",
     )
-    http_listen: str = argclass.Argument(
-        default="127.0.0.1", help="Address to listen on, HTTP only"
-    )
-    http_port: int = argclass.Argument(default=3009, help="Port to listen on, HTTP only")
-    http_user: str = argclass.Argument(default="", help="Basic auth user, HTTP only")
-    http_password: str = argclass.Secret(
-        default="",
-        help="Basic auth password, HTTP only; can be enabled alongside JWT",
-    )
-    http_jwt_public_key: str = argclass.Argument(
-        default="", help="JWT PEM public key or path to its file; algorithms follow the key type"
-    )
-    http_jwt_pre_shared_key: str = argclass.Secret(
-        default="",
-        help="JWT HS256 pre-shared key, at least 32 bytes; independent of public-key JWT",
-    )
-    http_jwt_issuer: str = argclass.Argument(
-        default="", help="Required JWT issuer; empty accepts any issuer"
-    )
-    http_jwt_audience: str = argclass.Argument(
-        default="", help="Required JWT audience; empty disables the audience check"
-    )
-    http_no_console: bool = argclass.Argument(
-        default=False, help="Do not serve the bundled MCP console at /"
-    )
-    http_trust_proxy: bool = argclass.Argument(
-        default=False,
-        help=(
-            "Behind a TLS-terminating reverse proxy: skip the Origin check of the endpoint, "
-            "the proxy validates origins instead"
-        ),
-    )
+    http = HTTPOptions(title="HTTP transport")
+    auth = AuthOptions(title="HTTP authentication")
     generate_config: str = argclass.Argument(
         action=argclass.GenerateConfigAction,
         generator=ConfigTemplate,
         metavar="FILE",
         help=(
-            "Write a TOML config file with these options in its [mcp] table and exit; '-' "
+            "Write a TOML config file with these options in its [mcp] tables and exit; '-' "
             "prints it. Options given before this flag are written active, the rest as "
             "commented-out defaults"
         ),
@@ -402,9 +446,20 @@ class Serve(Command):
         """MCP on stdin and stdout, the transport every client starts by itself."""
         from aiohttp_tiny_mcp import run_stdio
 
+        from .server import ACTIVE_REGISTRY, persistent_registry
+
         backlog = self.backlog
         log.info("serving %s on stdio, database %s", registry.info.name, backlog.store.path)
-        await run_stdio(registry)
+
+        configured, storage = persistent_registry(backlog)
+        token = ACTIVE_REGISTRY.set(configured)
+        try:
+            await storage.open()
+            await storage.sweep()
+            await run_stdio(configured)
+        finally:
+            ACTIVE_REGISTRY.reset(token)
+            await storage.close()
         return 0
 
     async def __call__(self) -> int:
@@ -412,16 +467,15 @@ class Serve(Command):
             case "http":
                 await httpd.serve(
                     self.backlog,
-                    address=self.http_listen,
-                    port=self.http_port,
-                    user=self.http_user,
-                    password=str(self.http_password),
-                    jwt_public_key=self.http_jwt_public_key,
-                    jwt_pre_shared_key=str(self.http_jwt_pre_shared_key),
-                    jwt_issuer=self.http_jwt_issuer,
-                    jwt_audience=self.http_jwt_audience,
-                    console=not self.http_no_console,
-                    trust_proxy=self.http_trust_proxy,
+                    address=self.http.listen,
+                    port=self.http.port,
+                    basic=[str(account) for account in self.auth.basic],
+                    jwt_public_key=self.auth.jwt.public_key,
+                    jwt_pre_shared_key=str(self.auth.jwt.pre_shared_key),
+                    jwt_issuer=self.auth.jwt.issuer,
+                    jwt_audience=self.auth.jwt.audience,
+                    console=not self.http.no_console,
+                    trust_proxy=self.http.trust_proxy,
                 )
             case _:
                 await self.stdio()
@@ -437,7 +491,7 @@ class Current(Command):
 
 
 def matching_projects(name: str, projects: list[ProjectOut]) -> list[ProjectOut]:
-    exact = [project for project in projects if project.slug == name]
+    exact = [project for project in projects if project.full_name == name or project.slug == name]
     return exact or [
         project
         for project in projects
@@ -470,10 +524,10 @@ def prompt_registration(computer: str, root: Path, projects: list[ProjectOut]) -
                 break
             errors.print(f"No such directory: {directory}", markup=False)
         if existing := directory_project(computer, root, projects):
-            errors.print(f"This directory belongs to {existing.slug!r}.", markup=False)
+            errors.print(f"This directory belongs to {existing.full_name!r}.", markup=False)
             if not Confirm.ask("Use this project?", default=True, console=errors):
                 raise ToolError("registration cancelled")
-            return Registration(project=existing.slug, computer=computer, root=root)
+            return Registration(project=existing.full_name, computer=computer, root=root)
         name = ""
         while not name:
             name = Prompt.ask(
@@ -484,13 +538,13 @@ def prompt_registration(computer: str, root: Path, projects: list[ProjectOut]) -
             if len(matches) > 1:
                 slug = Prompt.ask(
                     "Input existing project slug",
-                    choices=[item.slug for item in matches],
+                    choices=[item.full_name for item in matches],
                     console=errors,
                 )
-                existing = next(item for item in matches if item.slug == slug)
+                existing = next(item for item in matches if item.full_name == slug)
             else:
                 existing = matches[0]
-            errors.print(f"Existing project: {existing.name} ({existing.slug})", markup=False)
+            errors.print(f"Existing project: {existing.name} ({existing.full_name})", markup=False)
             computers = ", ".join(sorted({item.computer for item in existing.roots})) or "none"
             errors.print(f"Registered computers: {computers}", markup=False)
             if not Confirm.ask(
@@ -499,7 +553,7 @@ def prompt_registration(computer: str, root: Path, projects: list[ProjectOut]) -
                 raise ToolError(
                     "registration cancelled; choose another name to create a new project"
                 )
-            return Registration(project=existing.slug, computer=computer, root=root)
+            return Registration(project=existing.full_name, computer=computer, root=root)
         description = Prompt.ask(
             "Input project description", default="", show_default=False, console=errors
         )
@@ -530,9 +584,9 @@ class Init(Command):
             name = self.project_name.strip()
             if not name:
                 raise ToolError("project name must not be empty")
-            if matches := matching_projects(name, projects):
+            if matches := matching_projects(name, [p for p in projects if p.role == "owner"]):
                 raise ToolError(
-                    f"project already exists; use `backlog init --existing {matches[0].slug}` "
+                    f"project already exists; use `backlog init --existing {matches[0].full_name}` "
                     "to bind this directory, or choose a different name"
                 )
             return Registration(name=name, description=self.details)
@@ -543,12 +597,27 @@ class Init(Command):
             raise ToolError("choose a new project name or --existing, not both")
         if self.project_name and not self.project_name.strip():
             raise ToolError("project name must not be empty")
+        if self.existing:
+            known = await self.connection.call(
+                ProjectList, "project_list", archived=True, all_computers=True
+            )
+            matches = [
+                item
+                for item in known.items
+                if self.existing in {item.full_name, item.slug, f"#{item.id}"}
+            ]
+            if not matches:
+                raise ToolError(f"no project {self.existing!r}")
+            if len(matches) > 1:
+                names = ", ".join(item.full_name for item in matches)
+                raise ToolError(f"ambiguous project {self.existing!r}; use its full name: {names}")
+            self.existing = matches[0].full_name
         project = await bind_directory(self.connection, self.registration)
-        if self.existing and project.slug != self.existing:
+        if self.existing and self.existing != project.full_name:
             raise ToolError(f"this directory already belongs to {project.slug!r}")
         if self.project_name and not matching_projects(self.project_name, [project]):
             raise ToolError(f"this directory already belongs to {project.slug!r}")
-        note(f"registered {project.slug!r} on {self.connection.computer}")
+        note(f"registered {project.full_name!r} on {self.connection.computer}")
         return 0
 
 
@@ -583,7 +652,9 @@ class ProjectDelete(Command):
         if not result.deleted:
             warn("nothing deleted")
             return 1
-        note(f"deleted project {result.slug!r}: {result.tasks} task(s), {result.notes} note(s)")
+        note(
+            f"deleted project {result.full_name!r}: {result.tasks} task(s), {result.memory} note(s)"
+        )
         return 0
 
 
@@ -608,7 +679,7 @@ class ProjectUpdate(Command):
             project=self.target,
             preferred_language=self.preferred_language,
         )
-        note(f"{project.slug}: preferred language = {project.preferred_language or 'none'}")
+        note(f"{project.full_name}: preferred language = {project.preferred_language or 'none'}")
         return 0
 
 
@@ -689,7 +760,7 @@ class Search(Command):
 
     kind: list[str] = repeated(
         "--kind",
-        choices=("tasks", "comments", "notes"),
+        choices=("tasks", "comments", "memory"),
         help="Content to search; repeat for several kinds (default: all)",
     )
     query: list[str] = argclass.Argument("query", nargs="+", help="Words or meaning to search for")
@@ -734,13 +805,13 @@ class Search(Command):
                     title=f"{len(matches.comments)} comment match(es) for {text!r} in {where}",
                 )
             )
-        if matches.notes:
+        if matches.memory:
             console.print(
                 notes_table(
-                    matches.notes,
-                    title=f"{len(matches.notes)} note match(es) for {text!r} in {where}",
+                    matches.memory,
+                    title=f"{len(matches.memory)} note match(es) for {text!r} in {where}",
                     wide=matches.project is None
-                    or any(n.project != matches.project for n in matches.notes),
+                    or any(n.project != matches.project for n in matches.memory),
                     computer=self.connection.computer,
                 )
             )
@@ -939,7 +1010,7 @@ class Delete(Command):
         task = await self.task(self.id)
         current = (await self.connection.scope()).project
         if (
-            (current is None or task.project != current.slug)
+            (current is None or task.project != current.full_name)
             and not self.yes
             and not Confirm.ask(
                 f"delete task #{task.id} {task.title!r} from {task.project!r}?",
@@ -980,7 +1051,7 @@ class NoteList(Command):
     async def __call__(self) -> int:
         found = await self.connection.call(
             FullNotes,
-            "note_list",
+            "memory_list",
             **self.listing(),
             tag=self.tag or None,
             shared=True if self.shared else None,
@@ -1004,7 +1075,7 @@ class NoteShow(Command):
     id: int = argclass.Argument("id", type=int, help="Note id")
 
     async def __call__(self) -> int:
-        found = await self.connection.call(NoteOut, "note_get", id=self.id)
+        found = await self.connection.call(NoteOut, "memory_get", id=self.id)
         console.print(note_panel(found, computer=self.connection.computer))
         return 0
 
@@ -1028,7 +1099,7 @@ class NoteAdd(Command):
         try:
             existing = await self.connection.call(
                 NoteOut,
-                "note_get",
+                "memory_get",
                 title=title,
                 project=self.reference(),
             )
@@ -1037,7 +1108,7 @@ class NoteAdd(Command):
                 raise
         saved = await self.connection.call(
             NoteOut,
-            "note_save",
+            "memory_save",
             project=self.reference(),
             title=title,
             body=self.body,
@@ -1060,7 +1131,7 @@ class NoteAppend(Command):
 
     async def __call__(self) -> int:
         updated = await self.connection.call(
-            NoteOut, "note_append", id=self.id, text=" ".join(self.text)
+            NoteOut, "memory_append", id=self.id, text=" ".join(self.text)
         )
         note(f"appended to note #{updated.id}")
         console.print(note_panel(updated, computer=self.connection.computer))
@@ -1073,7 +1144,7 @@ class NoteEdit(Command):
     id: int = argclass.Argument("id", type=int, help="Note id")
 
     async def __call__(self) -> int:
-        found = await self.connection.call(NoteOut, "note_get", id=self.id)
+        found = await self.connection.call(NoteOut, "memory_get", id=self.id)
         written = compose(note_form_of(found))
         if written is None:
             warn("nothing changed")
@@ -1083,7 +1154,7 @@ class NoteEdit(Command):
             warn("the title is empty, nothing changed")
             return 1
         check_note(fields["body"])
-        updated = await self.connection.call(NoteOut, "note_save", id=found.id, **fields)
+        updated = await self.connection.call(NoteOut, "memory_save", id=found.id, **fields)
         note(f"updated note #{updated.id}")
         console.print(note_panel(updated, computer=self.connection.computer))
         return 0
@@ -1101,7 +1172,7 @@ class NoteDelete(Command):
     )
 
     async def __call__(self) -> int:
-        result = await self.connection.call(Deleted, "note_delete", id=self.id)
+        result = await self.connection.call(Deleted, "memory_delete", id=self.id)
         if not result.deleted:
             warn("nothing deleted")
             return 1
@@ -1209,6 +1280,11 @@ class Watch(Command):
         from aiohttp_tiny_mcp import MethodFilter
 
         project = self.reference()
+        if project:
+            selected = (await self.connection.scope()).project
+            if selected is None:
+                raise ToolError("no project selected")
+            project = selected.full_name
         methods: list[str | MethodFilter] = [
             MethodFilter(method=method, topics=[project]) if project else method
             for method in (TASK_CHANGED, NOTE_CHANGED)
@@ -1372,6 +1448,112 @@ def install_codex(name: str, command: str, arguments: list[str], *, force: bool)
     return 0
 
 
+class TaskCommands(Command):
+    """Tasks, their status, and their comment history."""
+
+    list = List(
+        aliases=["ls"],
+        help="List tasks of this project, or of all",
+        description=(
+            "List tasks, most important first, open ones (todo, doing, blocked) before the "
+            "rest. --status narrows to named statuses and may be repeated, --every adds the "
+            "closed ones, and --all-projects reaches every board at once."
+        ),
+    )
+
+    comment = CommentAdd(aliases=["co"], help="Add a task comment")
+
+    comments = CommentList(aliases=["cm"], help="Read task comments and history")
+
+    show = Show(
+        aliases=["sh"],
+        help="Print one task in full",
+        description="Print the title, body, status, priority, tags and timestamps of one task.",
+    )
+
+    add = Add(
+        aliases=["ad"],
+        help="Add a task from the command line",
+        description=(
+            "Add a task without opening an editor. The title is the positional argument; "
+            "--body, --status, --priority and repeated --tag flags set the rest."
+        ),
+    )
+
+    create = Create(
+        aliases=["cr"],
+        help="Write a task in $EDITOR",
+        description=(
+            "Open $VISUAL, else $EDITOR, else vi on a form. The headers at the top set the "
+            "title, status, priority and tags; everything under the blank line is the "
+            "description. An empty title cancels the task."
+        ),
+    )
+
+    edit = Edit(
+        aliases=["ed"],
+        help="Edit a task in $EDITOR",
+        description=(
+            "Edit the task fields and description. Use `backlog task comment` for progress updates. "
+            "Leaving the file unchanged changes nothing."
+        ),
+    )
+
+    start = Start(
+        aliases=["st"],
+        help="Mark tasks in progress",
+        description="Move one or more tasks to the doing status.",
+    )
+
+    block = Block(
+        aliases=["bl"],
+        help="Mark tasks blocked",
+        description="Move one or more tasks to the blocked status. They stay open.",
+    )
+
+    close = Close(
+        aliases=["cl"],
+        help="Mark tasks done",
+        description="Move one or more tasks to the done status, which stamps the closing time.",
+    )
+
+    cancel = Cancel(
+        aliases=["ca"],
+        help="Mark tasks cancelled",
+        description=(
+            "Move one or more tasks to the cancelled status: kept and searchable, but closed. "
+            "Prefer this to `backlog task delete` for work that was dropped."
+        ),
+    )
+
+    reopen = Reopen(
+        aliases=["re"],
+        help="Put tasks back on the pile",
+        description="Move one or more tasks back to the todo status and clear the closing time.",
+    )
+
+    move = Move(
+        aliases=["mv"],
+        help="Move a task into another project",
+        description=(
+            "Give a task to another board. The destination is a project slug or any path "
+            "inside the project. The task keeps its id."
+        ),
+    )
+
+    delete = Delete(
+        aliases=["rm"],
+        help="Delete a task for good",
+        description=(
+            "Delete a task permanently. Ask first only for another project, unless --yes is given. "
+            "`backlog task cancel` keeps the record instead."
+        ),
+    )
+
+    async def __call__(self) -> int:
+        return self.show_help()
+
+
 class CLI(argclass.Parser):
     """Defaults come from the config files, then `BACKLOG_MCP_*`, then these arguments.
 
@@ -1440,7 +1622,7 @@ class CLI(argclass.Parser):
         generator=ConfigTemplate,
         metavar="FILE",
         help=(
-            "Write these options and the [mcp] table as a TOML config file and exit; '-' "
+            "Write these options and the [mcp] tables as a TOML config file and exit; '-' "
             "prints it. Options given before this flag are written active, the rest as "
             "commented-out defaults"
         ),
@@ -1452,8 +1634,9 @@ class CLI(argclass.Parser):
         description=(
             "Run the MCP server on the same backlog the other commands use. stdio is the "
             "transport clients start by themselves; --protocol=http serves the endpoint at "
-            "/mcp and the bundled console at /, behind Basic auth when a user and a password "
-            "are given. `backlog-mcp` is the same command without the word mcp. Over HTTP, "
+            "/mcp and the bundled console at /. The http group configures the listener; "
+            "the auth group configures Basic accounts and JWT verification. `backlog-mcp` is "
+            "the same command without the word mcp. Over HTTP, "
             "?computer=<name>&project=<slug> on the endpoint URL serves a client as another "
             "computer."
         ),
@@ -1483,7 +1666,7 @@ class CLI(argclass.Parser):
         ),
     )
     projects = Projects(
-        aliases=["pr"],
+        aliases=["project", "pr"],
         help="List the registered projects",
         description=(
             "Print the projects of this computer with their root directory and their open and "
@@ -1492,15 +1675,7 @@ class CLI(argclass.Parser):
             "delete <slug>` removes a project with everything on its board."
         ),
     )
-    list = List(
-        aliases=["ls"],
-        help="List tasks of this project, or of all",
-        description=(
-            "List tasks, most important first, open ones (todo, doing, blocked) before the "
-            "rest. --status narrows to named statuses and may be repeated, --every adds the "
-            "closed ones, and --all-projects reaches every board at once."
-        ),
-    )
+    task = TaskCommands(help="Manage tasks and comments")
     search = Search(
         aliases=["se"],
         help="FTS and semantic search over tasks, comments, and notes",
@@ -1508,82 +1683,6 @@ class CLI(argclass.Parser):
             "Search titles, bodies and tags with FTS prefixes and local multilingual embeddings. "
             "FTS matches come first, followed by semantic matches without duplicate IDs. "
             "--min-score filters semantic matches only. --all-projects searches every board."
-        ),
-    )
-    comment = CommentAdd(aliases=["co"], help="Add a task comment")
-    comments = CommentList(aliases=["cm"], help="Read task comments and history")
-    show = Show(
-        aliases=["sh"],
-        help="Print one task in full",
-        description="Print the title, body, status, priority, tags and timestamps of one task.",
-    )
-    add = Add(
-        aliases=["ad"],
-        help="Add a task from the command line",
-        description=(
-            "Add a task without opening an editor. The title is the positional argument; "
-            "--body, --status, --priority and repeated --tag flags set the rest."
-        ),
-    )
-    create = Create(
-        aliases=["cr"],
-        help="Write a task in $EDITOR",
-        description=(
-            "Open $VISUAL, else $EDITOR, else vi on a form. The headers at the top set the "
-            "title, status, priority and tags; everything under the blank line is the "
-            "description. An empty title cancels the task."
-        ),
-    )
-    edit = Edit(
-        aliases=["ed"],
-        help="Edit a task in $EDITOR",
-        description=(
-            "Edit the task fields and description. Use `backlog comment` for progress updates. "
-            "Leaving the file unchanged changes nothing."
-        ),
-    )
-    start = Start(
-        aliases=["st"],
-        help="Mark tasks in progress",
-        description="Move one or more tasks to the doing status.",
-    )
-    block = Block(
-        aliases=["bl"],
-        help="Mark tasks blocked",
-        description="Move one or more tasks to the blocked status. They stay open.",
-    )
-    close = Close(
-        aliases=["cl"],
-        help="Mark tasks done",
-        description="Move one or more tasks to the done status, which stamps the closing time.",
-    )
-    cancel = Cancel(
-        aliases=["ca"],
-        help="Mark tasks cancelled",
-        description=(
-            "Move one or more tasks to the cancelled status: kept and searchable, but closed. "
-            "Prefer this to `backlog delete` for work that was dropped."
-        ),
-    )
-    reopen = Reopen(
-        aliases=["re"],
-        help="Put tasks back on the pile",
-        description="Move one or more tasks back to the todo status and clear the closing time.",
-    )
-    move = Move(
-        aliases=["mv"],
-        help="Move a task into another project",
-        description=(
-            "Give a task to another board. The destination is a project slug or any path "
-            "inside the project. The task keeps its id."
-        ),
-    )
-    delete = Delete(
-        aliases=["rm"],
-        help="Delete a task for good",
-        description=(
-            "Delete a task permanently. Ask first only for another project, unless --yes is given. "
-            "`backlog cancel` keeps the record instead."
         ),
     )
     stats = Stats(
@@ -1594,8 +1693,8 @@ class CLI(argclass.Parser):
             "and tags. Notes include shared notes. --all-projects counts every board together."
         ),
     )
-    note = Notes(
-        aliases=["no"],
+    memory = Notes(
+        aliases=["mem"],
         help="Lasting user context: preferences, agreements, and constraints",
         description=(
             "Code changes; notes remain. Keep lasting user context unavailable elsewhere, not "
@@ -1651,7 +1750,7 @@ class CLI(argclass.Parser):
                     return await command()
                 finally:
                     await backlog.store.close()
-            if isinstance(command, (Install, Notes)):
+            if isinstance(command, (Install, Notes, TaskCommands)):
                 return await command()
             if isinstance(command, Watch):
                 self.url = command.endpoint or self.url

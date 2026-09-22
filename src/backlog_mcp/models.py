@@ -49,17 +49,30 @@ class Origin(StrEnum):
     NONE = "none"
 
 
+class Actor(BaseModel):
+    principal: str
+    computer: str
+
+
+class Attributed(BaseModel):
+    created_by: Actor | None = None
+    updated_by: Actor | None = None
+
+
 class ProjectRootOut(BaseModel):
     computer: str = Field(description="Computer this binding belongs to.")
     root: str = Field(description="Root directory; empty when the project has no files here.")
 
 
-class ProjectOut(BaseModel):
+class ProjectOut(Attributed):
     """A project with its task counts."""
 
     id: int
     slug: str
+    full_name: str = Field(description="Stable owner/slug project reference.")
     name: str
+    owner: str
+    role: str
     roots: list[ProjectRootOut] = Field(default_factory=list)
     here: bool = Field(
         description=("True when this computer has a non-empty filesystem binding for the project.")
@@ -77,11 +90,13 @@ class ProjectOut(BaseModel):
 
 
 class CommentOut(BaseModel):
+    principal: str
+    computer: str
     id: int = Field(description="Stable comment id.")
     task_id: int
     project: str
     body: str
-    kind: Literal["comment", "status", "move", "legacy"] = "comment"
+    kind: Literal["comment", "status", "move"] = "comment"
     created_at: float
 
 
@@ -91,9 +106,9 @@ class Comments(BaseModel):
     count: int = Field(description="Total number of comments and history entries.")
 
 
-class TaskOut(BaseModel):
+class TaskOut(Attributed):
     id: int
-    project: str = Field(description="Slug of the owning project.")
+    project: str = Field(description="Owner-qualified name of the owning project.")
     title: str
     body: str = ""
     status: Status
@@ -103,18 +118,17 @@ class TaskOut(BaseModel):
     updated_at: float
     closed_at: float | None = None
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
-    history_warning: bool = Field(default=False, description="Legacy history needs manual review.")
 
 
 class TaskDetails(TaskOut):
     comments: list[CommentOut] = Field(default_factory=list)
 
 
-class TaskListItem(BaseModel):
+class TaskListItem(Attributed):
     """Compact task metadata for listings; retrieve the task for its full body."""
 
     id: int
-    project: str = Field(description="Slug of the owning project.")
+    project: str = Field(description="Owner-qualified name of the owning project.")
     title: str
     status: Status
     priority: Priority
@@ -127,28 +141,34 @@ class TaskListItem(BaseModel):
     )
 
 
-class NoteOut(BaseModel):
+class NoteOut(Attributed):
     """A piece of knowledge about a project: a titled markdown text, addressed by id."""
 
     id: int
-    project: str = Field(description="Slug of the owning project.")
+    project: str = Field(description="Owner-qualified name of the owning project.")
     title: str
     body: str = ""
     tags: list[str] = Field(default_factory=list)
-    shared: bool = Field(default=False, description="Visible from every project.")
+    shared: bool = Field(
+        default=False,
+        description="Visible across accessible projects; source-project membership is required.",
+    )
     created_at: float
     updated_at: float
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
 
-class NoteListItem(BaseModel):
+class NoteListItem(Attributed):
     """Compact note metadata for listings; retrieve the note for its full body."""
 
     id: int
-    project: str = Field(description="Slug of the owning project.")
+    project: str = Field(description="Owner-qualified name of the owning project.")
     title: str
     tags: list[str] = Field(default_factory=list)
-    shared: bool = Field(default=False, description="Visible from every project.")
+    shared: bool = Field(
+        default=False,
+        description="Visible across accessible projects; source-project membership is required.",
+    )
     created_at: float
     updated_at: float
     snippet: str = Field(
@@ -168,14 +188,18 @@ COVERED = "Computer of the project or computer covered, absent when every comput
 class Tasks(BaseModel):
     items: list[TaskListItem]
     count: int
-    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    project: str | None = Field(
+        default=None, description="Owner-qualified project searched, absent when global."
+    )
     computer: str | None = Field(default=None, description=COVERED)
 
 
 class Notes(BaseModel):
     items: list[NoteListItem]
     count: int
-    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    project: str | None = Field(
+        default=None, description="Owner-qualified project searched, absent when global."
+    )
     computer: str | None = Field(default=None, description=COVERED)
 
 
@@ -184,7 +208,9 @@ class FullTasks(BaseModel):
 
     items: list[TaskOut]
     count: int
-    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    project: str | None = Field(
+        default=None, description="Owner-qualified project searched, absent when global."
+    )
     computer: str | None = Field(default=None, description=COVERED)
 
 
@@ -193,11 +219,14 @@ class FullNotes(BaseModel):
 
     items: list[NoteOut]
     count: int
-    project: str | None = Field(default=None, description="Slug searched, absent when global.")
+    project: str | None = Field(
+        default=None, description="Owner-qualified project searched, absent when global."
+    )
     computer: str | None = Field(default=None, description=COVERED)
 
 
 class Scope(BaseModel):
+    principal: str = '["local"]'
     """The project the tools work on when no project is named, and the computer this is."""
 
     project: ProjectOut | None = Field(
@@ -233,7 +262,7 @@ class Stats(BaseModel):
     by_status: dict[str, int] = Field(default_factory=dict)
     by_priority: dict[str, int] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
-    notes: int = Field(default=0, description="Notes in scope, including shared notes.")
+    memory: int = Field(default=0, description="Notes in scope, including shared notes.")
 
 
 class Deleted(BaseModel):
@@ -248,9 +277,10 @@ class ProjectDeleted(BaseModel):
 
     id: int
     slug: str
+    full_name: str
     name: str
     tasks: int = Field(description="Tasks the project held, deleted ones included.")
-    notes: int = Field(description="Notes the project held, shared ones included.")
+    memory: int = Field(description="Notes the project held, shared ones included.")
     shared_notes: int = Field(description="Notes among them that every project could see.")
     deleted: bool
     detail: str = ""
@@ -286,7 +316,7 @@ EVENT_KEY = "backlog/event"
 
 class Kind(StrEnum):
     TASK = "task"
-    NOTE = "note"
+    NOTE = "memory"
     PROJECT = "project"
 
 
@@ -303,10 +333,12 @@ class Event(BaseModel):
     Travels in `_meta["backlog/event"]` of each `notifications/resources/updated`.
     """
 
+    principal: str | None = None
+    project_id: int | None = None
     kind: Kind
     action: Action
     id: int
-    project: str = Field(description="Slug of the project the record belongs to after the write.")
+    project: str = Field(description="Owner-qualified project name after the write.")
     title: str
     status: Status | None = Field(default=None, description="Tasks only.")
     priority: Priority | None = Field(default=None, description="Tasks only.")

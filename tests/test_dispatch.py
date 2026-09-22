@@ -5,8 +5,8 @@ a tool fails on argument validation or returns a result; it never fails as an un
 """
 
 import pytest
-from aiohttp_tiny_mcp.client_base import BaseClient, ClientError
-from aiohttp_tiny_mcp.models import CallToolResult
+from aiohttp_tiny_mcp.client.base import BaseClient, ClientError
+from aiohttp_tiny_mcp.protocol.models import CallToolResult
 
 UNKNOWN_TOOL = -32601
 

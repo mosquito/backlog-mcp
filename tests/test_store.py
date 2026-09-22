@@ -8,11 +8,9 @@ import pytest
 
 from backlog_mcp.models import Priority, Status
 from backlog_mcp.store import (
-    MIGRATIONS,
     NOTE_LIMIT,
     Project,
     ProjectContents,
-    ProjectRoot,
     Store,
     clean_tags,
     match_query,
@@ -53,7 +51,7 @@ async def test_reopening_keeps_the_schema_and_the_rows(tmp_path: Path) -> None:
 
     again = Store(tmp_path / "backlog.sqlite3")
     connection = await again.open()
-    async with connection.execute("PRAGMA user_version") as cursor:
+    async with connection.execute("PRAGMA application_id") as cursor:
         row = await cursor.fetchone()
     assert row is not None and row[0] > 0
     assert (await again.count_tasks()) == 1
@@ -83,37 +81,6 @@ async def test_project_language_persists_and_can_be_cleared(tmp_path: Path) -> N
         await reopened.close()
 
 
-async def test_existing_projects_gain_a_null_language(tmp_path: Path) -> None:
-    path = tmp_path / "backlog.sqlite3"
-    with sqlite3.connect(path) as connection:
-        for migration in MIGRATIONS[:4]:
-            for statement in migration:
-                connection.execute(statement, {"computer": "here"})
-        connection.execute("PRAGMA user_version=4")
-        connection.execute(
-            "INSERT INTO projects (slug, name, description, created_at, updated_at) "
-            "VALUES ('old', 'Old project', 'Keep this', 1, 2)"
-        )
-        connection.execute("INSERT INTO project_roots VALUES (1, 'here', '/tmp/old')")
-        connection.execute(
-            "INSERT INTO tasks (project_id, title, created_at, updated_at) "
-            "VALUES (1, 'Keep this task', 1, 2)"
-        )
-    store = Store(path)
-    try:
-        project = await store.project(1)
-        assert project is not None
-        assert project.preferred_language is None
-        assert project.description == "Keep this"
-        assert project.roots == [ProjectRoot("here", "/tmp/old")]
-        assert (project.created_at, project.updated_at) == (1, 2)
-        assert await store.count_tasks(project_id=1) == 1
-        fresh = await register(store, "new", tmp_path / "new")
-        assert fresh.preferred_language is None
-    finally:
-        await store.close()
-
-
 async def test_project_for_path_takes_the_deepest_root(store: Store, tmp_path: Path) -> None:
     outer = await register(store, "outer", tmp_path)
     inner = await register(store, "inner", tmp_path / "inner")
@@ -125,7 +92,7 @@ async def test_project_for_path_takes_the_deepest_root(store: Store, tmp_path: P
     assert await store.project_by_root(tmp_path / "inner", computer="here") == inner
     assert await store.project_by_root(tmp_path / "inner", computer="elsewhere") is None
     assert await store.project_by_slug("missing") is None
-    assert await store.slugs() == ["inner", "outer"]
+    assert await store.slugs() == ["@local/inner", "@local/outer"]
 
 
 async def test_archiving_hides_a_project_from_the_default_listing(store: Store) -> None:
@@ -218,41 +185,6 @@ async def test_counts_and_tags_group_per_project(store: Store) -> None:
     assert counted == {"here": (1, 2), "there": (1, 1)}
 
 
-async def test_an_older_file_gains_the_notes_table(tmp_path: Path) -> None:
-    #: A file written before notes existed: the first migration only, with a task in it.
-    path = tmp_path / "backlog.sqlite3"
-    connection = sqlite3.connect(path)
-    for statement in MIGRATIONS[0]:
-        connection.execute(statement)
-    connection.execute("PRAGMA user_version=1")
-    connection.execute(
-        "INSERT INTO projects (slug, name, root, created_at, updated_at) VALUES (?, ?, ?, 0, 0)",
-        ("old", "old", "/tmp/old"),
-    )
-    connection.execute(
-        "INSERT INTO tasks (project_id, title, created_at, updated_at) VALUES (1, ?, 0, 0)",
-        ("Survive the upgrade",),
-    )
-    connection.commit()
-    connection.close()
-
-    store = Store(path, computer="old-box")
-    opened = await store.open()
-    async with opened.execute("PRAGMA user_version") as cursor:
-        row = await cursor.fetchone()
-    assert row is not None and row[0] == len(MIGRATIONS)
-    assert await store.count_tasks() == 1
-    #: The projects of a file from before computers belong to the computer that upgraded it.
-    upgraded = await store.project(1)
-    assert upgraded is not None and upgraded.roots == [ProjectRoot("old-box", "/tmp/old")]
-    assert (await store.task(1)) is not None
-    async with opened.execute("PRAGMA foreign_key_check") as cursor:
-        assert await cursor.fetchall() == []
-    saved = await store.add_note(project_id=1, title="dev vm", body="host: vm-3")
-    assert [item.id for item in await store.search_notes("vm")] == [saved.id]
-    await store.close()
-
-
 async def test_notes_are_saved_by_title_appended_and_deleted(store: Store) -> None:
     project = await register(store, "one", Path("/tmp/one"))
     saved = await store.add_note(
@@ -260,7 +192,7 @@ async def test_notes_are_saved_by_title_appended_and_deleted(store: Store) -> No
     )
     assert saved.tags == ["infra"]
     assert saved.shared is False
-    assert saved.project == "one"
+    assert saved.project == "@local/one"
     assert await store.note_by_title("dev vm", project_id=project.id) == saved
     assert await store.note_by_title("dev vm", project_id=project.id + 1) is None
     #: One note per title per project, so "save" always has one target.
@@ -372,7 +304,8 @@ async def test_project_delete_takes_everything_on_the_board(store: Store) -> Non
     assert await store.delete_project(gone.id) is True
     assert await store.delete_project(gone.id) is False
     assert await store.project(gone.id) is None
-    assert await store.project_contents(gone.id) == ProjectContents(0, 0, 0)
+    with pytest.raises(LookupError):
+        await store.project_contents(gone.id)
     assert await store.task(doomed.id) is None
     assert await store.note(hidden.id) is None
     assert await store.note(shared.id) is None

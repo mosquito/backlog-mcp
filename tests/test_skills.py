@@ -9,10 +9,10 @@ from urllib.parse import quote
 
 import pytest
 from aiohttp.test_utils import TestServer
-from aiohttp_tiny_mcp.client import Client
-from aiohttp_tiny_mcp.client_base import BaseClient, ClientError
-from aiohttp_tiny_mcp.core import FailureKind, Rejected
-from aiohttp_tiny_mcp.models import TextResourceContents
+from aiohttp_tiny_mcp import Client
+from aiohttp_tiny_mcp.client.base import BaseClient, ClientError
+from aiohttp_tiny_mcp.protocol.core import FailureKind, Rejected
+from aiohttp_tiny_mcp.protocol.models import TextResourceContents
 from aiohttp_tiny_mcp.testing import connect, pick
 
 from backlog_mcp import skills

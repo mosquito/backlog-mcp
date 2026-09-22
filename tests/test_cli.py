@@ -50,6 +50,8 @@ def run(
     (root / ".git").mkdir(parents=True)
     #: The machine running the tests may have its own configuration and environment.
     monkeypatch.setattr(cli.paths, "config_files", list)
+    monkeypatch.setattr(cli.paths, "database_path", lambda: tmp_path / "default.sqlite3")
+    monkeypatch.setattr(cli.paths, "state_path", lambda: tmp_path / "default-state.json")
     monkeypatch.setattr(
         cli.Command,
         "registration",
@@ -113,14 +115,14 @@ def test_aliases_are_unique_and_show_the_same_help(capsys: pytest.CaptureFixture
 
 
 def test_add_list_search_and_close_one_task(run: Runner) -> None:
-    code, output = run("add", "Ship", "the", "release", "-t", "ops", "-t", "urgent-ish")
+    code, output = run("task", "add", "Ship", "the", "release", "-t", "ops", "-t", "urgent-ish")
     assert code == 0
-    assert "added #1 to workspace" in output
+    assert "added #1 to @local/workspace" in output
     assert "ops, urgent-ish" in output
 
-    code, output = run("list")
+    code, output = run("task", "list")
     assert code == 0
-    assert "1 task(s) of workspace" in output
+    assert "1 task(s) of @local/workspace" in output
     assert "Ship the release" in output
 
     code, output = run("search", "rele")
@@ -129,16 +131,16 @@ def test_add_list_search_and_close_one_task(run: Runner) -> None:
     #: The title column stays the title; a body excerpt would be the `match` column.
     assert "Ship the release" in output
 
-    code, output = run("close", "1")
+    code, output = run("task", "close", "1")
     assert code == 0
     assert "#1 is done" in output
-    assert run("list")[1].count("Ship the release") == 0
-    assert "Ship the release" in run("list", "--every")[1]
-    assert "Ship the release" in run("list", "--status", "done")[1]
+    assert run("task", "list")[1].count("Ship the release") == 0
+    assert "Ship the release" in run("task", "list", "--every")[1]
+    assert "Ship the release" in run("task", "list", "--status", "done")[1]
 
 
 def test_statuses_move_back_and_forth(run: Runner) -> None:
-    run("add", "Move me")
+    run("task", "add", "Move me")
     for command, expected in [
         ("start", "doing"),
         ("block", "blocked"),
@@ -148,11 +150,11 @@ def test_statuses_move_back_and_forth(run: Runner) -> None:
         code, output = run(command, "1")
         assert code == 0
         assert f"#1 is {expected}" in output
-    assert run("close", "999") == (1, "no task #999\n")
+    assert run("task", "close", "999") == (1, "no task #999\n")
 
 
 def test_project_language_can_be_set_changed_and_cleared(run: Runner) -> None:
-    run("add", "Keep this task")
+    run("task", "add", "Keep this task")
     for language in ("Russian", "English"):
         code, output = run("projects", "update", "workspace", "--preferred-language", language)
         assert code == 0
@@ -163,7 +165,7 @@ def test_project_language_can_be_set_changed_and_cleared(run: Runner) -> None:
     assert code == 0
     assert "preferred language = none" in output
     assert "English" not in run("current")[1]
-    assert "Keep this task" in run("show", "1")[1]
+    assert "Keep this task" in run("task", "show", "1")[1]
 
 
 def test_project_language_update_requires_one_option(run: Runner) -> None:
@@ -174,27 +176,27 @@ def test_project_language_update_requires_one_option(run: Runner) -> None:
 
 
 def test_show_prints_the_body_and_the_fields(run: Runner) -> None:
-    run("add", "Explain", "-b", "The **long** description.", "--priority", "urgent")
-    code, output = run("show", "1")
+    run("task", "add", "Explain", "-b", "The **long** description.", "--priority", "urgent")
+    code, output = run("task", "show", "1")
     assert code == 0
     assert "#1 Explain" in output
     assert "The long description." in output
     assert "**long**" not in output
     assert "urgent" in output
-    assert run("show", "42") == (1, "no task #42\n")
+    assert run("task", "show", "42") == (1, "no task #42\n")
 
 
 def test_show_renders_comments_separately(run: Runner) -> None:
-    run("add", "Explain", "-b", "The description")
-    code, output = run("comment", "1", "The **comment**")
+    run("task", "add", "Explain", "-b", "The description")
+    code, output = run("task", "comment", "1", "The **comment**")
     assert code == 0 and "The comment" in output
-    code, output = run("show", "1")
+    code, output = run("task", "show", "1")
     assert code == 0
     assert "The description" in output and "The comment" in output
     assert "comments and history (1)" in output
     assert "**comment**" not in output
     assert "comment #1" in output
-    code, output = run("comments", "1")
+    code, output = run("task", "comments", "1")
     assert code == 0 and "1 comments and history entries" in output
 
 
@@ -238,8 +240,8 @@ async def test_an_empty_library_says_so(
 def test_projects_and_scope(run: Runner, tmp_path: Path) -> None:
     other = tmp_path / "other"
     other.mkdir()
-    run("add", "Local work")
-    code, output = run("--project", str(other), "add", "Elsewhere")
+    run("task", "add", "Local work")
+    code, output = run("--project", str(other), "task", "add", "Elsewhere")
     assert code == 2
     assert "no project" in output
 
@@ -256,14 +258,14 @@ def test_projects_and_scope(run: Runner, tmp_path: Path) -> None:
 def test_move_between_projects_and_count(run: Runner, tmp_path: Path) -> None:
     second = tmp_path / "second"
     second.mkdir()
-    run("add", "Travelling task")
+    run("task", "add", "Travelling task")
     #: Visiting the other directory registers it as a project of its own.
     run("-r", str(second), "current")
-    code, output = run("move", "1", "second")
+    code, output = run("task", "move", "1", "second")
     assert code == 0
-    assert "#1 now belongs to second" in output
-    assert run("list")[1].count("Travelling task") == 0
-    assert "Travelling task" in run("--project", "second", "list")[1]
+    assert "#1 now belongs to @local/second" in output
+    assert run("task", "list")[1].count("Travelling task") == 0
+    assert "Travelling task" in run("--project", "second", "task", "list")[1]
     assert "2 open of 2" not in run("current")[1]
 
     code, output = run("stats", "--all-projects")
@@ -273,9 +275,9 @@ def test_move_between_projects_and_count(run: Runner, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("flags", [[], ["--yes"]])
 def test_delete_does_not_prompt(run: Runner, flags: list[str]) -> None:
-    run("add", "Delete me")
-    assert run("delete", "1", *flags) == (0, "deleted #1\n")
-    assert run("delete", "1", *flags) == (1, "no task #1\n")
+    run("task", "add", "Delete me")
+    assert run("task", "delete", "1", *flags) == (0, "deleted #1\n")
+    assert run("task", "delete", "1", *flags) == (1, "no task #1\n")
 
 
 def test_create_and_edit_use_the_form(run: Runner, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,25 +285,25 @@ def test_create_and_edit_use_the_form(run: Runner, monkeypatch: pytest.MonkeyPat
         "Title: From the editor\nStatus: doing\nPriority: high\nTags: docs, api\n\nThe body.\n"
     )
     monkeypatch.setattr(cli, "compose", lambda text: written)
-    code, output = run("create")
+    code, output = run("task", "create")
     assert code == 0
     assert "added #1" in output
     assert "The body." in output
 
     monkeypatch.setattr(cli, "compose", lambda text: "Title: Renamed\n\nOther body.\n")
-    code, output = run("edit", "1")
+    code, output = run("task", "edit", "1")
     assert code == 0
     assert "updated #1" in output
     assert "Renamed" in output
 
     monkeypatch.setattr(cli, "compose", lambda text: None)
-    assert run("edit", "1") == (0, "nothing changed\n")
-    assert run("create") == (1, "nothing written, no task added\n")
+    assert run("task", "edit", "1") == (0, "nothing changed\n")
+    assert run("task", "create") == (1, "nothing written, no task added\n")
 
     monkeypatch.setattr(cli, "compose", lambda text: "Title:\n\nNo title at all.\n")
-    assert run("edit", "1")[0] == 1
-    assert run("create")[0] == 1
-    assert run("edit", "999") == (1, "no task #999\n")
+    assert run("task", "edit", "1")[0] == 1
+    assert run("task", "create")[0] == 1
+    assert run("task", "edit", "999") == (1, "no task #999\n")
 
 
 def test_form_round_trip() -> None:
@@ -416,8 +418,9 @@ def test_generate_config_writes_the_global_options_and_reads_back(
     assert loaded["database"] == str(run.database)
     assert loaded["state"] == str(run.state)
     #: The subcommand was not parsed yet: its table holds commented-out defaults only.
-    assert loaded["mcp"] == {}
-    assert "# http_port = 3009" in text
+    assert loaded["mcp"] == {"http": {}, "auth": {"jwt": {}}}
+    assert "[mcp.http]" in text
+    assert "# port = 3009" in text
     #: The flag writes the file and opens nothing.
     assert not run.database.exists()
     assert "generate_config" not in loaded
@@ -436,7 +439,64 @@ def test_generate_config_on_the_server_command_sees_its_options(
         run("mcp", "--protocol", "http", "--http-port", "3010", "--generate-config", str(target))
     assert raised.value.code == 0
     loaded = tomllib.loads(target.read_text())
-    assert loaded["mcp"] == {"protocol": "http", "http_port": 3010}
+    assert loaded["mcp"] == {"protocol": "http", "http": {"port": 3010}, "auth": {"jwt": {}}}
+
+
+def test_grouped_server_config_round_trip(
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "server.toml"
+    secret = "test-only-jwt-secret-32-bytes-long"
+    with pytest.raises(SystemExit) as raised:
+        run(
+            "mcp",
+            "--protocol=http",
+            "--http-listen=0.0.0.0",
+            "--http-port=4321",
+            "--http-no-console",
+            "--http-trust-proxy",
+            "--auth-basic=alice:one",
+            "--auth-basic=bob:two:parts",
+            "--auth-jwt-public-key=/etc/public.pem",
+            f"--auth-jwt-pre-shared-key={secret}",
+            "--auth-jwt-issuer=issuer",
+            "--auth-jwt-audience=backlog",
+            "--generate-config",
+            str(target),
+        )
+    assert raised.value.code == 0
+    values = tomllib.loads(target.read_text())["mcp"]
+    assert values == {
+        "protocol": "http",
+        "http": {"listen": "0.0.0.0", "port": 4321, "no_console": True, "trust_proxy": True},
+        "auth": {
+            "basic": ["alice:one", "bob:two:parts"],
+            "jwt": {
+                "public_key": "/etc/public.pem",
+                "pre_shared_key": secret,
+                "issuer": "issuer",
+                "audience": "backlog",
+            },
+        },
+    }
+    seen: dict[str, object] = {}
+
+    async def serve(backlog: object, **kwargs: object) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(cli.httpd, "serve", serve)
+    assert cli.server_main(["--config", str(target)]) == 0
+    assert seen == {
+        "address": "0.0.0.0",
+        "port": 4321,
+        "console": False,
+        "trust_proxy": True,
+        "basic": ["alice:one", "bob:two:parts"],
+        "jwt_public_key": "/etc/public.pem",
+        "jwt_pre_shared_key": secret,
+        "jwt_issuer": "issuer",
+        "jwt_audience": "backlog",
+    }
 
 
 def test_generate_config_prints_defaults_commented_out(run: Runner) -> None:
@@ -448,7 +508,8 @@ def test_generate_config_prints_defaults_commented_out(run: Runner) -> None:
     assert "# Directory to scope to" in text
     assert "[mcp]" in text
     assert '# protocol = "stdio"' in text
-    assert "# http_port = 3009" in text
+    assert "[mcp.http]" in text
+    assert "# port = 3009" in text
     #: The other commands take their options on the command line only.
     assert "[install]" not in text
     assert "[list]" not in text
@@ -458,7 +519,7 @@ def test_server_options_come_from_the_config_file(
     run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "config.toml"
-    target.write_text('[mcp]\nprotocol = "http"\nhttp_port = 4321\nhttp_trust_proxy = true\n')
+    target.write_text('[mcp]\nprotocol = "http"\n[mcp.http]\nport = 4321\ntrust_proxy = true\n')
     seen: dict[str, object] = {}
 
     async def serve(backlog: object, **kw: object) -> None:
@@ -486,28 +547,50 @@ def test_jwt_options_use_config_environment_and_flags(
 ) -> None:
     target = tmp_path / "jwt.toml"
     target.write_text(
-        '[mcp]\nhttp_jwt_public_key = "/etc/public.pem"\n'
-        'http_jwt_issuer = "issuer"\nhttp_jwt_audience = "backlog"\n'
+        '[mcp.auth.jwt]\npublic_key = "/etc/public.pem"\nissuer = "issuer"\naudience = "backlog"\n'
     )
     parser = cli.CLI(config_files=[target], config_parser_class=argclass.TOMLDefaultsParser)
     parser.parse_args(["mcp"])
-    assert parser.mcp.http_jwt_public_key == "/etc/public.pem"
-    assert parser.mcp.http_jwt_issuer == "issuer"
-    assert parser.mcp.http_jwt_audience == "backlog"
-    monkeypatch.setenv("BACKLOG_MCP_HTTP_JWT_PUBLIC_KEY", "/etc/environment.pem")
+    assert parser.mcp.auth.jwt.public_key == "/etc/public.pem"
+    assert parser.mcp.auth.jwt.issuer == "issuer"
+    assert parser.mcp.auth.jwt.audience == "backlog"
+    monkeypatch.setenv("BACKLOG_MCP_AUTH_JWT_PUBLIC_KEY", "/etc/environment.pem")
     parser.parse_args(["mcp"])
-    assert parser.mcp.http_jwt_public_key == "/etc/environment.pem"
-    parser.parse_args(["mcp", "--http-jwt-public-key", "/etc/flag.pem"])
-    assert parser.mcp.http_jwt_public_key == "/etc/flag.pem"
-    monkeypatch.setenv("BACKLOG_MCP_HTTP_JWT_PRE_SHARED_KEY", "test-key" * 8)
+    assert parser.mcp.auth.jwt.public_key == "/etc/environment.pem"
+    parser.parse_args(["mcp", "--auth-jwt-public-key", "/etc/flag.pem"])
+    assert parser.mcp.auth.jwt.public_key == "/etc/flag.pem"
+    monkeypatch.setenv("BACKLOG_MCP_AUTH_JWT_PRE_SHARED_KEY", "test-key" * 8)
     parser.parse_args(["mcp"])
-    assert str(parser.mcp.http_jwt_pre_shared_key) == "test-key" * 8
-    assert "test-key" not in repr(parser.mcp.http_jwt_pre_shared_key)
+    assert str(parser.mcp.auth.jwt.pre_shared_key) == "test-key" * 8
+    assert "test-key" not in repr(parser.mcp.auth.jwt.pre_shared_key)
     monkeypatch.setenv("BACKLOG_MCP_TOKEN", "test-token")
     parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
-    parser.parse_args(["list"])
+    parser.parse_args(["task", "list"])
     assert str(parser.token) == "test-token"
     assert "test-token" not in repr(parser.token)
+
+
+def test_basic_accounts_accept_multiple_values_and_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "basic.toml"
+    target.write_text('[mcp.auth]\nbasic = ["alice:one", "bob:two:parts"]\n')
+    parser = cli.CLI(config_files=[target], config_parser_class=argclass.TOMLDefaultsParser)
+    parser.parse_args(["mcp"])
+    assert [str(value) for value in parser.mcp.auth.basic] == ["alice:one", "bob:two:parts"]
+    assert "two:parts" not in repr(parser.mcp.auth.basic)
+    parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
+    parser.parse_args(["mcp", "--auth-basic=alice:one", "--auth-basic", "bob:two", "carol:three"])
+    assert [str(value) for value in parser.mcp.auth.basic] == [
+        "alice:one",
+        "bob:two",
+        "carol:three",
+    ]
+    assert "alice:one" not in repr(parser.mcp.auth.basic)
+    monkeypatch.setenv("BACKLOG_MCP_AUTH_BASIC", "alice:one bob:two")
+    parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
+    parser.parse_args(["mcp"])
+    assert [str(value) for value in parser.mcp.auth.basic] == ["alice:one", "bob:two"]
 
 
 def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
@@ -517,23 +600,23 @@ def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
     elsewhere = tmp_path / "laptop-work"
     elsewhere.mkdir()
     code, output = run(
-        "--computer", "laptop", "--root", str(elsewhere), "add", "Fix the laptop build"
+        "--computer", "laptop", "--root", str(elsewhere), "task", "add", "Fix the laptop build"
     )
     assert code == 0
-    code, output = run("--computer", "desk", "list", "--all-projects")
+    code, output = run("--computer", "desk", "task", "list", "--all-projects")
     assert code == 0
     assert "Fix the laptop build" not in output
-    code, output = run("--computer", "desk", "list", "--computer", "laptop")
+    code, output = run("--computer", "desk", "task", "list", "--computer", "laptop")
     assert code == 0
     assert "Fix the laptop build" in output
     assert "laptop" in output
-    code, output = run("--computer", "desk", "list", "--all-computers")
+    code, output = run("--computer", "desk", "task", "list", "--all-computers")
     assert "Fix the laptop build" in output
     code, output = run("--computer", "desk", "projects", "--all-computers")
     assert "laptop-work" in output
     code, output = run("--computer", "desk", "stats", "--computer", "laptop")
     assert "every project on laptop" in output
-    code, output = run("--computer", "desk", "list", "--computer", "nowhere")
+    code, output = run("--computer", "desk", "task", "list", "--computer", "nowhere")
     assert code == 2
     assert "known computers" in output
     code, output = run("--computer", "two words", "current")
@@ -566,70 +649,70 @@ def test_note_group_prints_its_help_and_opens_nothing(run: Runner, command: str)
 
 
 def test_notes_add_replace_append_search_and_show(run: Runner) -> None:
-    code, output = run("note", "add", "dev", "vm", "-b", "host: vm-3.internal", "-t", "infra")
+    code, output = run("memory", "add", "dev", "vm", "-b", "host: vm-3.internal", "-t", "infra")
     assert code == 0
-    assert "added note #1 to workspace" in output
+    assert "added note #1 to @local/workspace" in output
     assert "vm-3.internal" in output
 
-    code, output = run("note", "add", "dev", "vm", "-b", "host: vm-4.internal")
+    code, output = run("memory", "add", "dev", "vm", "-b", "host: vm-4.internal")
     assert code == 0
-    assert "replaced note #1 in workspace" in output
+    assert "replaced note #1 in @local/workspace" in output
     assert "vm-3.internal" not in output
 
-    code, output = run("note", "append", "1", "port", "2222")
+    code, output = run("memory", "append", "1", "port", "2222")
     assert code == 0
     assert "appended to note #1" in output
     assert "port 2222" in output
 
-    code, output = run("note", "list")
+    code, output = run("memory", "list")
     assert code == 0
-    assert "1 note(s) of workspace" in output
+    assert "1 note(s) of @local/workspace" in output
     assert "dev vm" in output
 
-    run("add", "Move the vm, see note #1")
+    run("task", "add", "Move the vm, see note #1")
     code, output = run("search", "vm")
     assert code == 0
-    assert "1 task match(es) for 'vm' in workspace" in output
-    assert "1 note match(es) for 'vm' in workspace" in output
+    assert "1 task match(es) for 'vm' in @local/workspace" in output
+    assert "1 note match(es) for 'vm' in @local/workspace" in output
     #: The title column keeps the title; the excerpt with the hit is the `match` column.
     assert "dev vm" in output
     assert "[vm]" in output
 
-    code, output = run("note", "show", "1")
+    code, output = run("memory", "show", "1")
     assert code == 0
     assert "note #1 dev vm" in output
     assert "vm-4.internal" in output
     assert "infra" in output
-    assert run("note", "show", "42") == (1, "no note #42\n")
-    assert run("note", "append", "42", "more") == (1, "no note #42\n")
+    assert run("memory", "show", "42") == (1, "no note #42\n")
+    assert run("memory", "append", "42", "more") == (1, "no note #42\n")
 
 
 def test_shared_notes_show_up_in_another_project(run: Runner, tmp_path: Path) -> None:
     second = tmp_path / "second"
     second.mkdir()
-    run("-r", str(second), "note", "add", "staging", "-b", "https://staging", "--shared")
-    run("-r", str(second), "note", "add", "private")
+    run("-r", str(second), "memory", "add", "staging", "-b", "https://staging", "--shared")
+    run("-r", str(second), "memory", "add", "private")
 
-    code, output = run("note", "list")
+    code, output = run("memory", "list")
     assert code == 0
-    assert "1 note(s) of workspace" in output
+    assert "1 note(s) of @local/workspace" in output
     assert "staging" in output
     assert "private" not in output
     #: A note from another board says where it comes from, and that it is shared.
     assert "second" in output
     assert "yes" in output
 
-    assert "private" in run("note", "list", "--all-projects")[1]
-    assert "2 note(s) of every project" in run("note", "list", "--all-projects")[1]
-    assert "1 note(s)" in run("note", "list", "--shared")[1]
-    assert "every project sees it" in run("note", "show", "1")[1]
+    assert "private" in run("memory", "list", "--all-projects")[1]
+    assert "2 note(s) of every project" in run("memory", "list", "--all-projects")[1]
+    assert "1 note(s)" in run("memory", "list", "--shared")[1]
+    assert "within accessible projects" in run("memory", "show", "1")[1]
 
 
 @pytest.mark.parametrize("flags", [[], ["--yes"]])
 def test_note_delete_does_not_prompt(run: Runner, flags: list[str]) -> None:
-    run("note", "add", "Delete me")
-    assert run("note", "delete", "1", *flags) == (0, "deleted note #1\n")
-    assert run("note", "delete", "1", *flags) == (1, "no note #1\n")
+    run("memory", "add", "Delete me")
+    assert run("memory", "delete", "1", *flags) == (0, "deleted note #1\n")
+    assert run("memory", "delete", "1", *flags) == (1, "no note #1\n")
 
 
 def test_project_delete_asks_unless_yes(
@@ -637,8 +720,8 @@ def test_project_delete_asks_unless_yes(
 ) -> None:
     other = tmp_path / "other"
     other.mkdir()
-    run("-r", str(other), "add", "Doomed")
-    run("-r", str(other), "note", "add", "Doomed note", "--shared")
+    run("-r", str(other), "task", "add", "Doomed")
+    run("-r", str(other), "memory", "add", "Doomed note", "--shared")
     monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: False)
     assert run("projects", "delete", "other") == (1, "nothing deleted\n")
     assert "other" in run("projects")[1]
@@ -648,7 +731,7 @@ def test_project_delete_asks_unless_yes(
     assert "fixed for this client" in output
     assert run("projects", "delete", "other", "--yes") == (
         0,
-        "deleted project 'other': 1 task(s), 1 note(s)\n",
+        "deleted project '@local/other': 1 task(s), 1 note(s)\n",
     )
     assert "other" not in run("projects")[1]
     assert "0 task match(es)" in run("search", "Doomed", "--all-projects")[1]
@@ -658,23 +741,23 @@ def test_project_delete_asks_unless_yes(
 
 
 def test_note_edit_uses_the_form(run: Runner, monkeypatch: pytest.MonkeyPatch) -> None:
-    run("note", "add", "Old", "-b", "old body")
+    run("memory", "add", "Old", "-b", "old body")
     written = "Title: New\nTags: infra, docs\nShared: yes\n\n# Hosts\n\nNew body.\n"
     monkeypatch.setattr(cli, "compose", lambda text: written)
-    code, output = run("note", "edit", "1")
+    code, output = run("memory", "edit", "1")
     assert code == 0
     assert "updated note #1" in output
     assert "New" in output
     assert "docs, infra" in output
-    assert "every project sees it" in output
+    assert "within accessible projects" in output
     assert "Hosts" in output
     assert "New body." in output
 
     monkeypatch.setattr(cli, "compose", lambda text: None)
-    assert run("note", "edit", "1") == (0, "nothing changed\n")
+    assert run("memory", "edit", "1") == (0, "nothing changed\n")
     monkeypatch.setattr(cli, "compose", lambda text: "Title:\n\nNo title at all.\n")
-    assert run("note", "edit", "1")[0] == 1
-    assert run("note", "edit", "999") == (1, "no note #999\n")
+    assert run("memory", "edit", "1")[0] == 1
+    assert run("memory", "edit", "999") == (1, "no note #999\n")
 
 
 def test_note_form_round_trip() -> None:
@@ -712,7 +795,7 @@ def test_delete_confirms_other_project_only(
     other = tmp_path / "other"
     (other / ".git").mkdir(parents=True)
     prefix = ["note"] if entity == "note" else []
-    assert run("--root", str(other), *prefix, "add", "Elsewhere")[0] == 0
+    assert run("--root", str(other), *prefix, "task", "add", "Elsewhere")[0] == 0
     prompts: list[str] = []
 
     def decline(prompt: str, **kwargs: object) -> bool:
@@ -721,40 +804,40 @@ def test_delete_confirms_other_project_only(
 
     monkeypatch.setattr(cli.Confirm, "ask", decline)
     if explicit_yes:
-        assert run(*prefix, "delete", "1", "--yes")[0] == 0
+        assert run(*prefix, "task", "delete", "1", "--yes")[0] == 0
         assert prompts == []
     else:
-        assert run(*prefix, "delete", "1") == (1, "nothing deleted\n")
+        assert run(*prefix, "task", "delete", "1") == (1, "nothing deleted\n")
         assert "other" in prompts[0]
-        assert run(*prefix, "show", "1")[0] == 0
+        assert run(*prefix, "task", "show", "1")[0] == 0
         monkeypatch.setattr(cli.Confirm, "ask", lambda *args, **kwargs: True)
-        assert run(*prefix, "delete", "1")[0] == 0
-    assert run(*prefix, "show", "1")[0] == 1
+        assert run(*prefix, "task", "delete", "1")[0] == 0
+    assert run(*prefix, "task", "show", "1")[0] == 1
 
 
 def test_note_bodies_are_limited_on_the_command_line(
     run: Runner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    code, output = run("note", "add", "limit", "-b", "x" * 1025)
+    code, output = run("memory", "add", "limit", "-b", "x" * 1025)
     assert (code, output) == (1, "a note holds at most 1024 characters, this one has 1025\n")
-    assert run("note", "add", "limit", "-b", "x" * 1024)[0] == 0
-    code, output = run("note", "append", "1", "y")
+    assert run("memory", "add", "limit", "-b", "x" * 1024)[0] == 0
+    code, output = run("memory", "append", "1", "y")
     assert code == 1 and "at most 1024 characters" in output
     monkeypatch.setattr(cli, "compose", lambda text: "Title: limit\n\n" + "z" * 1025 + "\n")
-    code, output = run("note", "edit", "1")
+    code, output = run("memory", "edit", "1")
     assert code == 1 and "at most 1024 characters" in output
-    assert "x" * 1024 in run("note", "show", "1")[1].replace("│", "").replace("\n", "").replace(
+    assert "x" * 1024 in run("memory", "show", "1")[1].replace("│", "").replace("\n", "").replace(
         " ", ""
     )
 
 
 def test_stats_shows_open_closed_and_note_counts(run: Runner) -> None:
-    run("add", "Open work")
-    run("add", "Finished work")
-    run("close", "2")
-    run("add", "Cancelled work")
-    run("cancel", "3")
-    run("note", "add", "User preference")
+    run("task", "add", "Open work")
+    run("task", "add", "Finished work")
+    run("task", "close", "2")
+    run("task", "add", "Cancelled work")
+    run("task", "cancel", "3")
+    run("memory", "add", "User preference")
     code, output = run("stats")
     assert code == 0
     rows = [line.split("│") for line in output.splitlines() if "│" in line]
@@ -762,7 +845,7 @@ def test_stats_shows_open_closed_and_note_counts(run: Runner) -> None:
     assert counts["open tasks"] == "1"
     assert counts["closed tasks"] == "2"
     assert counts["total tasks"] == "3"
-    assert counts["notes"] == "1"
+    assert counts["memory"] == "1"
 
 
 @pytest.mark.parametrize("name", ["*", "work.*", "", "work\nother"])
@@ -795,7 +878,7 @@ async def test_watch_prints_each_event(
 ) -> None:
     """`backlog watch` runs its own loop in a thread; the server and the writer stay here."""
     from aiohttp.test_utils import TestServer
-    from aiohttp_tiny_mcp.client import Client
+    from aiohttp_tiny_mcp import Client
     from aiohttp_tiny_mcp.testing import pick
 
     from backlog_mcp.httpd import ENDPOINT_PATH, application

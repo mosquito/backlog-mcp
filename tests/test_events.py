@@ -6,10 +6,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from aiohttp.test_utils import TestServer
-from aiohttp_tiny_mcp import MethodFilter
-from aiohttp_tiny_mcp.client import Client
-from aiohttp_tiny_mcp.client_base import BaseClient
-from aiohttp_tiny_mcp.models import CallToolResult, TextContent
+from aiohttp_tiny_mcp import Client, MethodFilter
+from aiohttp_tiny_mcp.client.base import BaseClient
+from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent
 from aiohttp_tiny_mcp.testing import connect, pick
 
 from backlog_mcp.backlog import Backlog
@@ -62,7 +61,7 @@ async def test_a_modern_listener_learns_what_each_write_did(backlog: Backlog) ->
         other = await call(writer, "project_save", root="../other")
         frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         collecting = collect(
-            listener.listen(resources=["backlog://tasks", "backlog://notes"]), frames
+            listener.listen(resources=["backlog://tasks", "backlog://memory"]), frames
         )
         try:
             while not listener.accepted:
@@ -71,9 +70,9 @@ async def test_a_modern_listener_learns_what_each_write_did(backlog: Backlog) ->
             await call(writer, "task_update", id=task["id"], status="done")
             await call(writer, "task_move", id=task["id"], project=other["slug"])
             await call(writer, "task_delete", id=task["id"])
-            note = await call(writer, "note_save", title="Rule", body="Always")
-            await call(writer, "note_append", id=note["id"], text="More")
-            await call(writer, "note_delete", id=note["id"])
+            note = await call(writer, "memory_save", title="Rule", body="Always")
+            await call(writer, "memory_append", id=note["id"], text="More")
+            await call(writer, "memory_delete", id=note["id"])
             await call(writer, "project_save", project=other["slug"], name="Other")
             seen = [summary(await asyncio.wait_for(frames.get(), 5)) for _ in range(8)]
         finally:
@@ -84,9 +83,9 @@ async def test_a_modern_listener_learns_what_each_write_did(backlog: Backlog) ->
         ("backlog://tasks", "task", "updated", task["id"]),
         ("backlog://tasks", "task", "moved", task["id"]),
         ("backlog://tasks", "task", "deleted", task["id"]),
-        ("backlog://notes", "note", "added", note["id"]),
-        ("backlog://notes", "note", "updated", note["id"]),
-        ("backlog://notes", "note", "deleted", note["id"]),
+        ("backlog://memory", "note", "added", note["id"]),
+        ("backlog://memory", "note", "updated", note["id"]),
+        ("backlog://memory", "note", "deleted", note["id"]),
         ("backlog://tasks", "project", "updated", other["id"]),
     ]
 
@@ -117,6 +116,8 @@ async def test_the_event_names_the_record_and_the_writer(backlog: Backlog) -> No
         "status": "done",
         "priority": "high",
         "computer": "here",
+        "principal": backlog.store.principal,
+        "project_id": (await backlog.current())[0].id,
     }
 
 
@@ -140,8 +141,12 @@ async def test_a_legacy_get_stream_carries_the_event(backlog: Backlog) -> None:
                 for _ in range(100):
                     await call(writer, "task_update", id=task["id"], status="done")
                     try:
-                        frame = await asyncio.wait_for(frames.get(), 0.1)
-                        break
+                        candidate = await asyncio.wait_for(frames.get(), 0.1)
+                        # A legacy stream also carries extension events. It can attach
+                        # between the resource and extension publications in SQLite.
+                        if candidate["method"] == UPDATED:
+                            frame = candidate
+                            break
                     except TimeoutError:
                         continue
             finally:
@@ -183,7 +188,7 @@ async def test_every_listener_hears_a_broadcast(backlog: Backlog) -> None:
             await wait_accepted(one, two)
             assert one.accepted == {"methods": [TASK_CHANGED, NOTE_CHANGED, PROJECT_CHANGED]}
             task = await call(writer, "task_add", title="Ship it", status="doing")
-            note = await call(writer, "note_save", title="Rule", body="Always")
+            note = await call(writer, "memory_save", title="Rule", body="Always")
             frames_one = [await asyncio.wait_for(heard_one.get(), 5) for _ in range(2)]
             frame_two = await asyncio.wait_for(heard_two.get(), 5)
         finally:
@@ -202,6 +207,8 @@ async def test_every_listener_hears_a_broadcast(backlog: Backlog) -> None:
         "status": "doing",
         "priority": "normal",
         "computer": "here",
+        "principal": backlog.store.principal,
+        "project_id": (await backlog.current())[0].id,
     }
     assert frames_one[1]["params"]["id"] == note["id"]
     assert frames_one[1]["params"]["kind"] == "note"
@@ -220,7 +227,9 @@ async def test_a_listener_picks_its_project(backlog: Backlog) -> None:
         heard_every: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         collecting = [
             collect(
-                one.listen(methods=[MethodFilter(method=TASK_CHANGED, topics=[other["slug"]])]),
+                one.listen(
+                    methods=[MethodFilter(method=TASK_CHANGED, topics=[other["full_name"]])]
+                ),
                 heard_one,
             ),
             collect(every.listen(methods=[TASK_CHANGED]), heard_every),
@@ -228,7 +237,7 @@ async def test_a_listener_picks_its_project(backlog: Backlog) -> None:
         try:
             await wait_accepted(one, every)
             assert one.accepted == {
-                "methods": [{"method": TASK_CHANGED, "topics": [other["slug"]]}]
+                "methods": [{"method": TASK_CHANGED, "topics": [other["full_name"]]}]
             }
             here = await call(writer, "task_add", title="Here")
             there = await call(writer, "task_add", title="There", project=other["slug"])
@@ -241,7 +250,7 @@ async def test_a_listener_picks_its_project(backlog: Backlog) -> None:
                 task_.cancel()
             await asyncio.gather(*collecting, return_exceptions=True)
     assert seen_every == [here["id"], there["id"]]
-    assert (seen_one["id"], seen_one["project"]) == (there["id"], other["slug"])
+    assert (seen_one["id"], seen_one["project"]) == (there["id"], other["full_name"])
     assert heard_one.empty()
 
 

@@ -6,12 +6,12 @@ from base64 import b64encode, urlsafe_b64encode
 import pytest
 from aiohttp import ClientSession, encode_basic_auth
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
-from aiohttp_tiny_mcp.client import Client
-from aiohttp_tiny_mcp.models import CallToolResult, TextContent, TextResourceContents
+from aiohttp_tiny_mcp import Client
+from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextResourceContents
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
 
-from backlog_mcp.auth import credentials
+from backlog_mcp.auth import basic_namespace, credentials
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import CONSOLE_PATH, ENDPOINT_PATH, application
 from backlog_mcp.server import ACTIVE
@@ -40,7 +40,7 @@ def payload(result: CallToolResult) -> dict[str, object]:
     ],
 )
 async def test_authentication_protects_mcp(backlog: Backlog, authorization: str | None) -> None:
-    app = application(backlog, user="user", password="secret")
+    app = application(backlog, basic=["user:secret"])
     headers = {"Authorization": authorization} if authorization is not None else {}
     async with (
         TestClient(TestServer(app)) as client,
@@ -54,7 +54,7 @@ async def test_authentication_protects_mcp(backlog: Backlog, authorization: str 
 async def test_authenticated_mcp_requests_share_persisted_tasks(
     backlog: Backlog, adapter: str
 ) -> None:
-    app = application(backlog, user="user", password="secret")
+    app = application(backlog, basic=["user:secret"])
     async with (
         TestServer(app) as server,
         ClientSession(headers={"Authorization": encode_basic_auth("user", "secret")}) as session,
@@ -76,8 +76,9 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
             assert response.status == 200
             assert response.content_type == "text/html"
     assert backlog.store.connection is None
-    # Reopening the same database must preserve data without rerunning migrations destructively.
-    stored = await backlog.store.task(task["id"])
+    # Reopening preserves data and still requires the authenticated principal.
+    assert await backlog.store.task(task["id"]) is None
+    stored = await backlog.store.view(principal=basic_namespace("user")).task(task["id"])
     assert stored is not None
     assert stored.title == "Over HTTP"
 
@@ -96,7 +97,7 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
             assert scope["project"]["slug"] == "app"
             assert scope["project"]["here"] is True
             task = payload(await client.call_tool("task_add", {"title": "From the laptop"}))
-            assert task["project"] == "app"
+            assert task["project"] == "@local/app"
         async with Client(str(endpoint.with_query(computer="laptop")), pick(None)) as client:
             await client.initialize()
             #: No project chosen is a state, not an error.
@@ -136,7 +137,7 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
 async def test_the_auth_query_parameter_stands_in_for_the_header(
     backlog: Backlog, token: str
 ) -> None:
-    app = application(backlog, user="a", password=">>>", console=False)
+    app = application(backlog, basic=["a:>>>"], console=False)
     async with TestServer(app) as server:
         endpoint = server.make_url(ENDPOINT_PATH)
         async with Client(str(endpoint.with_query(auth=token)), pick(None)) as client:
@@ -225,9 +226,9 @@ def test_credentials_prefer_the_header_over_the_query() -> None:
     assert credentials(make_mocked_request("GET", f"{ENDPOINT_PATH}?auth=")) is None
 
 
-async def test_without_a_password_the_server_asks_for_nothing(backlog: Backlog) -> None:
-    """A user and a password turn the middleware on; without them the server is open."""
-    async with TestClient(TestServer(application(backlog, user="user"))) as client:
+async def test_without_accounts_the_server_asks_for_nothing(backlog: Backlog) -> None:
+    """Without configured accounts or JWT keys, the server is open."""
+    async with TestClient(TestServer(application(backlog))) as client:
         async with client.get(CONSOLE_PATH) as response:
             assert response.status == 200
         async with Client(str(client.make_url(ENDPOINT_PATH)), pick(None)) as mcp:

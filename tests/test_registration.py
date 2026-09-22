@@ -70,7 +70,7 @@ async def test_first_use_prompts_once_and_then_runs_the_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\nA shared project\ny\n"))
-    code, output = await registration("add", "First task")
+    code, output = await registration("task", "add", "First task")
     assert code == 0
     assert "Input computer name (client)" in output
     assert "Input project name (client-directory)" in output
@@ -80,9 +80,9 @@ async def test_first_use_prompts_once_and_then_runs_the_command(
         ("client", str(registration.root))
     ]
     task = await registration.backlog.store.task(1)
-    assert task is not None and task.project == project.slug
+    assert task is not None and task.project == project.full_name
     monkeypatch.setattr(sys, "stdin", io.StringIO())
-    code, output = await registration("list")
+    code, output = await registration("task", "list")
     assert code == 0 and "First task" in output
     assert "Input project" not in output
 
@@ -92,7 +92,7 @@ async def test_custom_project_name_is_used_for_the_original_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", TerminalInput("\n\nRelease Board\nRelease coordination\ny\n"))
-    code, output = await registration("add", "Ship it")
+    code, output = await registration("task", "add", "Ship it")
     assert code == 0 and "release-board" in output
     project = await registration.backlog.store.project_by_slug("release-board")
     assert project is not None and project.name == "Release Board"
@@ -109,8 +109,8 @@ async def test_existing_project_on_another_computer_is_reused(
         description="Keep this description",
     )
     monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\ny\n"))
-    code, output = await registration("add", "Same board")
-    assert code == 0 and "Bind this directory" in output
+    code, output = await registration("task", "add", "Same board")
+    assert code == 0 and "Bind this directory" in output, output
     projects = await registration.backlog.store.projects()
     assert len(projects) == 1 and projects[0].id == existing.id
     assert projects[0].description == "Keep this description"
@@ -126,7 +126,7 @@ async def test_cancel_or_eof_creates_no_project_or_task(
     answer: str,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n" + answer))
-    code, output = await registration("add", "Not created")
+    code, output = await registration("task", "add", "Not created")
     assert code == 1 and "registration cancelled" in output
     assert await registration.backlog.store.projects(computer="client") == []
     assert await registration.backlog.store.task(1) is None
@@ -137,11 +137,11 @@ async def test_noninteractive_first_use_requires_explicit_init(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO())
-    code, output = await registration("add", "Not created")
+    code, output = await registration("task", "add", "Not created")
     assert code == 2 and "backlog init NAME" in output
     assert await registration.backlog.store.projects(computer="client") == []
     assert (await registration("init", "Automation", "--description", "Scripted work"))[0] == 0
-    assert (await registration("add", "Created explicitly"))[0] == 0
+    assert (await registration("task", "add", "Created explicitly"))[0] == 0
     project = await registration.backlog.store.project_by_slug("automation")
     assert project is not None and project.description == "Scripted work"
 
@@ -153,7 +153,7 @@ async def test_init_requires_explicit_existing_flag_to_reuse_a_name(
     existing = await registration.backlog.save(root=registration.backlog.cwd, name="Shared")
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     code, output = await registration("init", "Shared")
-    assert code == 1 and f"--existing {existing.slug}" in output
+    assert code == 1 and f"--existing {existing.full_name}" in output
     assert len(await registration.backlog.store.projects()) == 1
     assert (await registration("init", "--existing", existing.slug))[0] == 0
     projects = await registration.backlog.store.projects()
@@ -170,7 +170,7 @@ async def test_nested_directory_uses_checkout_root_as_default(
     nested = registration.root / "src"
     nested.mkdir()
     monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\n\ny\n"))
-    code, output = await registration("--root", str(nested), "list")
+    code, output = await registration("--root", str(nested), "task", "list")
     assert code == 0 and "Input project name (client-directory)" in output
     project = await registration.backlog.store.project_by_slug("client-directory")
     assert project is not None and project.roots[0].root == str(registration.root)
@@ -185,7 +185,7 @@ async def test_edit_all_fields_and_remember_computer(
     monkeypatch.setattr(
         sys, "stdin", TerminalInput(f"laptop\n{directory}\nChosen Board\nChosen description\ny\n")
     )
-    code, output = await registration("add", "Chosen task")
+    code, output = await registration("task", "add", "Chosen task")
     assert code == 0 and "chosen-board" in output
     project = await registration.backlog.store.project_by_slug("chosen-board")
     assert project is not None and project.description == "Chosen description"
@@ -196,7 +196,7 @@ async def test_edit_all_fields_and_remember_computer(
     assert state.computer == "laptop"
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     # An empty flag allows the saved computer name to take effect.
-    code, output = await registration("--computer", "", "--root", str(directory), "list")
+    code, output = await registration("--computer", "", "--root", str(directory), "task", "list")
     assert code == 0 and "Chosen task" in output
     assert "Input computer" not in output
 
@@ -210,7 +210,7 @@ async def test_edited_location_reuses_its_existing_binding(
     )
     baseline = {item.id for item in await registration.backlog.store.projects()}
     monkeypatch.setattr(sys, "stdin", TerminalInput(f"here\n{registration.backlog.cwd}\ny\n"))
-    code, output = await registration("add", "Existing scope")
+    code, output = await registration("task", "add", "Existing scope")
     assert code == 0 and "Use this project?" in output
     assert "Input project name" not in output
     assert {item.id for item in await registration.backlog.store.projects()} == baseline
