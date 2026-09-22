@@ -66,6 +66,20 @@ def run(
     yield Runner(root, capsys)
 
 
+def test_task_link_commands(run: Runner) -> None:
+    assert run("task", "add", "Consumer")[0] == 0
+    assert run("task", "add", "Provider")[0] == 0
+    code, output = run("task", "link", "1", "depends_on", "2", "--reason", "New schema")
+    assert code == 0, output
+    code, output = run("task", "show", "2")
+    assert code == 0 and "blocks" in output and "Consumer" in output and "New schema" in output
+    code, output = run("task", "link", "2", "blocks", "1")
+    assert code == 0 and "unchanged" in output
+    assert run("task", "unlink", "2", "blocks", "1")[0] == 0
+    code, output = run("task", "show", "1")
+    assert code == 0 and "depends_on" not in output
+
+
 def task(**changes: object) -> Task:
     values: dict[str, object] = {
         "id": 7,

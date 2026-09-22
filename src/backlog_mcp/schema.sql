@@ -82,6 +82,24 @@ CREATE TABLE task_comments (
     computer TEXT NOT NULL
 );
 
+CREATE TABLE task_links (
+    task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    target_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK(relation IN (
+        'part_of', 'contains', 'depends_on', 'blocks', 'caused_by', 'causes', 'related_to'
+    )),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    created_principal TEXT NOT NULL REFERENCES principals(identity),
+    created_computer TEXT NOT NULL,
+    updated_principal TEXT NOT NULL REFERENCES principals(identity),
+    updated_computer TEXT NOT NULL,
+    PRIMARY KEY(task_id, relation, target_id),
+    CHECK(task_id != target_id)
+);
+CREATE INDEX links_by_target ON task_links(target_id);
+
 CREATE INDEX memberships_by_principal ON project_members(principal, project_id);
 CREATE UNIQUE INDEX project_roots_unique_path
     ON project_roots(principal, computer, root) WHERE root != '';

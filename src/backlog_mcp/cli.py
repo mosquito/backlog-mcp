@@ -38,10 +38,12 @@ from .models import (
     FullNotes,
     FullTasks,
     Identity,
+    LinkChange,
     NoteOut,
     Priority,
     ProjectDeleted,
     ProjectOut,
+    Relation,
     Status,
     TaskDetails,
     TaskOut,
@@ -875,6 +877,48 @@ class Show(Command):
         return 0
 
 
+class Link(Command):
+    """Create a relation and its inverse, or change their reason."""
+
+    source: int = argclass.Argument("source", type=int, metavar="TASK", help="Source task id")
+    relation: str = argclass.Argument("relation", choices=[item.value for item in Relation])
+    target: int = argclass.Argument("target", type=int, help="Target task id")
+    reason: str | None = argclass.Argument(
+        default=None, type=str, help="Explanation; omit to preserve it, pass empty text to clear"
+    )
+
+    async def __call__(self) -> int:
+        result = await self.connection.call(
+            LinkChange,
+            "task_link",
+            task=self.source,
+            relation=self.relation,
+            target=self.target,
+            reason=self.reason,
+        )
+        note("link saved" if result.changed else "link unchanged")
+        return 0
+
+
+class Unlink(Command):
+    """Remove a relation and its inverse."""
+
+    source: int = argclass.Argument("source", type=int, metavar="TASK", help="Source task id")
+    relation: str = argclass.Argument("relation", choices=[item.value for item in Relation])
+    target: int = argclass.Argument("target", type=int, help="Target task id")
+
+    async def __call__(self) -> int:
+        result = await self.connection.call(
+            LinkChange,
+            "task_unlink",
+            task=self.source,
+            relation=self.relation,
+            target=self.target,
+        )
+        note("link removed" if result.changed else "link absent")
+        return 0
+
+
 class CommentAdd(Command):
     """Add a Markdown comment without changing the task description."""
 
@@ -1508,6 +1552,8 @@ class TaskCommands(Command):
         ),
     )
 
+    link = Link(aliases=["lk"], help="Create a typed relation and its inverse")
+    unlink = Unlink(aliases=["ul"], help="Remove a relation and its inverse")
     comment = CommentAdd(aliases=["co"], help="Add a task comment")
 
     comments = CommentList(aliases=["cm"], help="Read task comments and history")

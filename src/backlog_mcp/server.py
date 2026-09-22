@@ -31,6 +31,7 @@ from .models import (
     FullTasks,
     Identity,
     Kind,
+    LinkChange,
     NoteListItem,
     NoteOut,
     Notes,
@@ -39,6 +40,7 @@ from .models import (
     ProjectOut,
     ProjectRootOut,
     Projects,
+    Relation,
     Scope,
     Stats,
     Status,
@@ -48,7 +50,7 @@ from .models import (
     Tasks,
 )
 from .names import owner_name, principal_label, principal_user
-from .store import NOTE_LIMIT, Comment, Note, Project, Task, Unset
+from .store import NOTE_LIMIT, TASK_COLUMNS, Comment, Note, Project, Task, Unset, to_task
 from .version import COMMIT, VERSION
 
 log = logging.getLogger(__name__)
@@ -198,6 +200,7 @@ FTS and semantic candidates before ranking and limits. Use all_computers=true to
 accessible projects when no current project is selected.
 
 Writes. `task_add`, `task_comment_add`, `task_update`, `task_move`, `task_delete`,
+`task_link`, `task_unlink`,
 `memory_save`, `memory_append`, \
 `memory_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
 one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
@@ -374,6 +377,7 @@ async def task_details(task: Task, backlog: Backlog) -> TaskDetails:
     return TaskDetails(
         **task_out(task).model_dump(),
         comments=[comment_out(item) for item in comments],
+        links=await backlog.store.task_links(task.id),
     )
 
 
@@ -539,6 +543,42 @@ async def changed(event: Event, *, recipients: list[str] | None = None) -> None:
             await publish_change(event)
         finally:
             namespace.reset(token)
+
+
+async def linked_tasks(
+    backlog: Backlog, *, task_id: int | None = None, project_id: int | None = None
+) -> list[Task]:
+    """Find resource dependents for notification routing, never for a public response."""
+    rows = await backlog.store.rows(
+        f"SELECT DISTINCT {TASK_COLUMNS} FROM tasks t JOIN projects p ON p.id = t.project_id "
+        "JOIN task_links l ON l.task_id = t.id JOIN tasks target ON target.id = l.target_id "
+        "WHERE target.id = ? OR target.project_id = ?",
+        (task_id, project_id),
+    )
+    return [to_task(row) for row in rows]
+
+
+async def invalidate_linked_tasks(tasks: list[Task], backlog: Backlog) -> None:
+    """Invalidate neighbor resources without claiming the neighbor was edited.
+
+    Each recipient receives only metadata from their own accessible task. A link may cross
+    project boundaries, so the source event must not be copied into the neighbor's namespace.
+    """
+    from aiohttp_tiny_mcp.storage.namespaces import namespace
+
+    for task in tasks:
+        recipients = await backlog.store.rows(
+            "SELECT principal FROM project_members WHERE project_id = ?", (task.project_id,)
+        )
+        event = task_event(task, Action.UPDATED, computer=backlog.computer)
+        for row in recipients:
+            identity = row["principal"]
+            anonymous = ACTIVE_REGISTRY.get().auth is None and identity == backlog.store.principal
+            token = namespace.set(None if anonymous else identity)
+            try:
+                await stale([f"backlog://tasks/{task.id}"], event)
+            finally:
+                namespace.reset(token)
 
 
 def task_event(task: Task, action: Action, *, computer: str) -> Event:
@@ -740,6 +780,18 @@ class ListTasks(BaseModel):
 
 class TaskId(BaseModel):
     id: int
+
+
+class UnlinkTask(BaseModel):
+    task: int = Field(description="Source task id.")
+    relation: Relation = Field(description="Relation from task to target.")
+    target: int = Field(description="Target task id.")
+
+
+class LinkTask(UnlinkTask):
+    reason: str | None = Field(
+        default=None, description="Explanation. Omit to preserve it; an empty string clears it."
+    )
 
 
 class AddComment(BaseModel):
@@ -966,7 +1018,11 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
         found.detail = "cancelled"
         return found
     recipients = [member["principal"] for member in await backlog.store.members(project.id)]
+    neighbors = await linked_tasks(backlog, project_id=project.id)
     await backlog.delete(project)
+    await invalidate_linked_tasks(
+        [task for task in neighbors if task.project_id != project.id], backlog
+    )
     await changed(
         project_event(project, Action.DELETED, computer=backlog.computer), recipients=recipients
     )
@@ -1041,14 +1097,51 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
 
 @registry.tool(title="Read a task", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def task_get(args: TaskId, backlog: Backlog) -> TaskDetails:
-    """Read a task with all comments and history in chronological order.
+    """Read a task with its direct links, comments and history.
 
-    The body is only the task description; comments are returned as a separate list.
+    The body is only the description. Comments are chronological. Links use relation types
+    relative to this task and include current target titles and statuses, without nested links.
+    Links to tasks you cannot access are omitted.
     """
     task = await backlog.store.task(args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
     return await task_details(task, backlog)
+
+
+@registry.tool(title="Link tasks", annotations=Hint.IDEMPOTENT)
+async def task_link(args: LinkTask, backlog: Backlog) -> LinkChange:
+    """Add a typed relation and its inverse atomically, or update their reason.
+
+    Read links through task_get. Requires editor access to both tasks. Self-links and cycles
+    in part_of or depends_on are rejected. Repeated calls are safe, including from the inverse
+    direction. Links do not change task statuses. Closing or soft-deleting tasks keeps links.
+    """
+    updated = await backlog.store.link_task(
+        args.task, args.relation, args.target, reason=args.reason
+    )
+    if updated:
+        for task_id in (args.task, args.target):
+            task = await backlog.store.task(task_id)
+            assert task is not None
+            await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
+    return LinkChange(task=args.task, relation=args.relation, target=args.target, changed=updated)
+
+
+@registry.tool(title="Unlink tasks", annotations=Hint.IDEMPOTENT)
+async def task_unlink(args: UnlinkTask, backlog: Backlog) -> LinkChange:
+    """Remove a relation and its inverse atomically, from either direction.
+
+    Requires editor access to both tasks. A missing link is a safe no-op. Other relation types
+    between the same tasks are preserved.
+    """
+    updated = await backlog.store.unlink_task(args.task, args.relation, args.target)
+    if updated:
+        for task_id in (args.task, args.target):
+            task = await backlog.store.task(task_id)
+            assert task is not None
+            await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
+    return LinkChange(task=args.task, relation=args.relation, target=args.target, changed=updated)
 
 
 @registry.tool(title="Add a task comment", annotations=Hint.OPEN_WORLD)
@@ -1100,6 +1193,8 @@ async def task_update(args: UpdateTask, backlog: Backlog) -> TaskOut:
     if task is None:
         raise LookupError(f"no task #{args.id}")
     await changed(task_event(task, Action.UPDATED, computer=backlog.computer))
+    if args.title is not None or args.status is not None:
+        await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
     return task_out(task)
 
 
@@ -1118,6 +1213,7 @@ async def task_move(args: MoveTask, backlog: Backlog) -> TaskOut:
     )
     assert task is not None
     await changed(task_event(task, Action.MOVED, computer=backlog.computer))
+    await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
     return task_out(task)
 
 
@@ -1176,6 +1272,7 @@ async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
         gone = await backlog.store.update_task(task.id, status=Status.DELETED)
         assert gone is not None
         await changed(task_event(gone, Action.DELETED, computer=backlog.computer))
+        await invalidate_linked_tasks(await linked_tasks(backlog, task_id=task.id), backlog)
     return Deleted(
         principal=backlog.store.principal,
         computer=backlog.computer,

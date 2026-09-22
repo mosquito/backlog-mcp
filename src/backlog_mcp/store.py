@@ -16,7 +16,18 @@ import aiosql
 import aiosqlite
 
 from .computer import hostname
-from .models import CLOSED_STATUSES, OPEN_STATUSES, PRIORITIES, RANKS, Actor, Priority, Status
+from .models import (
+    CLOSED_STATUSES,
+    OPEN_STATUSES,
+    PRIORITIES,
+    RANKS,
+    Actor,
+    Priority,
+    Relation,
+    Status,
+    TaskLinkOut,
+    relation,
+)
 from .names import owner_name, project_name
 
 QUERIES = aiosql.from_path(Path(__file__).with_name("queries.sql"), "aiosqlite")
@@ -357,6 +368,14 @@ class Store:
                     await connection.execute("PRAGMA journal_mode=WAL")
                     await connection.execute("PRAGMA busy_timeout=5000")
                     await connection.execute("PRAGMA foreign_keys=ON")
+                    async with connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_links'"
+                    ) as cursor:
+                        if await cursor.fetchone() is None:
+                            raise ValueError(
+                                "Task links schema is missing. Stop the server and run "
+                                "uv run python scripts/add_task_links.py DATABASE."
+                            )
                 except BaseException:
                     await connection.close()
                     raise
@@ -667,6 +686,87 @@ class Store:
         return await self.project(project_id)
 
     # -- tasks -----------------------------------------------------------------------------
+
+    async def task_links(self, task_id: int) -> list[TaskLinkOut]:
+        if await self.task(task_id) is None:
+            raise LookupError(f"no task #{task_id}")
+        rows = QUERIES.task_links(await self.open(), task_id=task_id, principal=self.principal)
+        return [TaskLinkOut(**dict(row)) async for row in rows]
+
+    @write
+    async def link_task(
+        self, task_id: int, kind: Relation, target_id: int, *, reason: str | None = None
+    ) -> bool:
+        """Write both directions under one SQLite writer lock, including cycle checks."""
+        return await self._task_link(task_id, kind, target_id, reason=reason, remove=False)
+
+    @write
+    async def unlink_task(self, task_id: int, kind: Relation, target_id: int) -> bool:
+        return await self._task_link(task_id, kind, target_id, reason=None, remove=True)
+
+    async def _task_link(
+        self, task_id: int, kind: Relation, target_id: int, *, reason: str | None, remove: bool
+    ) -> bool:
+        if task_id == target_id:
+            raise ValueError("a task cannot link to itself")
+        forward, inverse = relation(kind)
+        connection = await self.open()
+        # The process-local @write lock alone cannot serialize other SQLite connections.
+        await connection.execute("BEGIN IMMEDIATE")
+        for record_id in (task_id, target_id):
+            task = await self.task(record_id)
+            if task is None:
+                raise LookupError(f"no task #{record_id}")
+            await self.require(task.project_id, role="editor")
+        pair = {
+            "task_id": task_id,
+            "target_id": target_id,
+            "relation": forward.value,
+            "inverse": inverse.value,
+        }
+        existing = [row async for row in QUERIES.link_pair(connection, **pair)]
+        if remove:
+            if not existing:
+                await connection.commit()
+                return False
+            await QUERIES.unlink_tasks(connection, **pair)
+        else:
+            reasons = {row["reason"] for row in existing}
+            if len(reasons) > 1:
+                raise ValueError("inverse links have conflicting reasons; unlink them first")
+            saved_reason = reason if reason is not None else next(iter(reasons), "")
+            if len(existing) == 2 and reasons == {saved_reason}:
+                await connection.commit()
+                return False
+            # Inspect only one orientation; reverse rows must not create false cycles.
+            source, target, directed = task_id, target_id, forward
+            if forward in (Relation.CONTAINS, Relation.BLOCKS):
+                source, target, directed = target_id, task_id, inverse
+            if directed in (Relation.PART_OF, Relation.DEPENDS_ON):
+                cycle = await QUERIES.link_cycle(
+                    connection, source=source, target=target, relation=directed.value
+                )
+                if cycle:
+                    raise ValueError(f"{directed.value} would create a cycle")
+            now = time.time()
+            await QUERIES.link_tasks(
+                connection,
+                **pair,
+                reason=saved_reason,
+                now=now,
+                principal=self.principal,
+                computer=self.actor["computer"],
+            )
+        await QUERIES.touch_link_tasks(
+            connection,
+            task_id=task_id,
+            target_id=target_id,
+            now=time.time(),
+            principal=self.principal,
+            computer=self.actor["computer"],
+        )
+        await connection.commit()
+        return True
 
     async def task(self, task_id: int) -> Task | None:
         row = await self.row(

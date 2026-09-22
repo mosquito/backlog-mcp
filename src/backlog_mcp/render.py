@@ -246,6 +246,13 @@ def task_panel(task: TaskOut, *, computer: str | None = None) -> Panel:
     body = task.body.strip()
     parts: list[RenderableType] = [fields(rows), Rule(style="dim")]
     parts.append(Markdown(body) if body else Text("no description", style="dim italic"))
+    if isinstance(task, TaskDetails) and task.links:
+        parts.append(Rule(f"links ({len(task.links)})", style="dim"))
+        for link in task.links:
+            parts.append(Text(f"{link.relation} → #{link.task} {link.title} [{link.status}]"))
+            parts.append(Text(link.project, style="magenta"))
+            if link.reason:
+                parts.append(Text(link.reason))
     if isinstance(task, TaskDetails) and task.comments:
         parts.append(Rule(f"comments and history ({len(task.comments)})", style="dim"))
         parts.extend(comment_panel(item) for item in task.comments)

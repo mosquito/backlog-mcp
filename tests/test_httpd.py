@@ -71,6 +71,7 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
         assert payload(read) == {
             **task,
             "comments": [],
+            "links": [],
         }
         async with session.get(server.make_url("/")) as response:
             assert response.status == 200

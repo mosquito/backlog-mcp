@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import StrEnum, unique
 from typing import Annotated, Any, Literal
 from urllib.parse import unquote
 
@@ -32,6 +32,37 @@ class Status(StrEnum):
     DONE = "done"
     CANCELLED = "cancelled"
     DELETED = "deleted"
+
+
+@unique
+class Relation(StrEnum):
+    """A relation read from the source task toward the target task."""
+
+    PART_OF = "part_of"
+    CONTAINS = "contains"
+    DEPENDS_ON = "depends_on"
+    BLOCKS = "blocks"
+    CAUSED_BY = "caused_by"
+    CAUSES = "causes"
+    RELATED_TO = "related_to"
+
+
+RELATIONS: dict[Relation, Relation] = {
+    Relation.PART_OF: Relation.CONTAINS,
+    Relation.CONTAINS: Relation.PART_OF,
+    Relation.DEPENDS_ON: Relation.BLOCKS,
+    Relation.BLOCKS: Relation.DEPENDS_ON,
+    Relation.CAUSED_BY: Relation.CAUSES,
+    Relation.CAUSES: Relation.CAUSED_BY,
+    Relation.RELATED_TO: Relation.RELATED_TO,
+}
+
+
+def relation(value: str | Relation) -> tuple[Relation, Relation]:
+    """Return the relation and its inverse."""
+    if isinstance(value, str):
+        value = Relation[value.upper()]
+    return value, RELATIONS[value]
 
 
 class Priority(StrEnum):
@@ -229,8 +260,25 @@ class TaskOut(Attributed):
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
 
+class TaskLinkOut(BaseModel):
+    task: int = Field(description="The linked task id.")
+    project: str
+    relation: Relation = Field(description="Relation from the requested task to this task.")
+    title: str
+    status: Status
+    reason: str = ""
+
+
+class LinkChange(BaseModel):
+    task: int
+    relation: Relation
+    target: int
+    changed: bool
+
+
 class TaskDetails(TaskOut):
     comments: list[CommentOut] = Field(default_factory=list)
+    links: list[TaskLinkOut] = Field(default_factory=list)
 
 
 class TaskListItem(Attributed):
@@ -396,6 +444,11 @@ class ProjectDeleted(Actor):
 
 
 __all__ = [
+    "RELATIONS",
+    "Relation",
+    "relation",
+    "TaskLinkOut",
+    "LinkChange",
     "CLOSED_STATUSES",
     "OPEN_STATUSES",
     "PRIORITIES",

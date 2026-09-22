@@ -83,11 +83,11 @@ backlog stats              # open tasks, closed tasks, and notes
 ```
 
 Commands are grouped by domain. Global connection and project options come before the group.
-Each command has a two-letter alias shown in `--help`.
+Command aliases are shown in `--help`.
 
 | Group | Commands | Alias |
 | --- | --- | --- |
-| `task` | `add`, `create`, `list`, `show`, `edit`, `comment`, `comments`, `start`, `block`, `close`, `cancel`, `reopen`, `move`, `delete` | `ta` |
+| `task` | `add`, `create`, `list`, `show`, `edit`, `link`, `unlink`, `comment`, `comments`, `start`, `block`, `close`, `cancel`, `reopen`, `move`, `delete` | `ta` |
 | `memory` | `add`, `append`, `list`, `show`, `edit`, `delete` | `mm` |
 | `projects` | list by default; `update`, `delete` | `pr` |
 
@@ -117,6 +117,38 @@ and project moves create history entries without changing the description.
 
 Comments and automatic history entries record the writer's `principal` as `user@computer`.
 Projects, tasks and notes return `created_by` and `updated_by` as `user@computer` strings.
+
+Task links express dependencies, decomposition, and provenance:
+
+```bash
+backlog task link 42 depends_on 38 --reason "Needs the new schema"
+backlog task show 38
+backlog task unlink 38 blocks 42
+```
+
+Over MCP, use `task_link(task, relation, target, reason=None)` and
+`task_unlink(task, relation, target)`. `relation` is an enum:
+
+| Relation | Inverse | Meaning |
+| --- | --- | --- |
+| `part_of` | `contains` | The source task is part of the target task. |
+| `depends_on` | `blocks` | The source needs the target's result. |
+| `caused_by` | `causes` | The source task arose from the target task. |
+| `related_to` | `related_to` | The tasks are related without a dependency. |
+
+Both directions are stored and changed in one transaction. Repeating a call from either
+direction does not create duplicates. Omit `reason` or pass null to preserve the explanation;
+an empty string clears it on both records. Different relation types between the same tasks
+are independent. Self-links and cycles in `part_of` or `depends_on` are rejected.
+
+`task_get` and the task resource return direct links in `links`, with `task`, `project`,
+`relation`, `title`, `status`, and `reason`. Relations are relative to the requested task.
+Titles and statuses reflect the current target task. Links are not expanded recursively.
+There is no separate `task_links` tool. The CLI shows links in the task panel.
+
+Link changes require editor access to both tasks, including across projects. Reads omit
+links to inaccessible tasks. Closing, moving, or soft-deleting a task preserves its links.
+Links do not change task statuses. Physical project deletion removes links to its tasks.
 
 Search accepts `kinds=["tasks", "comments", "memory", "projects"]` by default. Select any subset to
 search task descriptions, comment text, memory, or project names and descriptions. Each kind has its own result list;
@@ -482,10 +514,11 @@ The console preserves the query string on MCP requests and remembers the endpoin
 in browser local storage. Its static files load without credentials; MCP requests
 require valid credentials, including after a session has been established.
 
-The agent gets 19 tools (`project_current`, `project_list`, `project_save`, `project_delete`,
+The agent gets tools for identity (`whoami`), project access (`project_share`, `project_members`),
+projects (`project_current`, `project_list`, `project_save`, `project_delete`), and content:
 `task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,
-`task_move`, `task_delete`, `memory_save`,
-`memory_append`, `memory_get`, `memory_list`, `memory_delete`, `search`, `stats`), the same
+`task_move`, `task_delete`, `task_link`, `task_unlink`, `memory_save`,
+`memory_append`, `memory_get`, `memory_list`, `memory_delete`, `search`, `stats`. They use the same
 boards, and the same database. `search` is the one search: it answers with the tasks, comments, and
 notes that match, so a new kind of record later is one more list in the result, not a new
 tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`,
@@ -684,6 +717,19 @@ make coverage
 ## License
 
 MIT
+
+## Add task links to an existing 0.2 database
+
+Fresh databases include task links. For a 0.2 database created before task links were added,
+stop the server and run this command from the updated checkout:
+
+```bash
+uv run python scripts/add_task_links.py /path/to/backlog.sqlite3
+```
+
+The script checks the existing schema, adds the table and index in one transaction, and
+preserves existing records. Repeating it is safe. Restart the server after it succeeds.
+The server reports a missing links schema rather than changing the database on startup.
 
 ## Upgrade from 0.1 to 0.2
 

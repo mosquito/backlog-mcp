@@ -67,6 +67,8 @@ async def test_catalogue(client: BaseClient) -> None:
         "task_comment_list",
         "task_list",
         "task_get",
+        "task_link",
+        "task_unlink",
         "task_update",
         "task_move",
         "task_delete",
