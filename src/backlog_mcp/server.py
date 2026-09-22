@@ -44,6 +44,7 @@ from .models import (
     BoardCounts,
     BoardProject,
     BoardSection,
+    BoardTask,
     CommentOut,
     Comments,
     Deleted,
@@ -1970,22 +1971,44 @@ async def board(
     connection: aiosqlite.Connection, actor: Actor, project_id: int
 ) -> tuple[dict[str, int], BoardSection, BoardSection]:
     await require(connection, actor, project_id)
-    row = await QUERIES.board_summary(
-        connection,
-        project_id=project_id,
-        principal=actor.principal,
-        prefix=principal_label(actor.principal, actor.computer) + ":",
-    )
+    row = await QUERIES.board_counts(connection, project_id=project_id)
     assert row is not None
     counts = dict(row)
-    sections = [
-        BoardSection(
-            count=counts.pop(f"{name}_count"),
-            items=json.loads(counts.pop(f"{name}_items")),
-        )
-        for name in ("ready", "claimed")
-    ]
-    return counts, sections[0], sections[1]
+    blocked = await QUERIES.board_blocked_count(
+        connection, project_id=project_id, principal=actor.principal
+    )
+    assert blocked is not None
+    counts["blocked"] = blocked[0]
+
+    ready_count = await QUERIES.board_ready_count(
+        connection, project_id=project_id, principal=actor.principal
+    )
+    assert ready_count is not None
+    ready = BoardSection(
+        count=ready_count[0],
+        items=[
+            BoardTask.model_validate(dict(row))
+            async for row in QUERIES.board_ready_tasks(
+                connection, project_id=project_id, principal=actor.principal
+            )
+        ],
+    )
+
+    prefix = principal_label(actor.principal, actor.computer) + ":"
+    claimed_count = await QUERIES.board_claimed_count(
+        connection, project_id=project_id, prefix=prefix
+    )
+    assert claimed_count is not None
+    claimed = BoardSection(
+        count=claimed_count[0],
+        items=[
+            BoardTask.model_validate(dict(row))
+            async for row in QUERIES.board_claimed_tasks(
+                connection, project_id=project_id, prefix=prefix
+            )
+        ],
+    )
+    return counts, ready, claimed
 
 
 async def assigned_tasks(

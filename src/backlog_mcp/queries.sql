@@ -441,43 +441,59 @@ WHERE target.id = :task_id OR target.project_id = :project_id;
 -- name: notification_recipients(project_id)
 SELECT principal FROM project_members WHERE project_id = :project_id;
 
--- name: board_summary(project_id, principal, prefix)^
-WITH candidates AS MATERIALIZED (
-    SELECT t.id, t.title, t.status, t.priority, t.created_at, t.assigned,
-           t.status IN ('todo', 'doing', 'blocked') AS is_open,
-           CASE WHEN t.status IN ('todo', 'doing', 'blocked') THEN EXISTS (
-               SELECT 1 FROM task_links l JOIN tasks d ON d.id = l.target_id
-               WHERE l.task_id = t.id AND l.relation = 'depends_on'
-               AND (d.status NOT IN ('done', 'cancelled', 'deleted')
-                    OR NOT EXISTS (SELECT 1 FROM project_members m
-                                   WHERE m.project_id = d.project_id
-                                   AND m.principal = :principal))
-           ) ELSE 0 END AS dependency_blocked
-    FROM tasks t
-    WHERE t.project_id = :project_id
-    AND EXISTS (SELECT 1 FROM project_members m
-                WHERE m.project_id = t.project_id AND m.principal = :principal)
-), classified AS MATERIALIZED (
-    SELECT *,
-           assigned IS NULL AND status IN ('todo', 'doing')
-               AND NOT dependency_blocked AS is_ready,
-           is_open AND substr(assigned, 1, length(:prefix)) = :prefix AS is_mine
-    FROM candidates
-)
+-- name: board_counts(project_id)^
 SELECT COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE is_open) AS open,
-       COUNT(*) FILTER (WHERE is_open AND assigned IS NOT NULL) AS claimed,
-       COUNT(*) FILTER (WHERE is_open AND assigned IS NULL) AS unclaimed,
-       COUNT(*) FILTER (WHERE is_open AND (status = 'blocked' OR dependency_blocked)) AS blocked,
+       COUNT(*) FILTER (WHERE status IN ('todo', 'doing', 'blocked')) AS open,
+       COUNT(*) FILTER (WHERE status IN ('todo', 'doing', 'blocked') AND assigned IS NOT NULL) AS claimed,
+       COUNT(*) FILTER (WHERE status IN ('todo', 'doing', 'blocked') AND assigned IS NULL) AS unclaimed,
        COUNT(*) FILTER (WHERE status = 'done') AS done,
        COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled,
-       COUNT(*) FILTER (WHERE status = 'deleted') AS deleted,
-       COUNT(*) FILTER (WHERE is_ready) AS ready_count,
-       COUNT(*) FILTER (WHERE is_mine) AS claimed_count,
-       (SELECT json_group_array(json_object('id', id, 'title', title))
-        FROM (SELECT id, title FROM classified WHERE is_ready
-              ORDER BY priority, created_at, id LIMIT 10)) AS ready_items,
-       (SELECT json_group_array(json_object('id', id, 'title', title))
-        FROM (SELECT id, title FROM classified WHERE is_mine
-              ORDER BY priority, created_at, id LIMIT 10)) AS claimed_items
-FROM classified;
+       COUNT(*) FILTER (WHERE status = 'deleted') AS deleted
+FROM tasks WHERE project_id = :project_id;
+
+-- name: board_blocked_count(project_id, principal)^
+SELECT COUNT(*) FROM tasks t
+WHERE t.project_id = :project_id AND t.status IN ('todo', 'doing', 'blocked')
+AND (t.status = 'blocked' OR EXISTS (
+    SELECT 1 FROM task_links l JOIN tasks d ON d.id = l.target_id
+    WHERE l.task_id = t.id AND l.relation = 'depends_on'
+    AND (d.status NOT IN ('done', 'cancelled', 'deleted')
+         OR NOT EXISTS (SELECT 1 FROM project_members m
+                        WHERE m.project_id = d.project_id AND m.principal = :principal))
+));
+
+-- name: board_ready_count(project_id, principal)^
+SELECT COUNT(*) FROM tasks t
+WHERE t.project_id = :project_id AND t.assigned IS NULL
+AND t.status IN ('todo', 'doing')
+AND NOT EXISTS (
+    SELECT 1 FROM task_links l JOIN tasks d ON d.id = l.target_id
+    WHERE l.task_id = t.id AND l.relation = 'depends_on'
+    AND (d.status NOT IN ('done', 'cancelled', 'deleted')
+         OR NOT EXISTS (SELECT 1 FROM project_members m
+                        WHERE m.project_id = d.project_id AND m.principal = :principal))
+);
+
+-- name: board_ready_tasks(project_id, principal)
+SELECT t.id, t.title FROM tasks t
+WHERE t.project_id = :project_id AND t.assigned IS NULL
+AND t.status IN ('todo', 'doing')
+AND NOT EXISTS (
+    SELECT 1 FROM task_links l JOIN tasks d ON d.id = l.target_id
+    WHERE l.task_id = t.id AND l.relation = 'depends_on'
+    AND (d.status NOT IN ('done', 'cancelled', 'deleted')
+         OR NOT EXISTS (SELECT 1 FROM project_members m
+                        WHERE m.project_id = d.project_id AND m.principal = :principal))
+)
+ORDER BY t.priority, t.created_at, t.id LIMIT 10;
+
+-- name: board_claimed_count(project_id, prefix)^
+SELECT COUNT(*) FROM tasks
+WHERE project_id = :project_id AND status IN ('todo', 'doing', 'blocked')
+AND substr(assigned, 1, length(:prefix)) = :prefix;
+
+-- name: board_claimed_tasks(project_id, prefix)
+SELECT id, title FROM tasks
+WHERE project_id = :project_id AND status IN ('todo', 'doing', 'blocked')
+AND substr(assigned, 1, length(:prefix)) = :prefix
+ORDER BY priority, created_at, id LIMIT 10;
