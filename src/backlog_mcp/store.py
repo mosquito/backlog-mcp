@@ -16,6 +16,7 @@ import aiosql
 import aiosqlite
 
 from .computer import hostname
+from .migrate import migrate
 from .models import (
     CLOSED_STATUSES,
     OPEN_STATUSES,
@@ -349,33 +350,9 @@ class Store:
                 connection = await aiosqlite.connect(str(self.path))
                 connection.row_factory = aiosqlite.Row
                 try:
-                    async with connection.execute("PRAGMA application_id") as cursor:
-                        marker = await cursor.fetchone()
-                    if marker is None or marker[0] != 1112296275:
-                        async with connection.execute(
-                            "SELECT name FROM sqlite_master WHERE type = 'table' AND "
-                            "name NOT LIKE 'mcp_%'"
-                        ) as cursor:
-                            existing = await cursor.fetchall()
-                        if existing:
-                            raise ValueError(
-                                "Unsupported database schema. Use a fresh database; "
-                                "import old data separately."
-                            )
-                        await connection.executescript(
-                            Path(__file__).with_name("schema.sql").read_text()
-                        )
-                    await connection.execute("PRAGMA journal_mode=WAL")
-                    await connection.execute("PRAGMA busy_timeout=5000")
                     await connection.execute("PRAGMA foreign_keys=ON")
-                    async with connection.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_links'"
-                    ) as cursor:
-                        if await cursor.fetchone() is None:
-                            raise ValueError(
-                                "Task links schema is missing. Stop the server and run "
-                                "uv run python scripts/add_task_links.py DATABASE."
-                            )
+                    await migrate(connection)
+                    await connection.execute("PRAGMA journal_mode=WAL")
                 except BaseException:
                     await connection.close()
                     raise

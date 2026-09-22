@@ -1,7 +1,5 @@
 import asyncio
-import runpy
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -196,43 +194,18 @@ async def test_notifications_and_neighbor_invalidation(
     assert (await backlog.store.task(a)).updated_at == before.updated_at
 
 
-async def test_upgrade_existing_database(backlog: Backlog) -> None:
+async def test_existing_schema_is_registered_without_changing_links(backlog: Backlog) -> None:
     a, b = await tasks(backlog, 2)
+    await backlog.store.link_task(a, Relation.PART_OF, b, reason="Keep this")
     path = backlog.store.path
     await backlog.store.close()
     with sqlite3.connect(path) as connection:
-        connection.execute("DROP TABLE task_links")
-    with pytest.raises(ValueError, match="add_task_links.py"):
-        await backlog.store.open()
-    upgrade = runpy.run_path(str(Path(__file__).parents[1] / "scripts/add_task_links.py"))[
-        "upgrade"
-    ]
-    assert upgrade(path)
-    assert not upgrade(path)
+        connection.execute("DROP TABLE migrations")
     assert (await backlog.store.task(a)).title == "Task 0"
-    assert await backlog.store.link_task(a, Relation.PART_OF, b)
+    assert (await backlog.store.task_links(b))[0].reason == "Keep this"
+    assert len(await backlog.store.rows("SELECT * FROM migrations")) == 1
     await backlog.store.close()
     assert (await backlog.store.task_links(b))[0].relation == Relation.CONTAINS
-
-
-async def test_upgrade_rejects_conflicting_schema_without_partial_changes(backlog: Backlog) -> None:
-    await tasks(backlog, 2)
-    path = backlog.store.path
-    await backlog.store.close()
-    with sqlite3.connect(path) as connection:
-        connection.execute("DROP TABLE task_links")
-        connection.execute("CREATE INDEX links_by_target ON tasks(title)")
-    upgrade = runpy.run_path(str(Path(__file__).parents[1] / "scripts/add_task_links.py"))[
-        "upgrade"
-    ]
-    with pytest.raises(ValueError, match="conflicting"):
-        upgrade(path)
-    with sqlite3.connect(path) as connection:
-        assert (
-            connection.execute("SELECT 1 FROM sqlite_master WHERE name = 'task_links'").fetchone()
-            is None
-        )
-        assert connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 2
 
 
 async def test_resource_subscribers_receive_both_directions(backlog: Backlog) -> None:

@@ -11,6 +11,7 @@ Existing comments retain their IDs. Sessions and authentication state are not co
 from __future__ import annotations
 
 import argparse
+import asyncio
 import os
 import re
 import sqlite3
@@ -21,8 +22,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from backlog_mcp import store
+import aiosqlite
+
 from backlog_mcp.auth import user_identity
+from backlog_mcp.migrate import migrate as migrate_schema
 from backlog_mcp.names import owner_name
 
 HEADING = re.compile(r"# UPDATE: (\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}Z?)$")
@@ -93,6 +96,12 @@ def insert(connection: sqlite3.Connection, table: str, values: dict[str, Any]) -
     )
 
 
+async def initialize(path: Path) -> None:
+    async with aiosqlite.connect(path) as connection:
+        await connection.execute("PRAGMA foreign_keys=ON")
+        await migrate_schema(connection)
+
+
 def migrate(
     source: Path, destination: Path, *, user: str, computer: str = "unknown"
 ) -> dict[str, int]:
@@ -149,9 +158,9 @@ def migrate(
     os.close(descriptor)
     temporary = Path(filename)
     try:
+        asyncio.run(initialize(temporary))
         with closing(sqlite3.connect(temporary)) as target, target:
             target.execute("PRAGMA foreign_keys=ON")
-            target.executescript(Path(store.__file__).with_name("schema.sql").read_text())
             insert(
                 target,
                 "principals",

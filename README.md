@@ -446,7 +446,7 @@ Search filters candidates before ranking and limits. A shared note remains limit
 members of its source project. Notifications go to project members; sessions stay
 principal-scoped. Existing streams and stored event replay have no revocation machinery.
 
-This release creates a fresh schema. It refuses old databases without migrating them.
+The server applies numbered SQL migrations at startup. Legacy 0.1 databases require a separate import.
 Import the old installation later with a separate ad hoc script. Back up the SQLite
 file with SQLite's backup API when the server is running.
 
@@ -718,22 +718,25 @@ make coverage
 
 MIT
 
-## Add task links to an existing 0.2 database
+## Database migrations
 
-Fresh databases include task links. For a 0.2 database created before task links were added,
-stop the server and run this command from the updated checkout:
+At startup, the migrator uses the existing aiosqlite connection to apply `src/backlog_mcp/migrations/*.sql` in numeric
+order. Filenames use four digits and a topic, for example `0001-initial.sql`.
+The `migrations` table records each applied filename, its SHA-256, and the application time.
+Pending files are the directory filenames minus the recorded filenames, sorted by filename.
+Applied files are not run again. A changed checksum or missing applied file stops startup.
+Add a new numbered file for each subsequent schema change.
 
-```bash
-uv run python scripts/add_task_links.py /path/to/backlog.sqlite3
-```
-
-The script checks the existing schema, adds the table and index in one transaction, and
-preserves existing records. Repeating it is safe. Restart the server after it succeeds.
-The server reports a missing links schema rather than changing the database on startup.
+`0001-initial.sql` creates the complete schema with `IF NOT EXISTS`. It also registers an
+existing 0.2 database without replacing its records. No manual task-links upgrade is needed.
+The SQL files contain no transaction commands: the migrator applies pending statements and
+records their filenames and checksums in one transaction. An error rolls back the whole pending batch.
+The SQLite writer lock serializes concurrent startup attempts. Migration uses the same connection as the store, including for in-memory databases.
 
 ## Upgrade from 0.1 to 0.2
 
-Version 0.2 uses a fresh database schema. The server does not migrate old databases on startup.
+Version 0.2 uses a different schema from 0.1. Import 0.1 data separately; subsequent schema
+changes use the automatic migrations described above.
 Tool names changed from `note_*` to `memory_*`. Memory resources use `backlog://memory`,
 and memory notifications use `notifications/backlog/memory`. Search results and statistics
 use the `memory` field. Task CLI actions now live under `backlog task`; notes use `backlog memory`.

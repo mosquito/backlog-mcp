@@ -1,5 +1,6 @@
 """Explicit 0.1 import preserves data and publishes only a complete new database."""
 
+import asyncio
 import importlib.util
 import sqlite3
 from pathlib import Path
@@ -46,7 +47,9 @@ def source(tmp_path: Path) -> Path:
 async def test_import_preserves_records_and_assigns_owner(source: Path, tmp_path: Path) -> None:
     original = source.read_bytes()
     target = tmp_path / "new.sqlite3"
-    counts = migration.migrate(source, target, user="alice", computer="old-host")
+    counts = await asyncio.to_thread(
+        migration.migrate, source, target, user="alice", computer="old-host"
+    )
     assert counts == {"projects": 1, "tasks": 1, "memory": 1, "comments": 1}
     assert source.read_bytes() == original
     store = Store(target)
@@ -126,7 +129,7 @@ async def test_import_extracts_updates_and_preserves_existing_comment_ids(
         connection.execute("UPDATE sqlite_sequence SET seq=40 WHERE name='task_comments'")
     original = source.read_bytes()
     target = tmp_path / "new.sqlite3"
-    counts = migration.migrate(source, target, user="alice")
+    counts = await asyncio.to_thread(migration.migrate, source, target, user="alice")
     assert counts["comments"] == 3
     assert source.read_bytes() == original
     store = Store(target)

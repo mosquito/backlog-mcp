@@ -141,7 +141,7 @@ async def test_old_database_is_refused_and_left_intact(tmp_path: Path) -> None:
         connection.execute("INSERT INTO projects VALUES (1, 'Keep me')")
         connection.execute("PRAGMA user_version=6")
     store = Store(path)
-    with pytest.raises(ValueError, match="fresh database"):
+    with pytest.raises(ValueError, match="Unsupported database schema"):
         await store.open()
     assert store.connection is None
     with sqlite3.connect(path) as connection:
