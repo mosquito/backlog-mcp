@@ -29,6 +29,7 @@ from .models import (
     TaskDetails,
     TaskOut,
 )
+from .names import principal_label
 from .skills import Skill
 
 STATUS_STYLE = {
@@ -184,7 +185,7 @@ def projects_table(items: Sequence[ProjectOut], *, computer: str | None = None) 
     for item in items:
         slug = Text(item.full_name, style="dim strike" if item.archived else "bold magenta")
         cells: list[str | Text] = [slug]
-        root = Text(", ".join(f"{root.computer}:{root.root or '—'}" for root in item.roots))
+        root = Text(", ".join(root.root_text() for root in item.roots))
         cells.extend(
             [
                 str(item.open_tasks),
@@ -267,7 +268,9 @@ def comment_panel(comment: CommentOut) -> Panel:
         title=Text(f"{comment.kind} #{comment.id} · {when}"),
         title_align="left",
         box=ROUNDED,
-        subtitle=Text(f"{comment.principal} · {comment.computer} · task #{comment.task_id}"),
+        subtitle=Text(
+            f"{principal_label(comment.principal, comment.computer)} · task #{comment.task_id}"
+        ),
         width=width(),
     )
 
@@ -355,7 +358,10 @@ def stats_view(stats: Stats) -> Table:
     table.add_section()
     if stats.tags:
         table.add_row(Text("tags", style="blue"), Text(", ".join(stats.tags), style="blue"))
-    table.add_row(Text("this computer", style="dim"), Text(stats.this_computer, style="yellow"))
+    table.add_row(
+        Text("principal", style="dim"),
+        Text(principal_label(stats.principal, stats.this_computer), style="yellow"),
+    )
     return table
 
 
@@ -377,9 +383,7 @@ def scope_panel(scope: Scope) -> Panel:
                 ("chosen by", Text(scope.origin.value, style="dim")),
                 (
                     "roots",
-                    Text(
-                        ", ".join(f"{root.computer}:{root.root or '—'}" for root in project.roots)
-                    ),
+                    Text(", ".join(root.root_text() for root in project.roots)),
                 ),
                 ("tasks", Text(f"{project.open_tasks} open of {project.total_tasks}")),
                 (
@@ -392,8 +396,12 @@ def scope_panel(scope: Scope) -> Panel:
                 ),
             ]
         )
-    rows.append(("computer", Text(scope.computer, style="yellow")))
-    others = [name for name in scope.computers if name != scope.computer]
+    rows.append(
+        ("principal", Text(principal_label(scope.principal, scope.computer), style="yellow"))
+    )
+    others = [
+        principal_label(scope.principal, name) for name in scope.computers if name != scope.computer
+    ]
     if others:
         rows.append(("also known", Text(", ".join(others), style="dim")))
     rows.extend(
@@ -438,7 +446,7 @@ def event_line(event: Event, *, at: datetime | None = None) -> Text:
         line.append(f" {event.status.value}", style=STATUS_STYLES.get(event.status, ""))
     line.append(f" {event.title!r} ")
     line.append(f"[{event.project}] ", style="magenta")
-    line.append(f"from {event.computer}", style="dim")
+    line.append(f"from {principal_label(event.principal, event.computer)}", style="dim")
     return line
 
 

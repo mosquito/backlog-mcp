@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -13,7 +14,7 @@ from aiohttp_tiny_mcp.testing import pick
 from test_events import call, collect
 
 from backlog_mcp import httpd
-from backlog_mcp.auth import BasicAuthentication, basic_namespace
+from backlog_mcp.auth import BasicAuthentication, user_identity
 from backlog_mcp.backlog import Backlog
 
 
@@ -89,7 +90,7 @@ async def test_basic_principals_and_sessions_are_per_username(backlog: Backlog) 
         )
         assert principal is not None
         assert principal.subject == name
-        assert principal.namespace == basic_namespace(name)
+        assert principal.namespace == user_identity(name)
         principals.append(principal)
     assert principals[0].identity != principals[1].identity
     async with (
@@ -156,20 +157,112 @@ async def test_invalid_credentials_cannot_create_tenant_files(backlog: Backlog) 
         assert await backlog.store.projects() == []
 
 
-async def test_basic_and_jwt_with_the_same_subject_have_separate_data(backlog: Backlog) -> None:
+async def test_basic_and_jwt_with_the_same_subject_share_data(backlog: Backlog) -> None:
     from test_jwt_auth import PSK, token
 
     async with (
         TestServer(
-            httpd.application(backlog, basic=["alice:password"], jwt_pre_shared_key=PSK)
+            httpd.application(
+                backlog, basic=["alice:password", "bob:password"], jwt_pre_shared_key=PSK
+            )
         ) as server,
         account(server, "alice") as basic,
         ClientSession(headers={"Authorization": f"Bearer {token(sub='alice')}"}) as session,
         Client(str(server.make_url("/mcp")), pick(None), session=session) as jwt,
     ):
         await jwt.initialize()
-        await call(basic, "task_add", title="Basic private")
-        assert (await jwt.call_tool("task_get", {"id": 1})).is_error
-        jwt_task = await call(jwt, "task_add", title="JWT private")
-        assert (await call(basic, "task_get", id=1))["title"] == "Basic private"
-        assert (await call(jwt, "task_get", id=jwt_task["id"]))["title"] == "JWT private"
+        identity = await call(jwt, "whoami")
+        assert identity == {
+            "principal": f"alice@{backlog.computer}",
+            "handle": "alice",
+            "auth_type": "jwt",
+        }
+        assert (await call(basic, "whoami"))["auth_type"] == "basic"
+        task = await call(basic, "task_add", title="Shared account")
+        assert (await call(jwt, "task_get", id=task["id"]))["title"] == "Shared account"
+        await call(jwt, "task_update", id=task["id"], title="Changed with JWT")
+        assert (await call(basic, "task_get", id=task["id"]))["title"] == "Changed with JWT"
+        note = await call(jwt, "memory_save", title="Same memory", body="Accessible through Basic")
+        assert (await call(basic, "memory_get", id=note["id"]))[
+            "body"
+        ] == "Accessible through Basic"
+        assert task["project"].startswith("alice/")
+        assert task["created_by"] == f"alice@{backlog.computer}"
+        async with account(server, "bob") as bob:
+            assert (await bob.call_tool("task_get", {"id": task["id"]})).is_error
+
+
+async def test_whoami_reports_each_authenticated_identity(backlog: Backlog) -> None:
+    async with TestServer(
+        httpd.application(backlog, basic=["alice:password", "bob:password"])
+    ) as server:
+        for username in ("alice", "bob"):
+            async with account(server, username) as client:
+                assert await call(client, "whoami") == {
+                    "principal": f"{username}@{backlog.computer}",
+                    "handle": username,
+                    "auth_type": "basic",
+                }
+                assert (await call(client, "project_list", all_computers=True))["items"] == []
+
+
+async def test_whoami_unauthenticated_http_uses_local_identity(backlog: Backlog) -> None:
+    async with (
+        TestServer(httpd.application(backlog)) as server,
+        Client(str(server.make_url("/mcp?computer=client-host")), pick("2026-07-28")) as client,
+    ):
+        await client.initialize()
+        assert await call(client, "whoami") == {
+            "principal": "local@client-host",
+            "handle": "local",
+            "auth_type": "none",
+        }
+        assert (await call(client, "project_list", all_computers=True))["items"] == []
+
+
+async def test_http_without_authorizers_uses_user_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backlog_mcp import cli
+
+    monkeypatch.setenv("USER", "server-user")
+    parser = cli.CLI()
+    parser.parse_args(
+        [
+            "--database",
+            str(tmp_path / "http.sqlite3"),
+            "--state",
+            str(tmp_path / "state.json"),
+            "mcp",
+            "--protocol",
+            "http",
+        ]
+    )
+    instance = cli.build(parser)
+    try:
+        async with (
+            TestServer(httpd.application(instance)) as server,
+            Client(str(server.make_url("/mcp")), pick("2026-07-28")) as client,
+        ):
+            await client.initialize()
+            identity = await call(client, "whoami")
+            assert identity["principal"] == f"server-user@{instance.computer}"
+            assert identity["handle"] == "server-user"
+            project = await call(client, "project_save", root="", name="Default owned")
+            assert project["full_name"] == "server-user/default-owned"
+            frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            collecting = collect(client.listen(resources=["backlog://tasks"]), frames)
+            try:
+                async with asyncio.timeout(5):
+                    while not client.accepted:
+                        await asyncio.sleep(0.01)
+                await call(client, "task_add", project=project["full_name"], title="Event")
+                event = (await asyncio.wait_for(frames.get(), 5))["params"]["_meta"][
+                    "backlog/event"
+                ]
+                assert event["principal"] == f"server-user@{instance.computer}"
+            finally:
+                collecting.cancel()
+                await asyncio.gather(collecting, return_exceptions=True)
+    finally:
+        await instance.store.close()

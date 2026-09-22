@@ -23,7 +23,7 @@ from numpy.typing import NDArray
 from pydantic import BaseModel, Field, StringConstraints
 
 from .backlog import Backlog
-from .models import CommentOut, NoteOut, ProjectOut, Status, TaskOut
+from .models import Actor, CommentOut, NoteOut, ProjectOut, Status, TaskOut
 from .store import Comment, Note, Project, Store, Task
 
 if TYPE_CHECKING:
@@ -152,7 +152,7 @@ class ProjectHit(ProjectOut):
     score: float | None = None
 
 
-class Matches(BaseModel):
+class Matches(Actor):
     model: str = MODEL_NAME
     tasks: list[TaskHit]
     projects: list[ProjectHit]
@@ -592,7 +592,9 @@ async def search(args: Search, backlog: Backlog) -> Matches:
             continue
         project_hits.append(
             ProjectHit(
-                **project_out(project, computer=backlog.computer).model_dump(),
+                **project_out(
+                    project, computer=backlog.computer, principal=backlog.store.principal
+                ).model_dump(),
                 match="fts" if record_id in project_fts else "semantic",
                 score=project_scores.get(record_id),
             )
@@ -605,6 +607,7 @@ async def search(args: Search, backlog: Backlog) -> Matches:
         count=len(task_hits) + len(note_hits) + len(comment_hits) + len(project_hits),
         project=reach.slug,
         computer=reach.scope_computer,
+        principal=backlog.store.principal,
     )
 
 

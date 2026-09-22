@@ -24,6 +24,7 @@ from yarl import URL
 from . import paths, skills
 from .backlog import checkout_root
 from .models import ProjectOut, Projects, Scope
+from .names import default_user
 from .state import State
 
 if TYPE_CHECKING:
@@ -174,6 +175,7 @@ def local_command(options: CLI, computer: str) -> list[str]:
         if value is not None:
             command.extend((flag, str(value)))
     command.extend(("mcp", "--protocol", "stdio"))
+    command.extend(("--default-user", default_user(options.default_user)))
     return command
 
 

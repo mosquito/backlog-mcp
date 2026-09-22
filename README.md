@@ -91,7 +91,7 @@ Each command has a two-letter alias shown in `--help`.
 | `memory` | `add`, `append`, `list`, `show`, `edit`, `delete` | `mm` |
 | `projects` | list by default; `update`, `delete` | `pr` |
 
-`search`, `stats`, `current`, `init`, `watch`, `skills`, `install`, and `mcp` remain top-level commands.
+`whoami`, `search`, `stats`, `current`, `init`, `watch`, `skills`, `install`, and `mcp` remain top-level commands.
 For example, `backlog ta sh 1` shows a task and
 `backlog mm na Convention -b "Use English"` saves a memory entry.
 
@@ -115,8 +115,8 @@ in a separate `comments` list. `task_comment_list(task_id)` returns the complete
 on its own. Entries sort by creation time, then id. Status transitions
 and project moves create history entries without changing the description.
 
-Comments and automatic history entries record the writer's `principal` and `computer`.
-Projects, tasks and notes return `created_by` and `updated_by` actors.
+Comments and automatic history entries record the writer's `principal` as `user@computer`.
+Projects, tasks and notes return `created_by` and `updated_by` as `user@computer` strings.
 
 Search accepts `kinds=["tasks", "comments", "memory", "projects"]` by default. Select any subset to
 search task descriptions, comment text, memory, or project names and descriptions. Each kind has its own result list;
@@ -389,8 +389,11 @@ Use `[mcp.http]` for HTTP settings and `[mcp.auth]` for credentials.
 
 All principals use one SQLite file. It holds projects, memberships, tasks, comments,
 notes, MCP sessions and notification events. New projects belong to their creator.
-Account order does not grant ownership. Basic and JWT identities remain distinct.
-Local stdio and HTTP without authentication use the local principal.
+Account order does not grant ownership. A Basic username and a verified JWT `sub` with the
+same value identify one account and share all project data. Principal output uses `user@computer`; stored account identities remain usernames.
+Local stdio and HTTP without authorizers use `--default-user`, falling back to `$USER`.
+The option defaults to `None`. HTTP rejects an explicit default user combined with any Basic
+or JWT authorizer; the `$USER` fallback is resolved only when no authorizer applies.
 
 Use `project_share(project="example", principal="bob", role="reader")` to give a configured
 Basic user read access. Use `role="editor"` for task, comment, note and project edits.
@@ -403,8 +406,7 @@ to discover shared projects, then register your own root with `project_save`.
 Projects retain a short `slug` and expose `full_name` in `{owner}/{slug}` form: `alice/foo`, `bob/foo`.
 Use that name for tools, CLI `--project`, and notification filters. Short slugs work only
 when one accessible project matches. `project="#<id>"` also selects a stable ID.
-Basic owner names use percent encoding for special characters. The local owner is
-`@local`; JWT owners have stable `@jwt-` names that include their authentication identity.
+Owner names use percent encoding for special characters, independent of authentication type.
 Prefix relative filesystem paths with `./` to distinguish them from project names.
 
 Lists, direct IDs, resources, FTS5 and vector search only expose accessible projects.
@@ -458,10 +460,10 @@ Token headers cannot enable another algorithm family. Every JWT must have a vali
 The server also checks `nbf` and `iat` when present. Invalid keys stop startup;
 invalid, missing, or expired credentials receive HTTP 401, including on existing sessions.
 
-Session ownership uses the verified `iss` and `sub`, or `client_id`/`azp` when `sub` is
-absent. Renewed tokens with the same identity can reuse a session; another identity
-receives HTTP 404. Tokens without a non-empty `sub`, `client_id`, or `azp` are rejected.
-The verified issuer and subject or client identifier select the user's isolated data.
+Session ownership uses the verified `iss` and `sub`. Renewed tokens with the same identity
+can reuse a session; another identity receives HTTP 404. Tokens without a non-empty `sub`
+are rejected; `client_id` and `azp` do not identify user accounts. Account data is selected by
+`sub`, matching Basic usernames, after the configured verifier accepts the token.
 The verifier maps `scope` (a space-separated string) or `scp` (a list) to the principal.
 Scope claims do not grant access to another user's projects or computers.
 
@@ -491,7 +493,7 @@ tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`
 tool call, and a write publishes `notifications/resources/updated` for the ones it touched. Each
 such notification carries `_meta["backlog/event"]`, what the write did: `kind` (task, note or
 project), `action` (added, updated, moved or deleted), `id`, `project`, `title`, for tasks `status`
-and `priority`, and the writer's `computer`. A subscriber learns what happened without reading
+and `priority`, and the writer's `principal` (`user@computer`). A subscriber learns what happened without reading
 the resource again.
 
 `task_delete` and `memory_delete` delete immediately within the current project. Deleting
@@ -504,8 +506,10 @@ Nothing stands in for that answer: a client without elicitation is refused. `bac
 delete <slug>` does the same and asks first unless `--yes` is given. Archive with
 `project_save` when the history should stay.
 
-The server's instructions and bundled skills tell agents to search for relevant project knowledge,
-read only what they need, and retain user-provided facts unavailable elsewhere, without secrets.
+The MCP initialize response includes the tracker and memory workflow in `instructions`: check
+project registration, search context, track work in tasks, save lasting agreements, and report
+outages. It uses `memory_*` tools and `task_comment_add` for progress history. The client decides
+whether to include these instructions in the model context.
 
 ### Skills
 
@@ -558,7 +562,7 @@ multicast by project slug, and `notifications/backlog/project`, sent to every li
 2026-07-28 the client names them in `subscriptions/listen`, with `{"method": ..., "topics":
 ["<slug>"]}` to keep one project; a `GET` stream of an older revision gets every event of every
 project. The params of each notification are the event: `kind`, `action`, `id`, `project`,
-`title`, for tasks `status` and `priority`, and `computer`.
+`title`, for tasks `status` and `priority`, and `principal` (`user@computer`).
 
 ```
 backlog watch https://host/mcp?computer=laptop -u user --password secret
@@ -699,11 +703,37 @@ The destination must not exist. The script opens the source read-only and publis
 file only after SQLite, foreign-key, and FTS integrity checks pass. Stop the old server before
 importing the final copy so later writes cannot be missed.
 
-All imported projects belong to the specified Basic username and become `alice/<project>`.
+All imported projects belong to `--user` (alias `--default-user`), defaulting to `$USER`.
+For `--user alice`, project names become `alice/<project>`.
 IDs, timestamps, tags, statuses, memory, and computer/root bindings are preserved.
 Existing comments retain their IDs. Legacy `---` / `# UPDATE:` blocks become separate comments
 with their original text and UTC timestamps. Code-fenced examples stay in descriptions.
-Malformed or ambiguous histories remain intact, and the script reports their task IDs. Historical actors use the specified owner and `--computer`
+Malformed or ambiguous histories remain intact, and the script reports their task IDs.
+Historical actors use the specified owner and `--computer`
 (default: `unknown`); this is import attribution, not recovered authorship.
 Sessions and authentication state are not imported. Configure the same Basic username on the
 new server and reconnect clients. Keep the source file until you have checked the imported data.
+
+`backlog whoami` (alias `wi`) reports `principal` as `user@computer`, `auth_type` (`basic`, `jwt`,
+or `none`), project-owner `handle`, and `principal` (`user@computer`). The MCP tool is also named `whoami`. It does not require a current
+project or register a directory. Local stdio uses `--default-user`, defaulting to `$USER`,
+and reports the same principal as a Basic account with that username. Set it with `backlog --default-user alice whoami`
+or `backlog mcp --default-user alice`; `backlog-mcp --default-user alice` also works.
+An explicit server option overrides the global option. HTTP reports the verified Basic or JWT
+principal. HTTP without any Basic or JWT authorizer uses the same `--default-user` / `$USER`
+principal as stdio. All unauthenticated clients share that identity. It has ordinary project
+membership permissions,
+not administrator access to other principals’ private projects. The computer part records the client
+context and does not create a separate account. Use the returned principal when sharing projects.
+
+For example, Basic and JWT requests for the same user both return `principal: "mosquito@localhost"` on that computer.
+Only `auth_type` differs. Stdio and unauthenticated HTTP return `auth_type: "none"`.
+Use `project_share(project="mosquito/example", principal="alice")` to grant access by username.
+
+Tool and resource output uses `user@computer` for principals and `user@computer:path` for project
+roots. Bindings without a filesystem path are omitted. There are no separate computer fields
+in output. Owners and members with no computer context use `user@unknown`. Separator characters
+in usernames and computer names are percent-encoded. `project_share` accepts the displayed
+principal; its computer does not change the target account. Plain usernames without `@` also work.
+`created_at` and `updated_at` are rounded to integer Unix seconds in JSON output. Storage keeps
+full timestamp precision for ordering.

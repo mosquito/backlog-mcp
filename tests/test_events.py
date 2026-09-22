@@ -115,8 +115,7 @@ async def test_the_event_names_the_record_and_the_writer(backlog: Backlog) -> No
         "title": "Ship it",
         "status": "done",
         "priority": "high",
-        "computer": "here",
-        "principal": backlog.store.principal,
+        "principal": f"{backlog.store.principal}@{backlog.computer}",
         "project_id": (await backlog.current())[0].id,
     }
 
@@ -206,8 +205,7 @@ async def test_every_listener_hears_a_broadcast(backlog: Backlog) -> None:
         "title": "Ship it",
         "status": "doing",
         "priority": "normal",
-        "computer": "here",
-        "principal": backlog.store.principal,
+        "principal": f"{backlog.store.principal}@{backlog.computer}",
         "project_id": (await backlog.current())[0].id,
     }
     assert frames_one[1]["params"]["id"] == note["id"]

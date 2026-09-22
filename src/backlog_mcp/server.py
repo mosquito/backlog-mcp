@@ -12,7 +12,7 @@ from aiohttp_tiny_mcp import Authentication, Exchange, Extension, Hint, NeedInpu
 from aiohttp_tiny_mcp.protocol.models import CompleteParams, TextResourceContents
 from aiohttp_tiny_mcp.storage.hub import NOTIFICATIONS, topic
 from aiohttp_tiny_mcp.storage.sqlite import SqliteHub, SqliteSessionStore, SqliteStorage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 from . import embeddings, skills
 from .backlog import Backlog, Reach, UnknownProject
@@ -22,12 +22,14 @@ from .models import (
     OPEN_STATUSES,
     PRIORITIES,
     Action,
+    Actor,
     CommentOut,
     Comments,
     Deleted,
     Event,
     FullNotes,
     FullTasks,
+    Identity,
     Kind,
     NoteListItem,
     NoteOut,
@@ -45,6 +47,7 @@ from .models import (
     TaskOut,
     Tasks,
 )
+from .names import owner_name, principal_label, principal_user
 from .store import NOTE_LIMIT, Comment, Note, Project, Task, Unset
 from .version import COMMIT, VERSION
 
@@ -55,22 +58,51 @@ A task backlog and persistent project knowledge store. It holds three kinds of t
 which is one board covering one directory tree, a task, which is one item on that board, and a \
 note, which is one piece of lasting context from the user that persists across sessions.
 
-Core agent principles:
-1. ALWAYS search first (`search`). At the start of a session, before investigating a problem, \
-before choosing an approach or writing code, and before asking the user for project facts or \
-clarifications, ALWAYS search the backlog. Search reveals existing tasks, prior decisions, \
-architectural context, and user constraints. Search again whenever a new question arises.
-2. ALWAYS consult notes when uncertain (`memory_get`, `memory_list`, `search`). If you do not know \
-what to do, how to proceed, or what rules to follow, ALWAYS check saved notes before guessing \
-or asking questions. Notes record canonical user preferences, engineering conventions, \
-architectural invariants, and past agreements.
-3. ALWAYS work through tasks (`task_add`, `task_update`, `task_list`). Never perform silent or \
-untracked work. Break user requests into discrete, verifiable tasks on the board. Mark the \
-active task as `doing` when starting, update details as progress happens, and mark `done` or \
-`cancelled` upon completion. Inspect open tasks with `task_list` to know what to do next.
-4. Proactively capture lasting context (`memory_save`, `memory_append`). When the user states a \
-preference, convention, constraint, or decision, save or update it promptly in a note so future \
-sessions remember it. Do not wait to be asked.
+`whoami` reports `principal` as `user@computer`, auth type and owner handle without a project.
+
+Agent workflow:
+1. Check project registration first. At session start or when changing projects or directories,
+call `project_current` before searching context, managing tasks, or investigating code.
+Compare its computer and roots with the actual local workspace. For HTTP connections, the
+server cwd is not the local cwd. Use `project_list`, with `all_computers=true` when needed,
+to find an existing logical project. If the local binding is missing or wrong, call
+`project_save(project=<existing full_name>, root=<absolute local project root>)`.
+Create a project only if no matching logical project exists. Leave correct bindings unchanged.
+Explicit `project=` does not replace this check. Registration does not select a project for
+an unscoped HTTP connection; pass `project=` explicitly when needed.
+
+2. Search context before decisions. After registration, use `search` before investigating,
+choosing an approach, creating tasks or memory, or asking about prior agreements.
+Use natural-language queries. Search again when a new question arises. Read relevant matches
+with `task_get` or `memory_get` when needed. Check memory before guessing user preferences
+or project conventions. Use filtered lists for board reviews and `stats` for counts.
+Verify current technical facts in code or documentation.
+
+3. Track work through tasks. Reuse a relevant task or create one with `task_add` before
+substantive work, including investigation and verification. Define one verifiable outcome
+per task. A brief answer with no separate work does not need a task. Set `doing` when work
+starts. Use `task_comment_add` for findings, decisions, checks, blockers, remaining work,
+and relevant commit hashes or deployment state. Send only new update text.
+`task_update(body=...)` replaces the description; it does not append history.
+If scope must be replaced, close the old task and create a successor referencing it.
+Set `done` only after verification, `blocked` with the blocker and next step, or `cancelled`
+when work is abandoned. Before ending a turn, leave task status and history accurate.
+Keep task tracking in backlog. Never create task lists, work plans, progress logs, or task
+checklists in files, even when backlog is unavailable.
+
+4. Keep lasting agreements in memory. Proactively save user preferences, constraints, and
+decisions with `memory_save` or `memory_append`. Search first and update an existing record
+when appropriate. Use `shared=true` for agreements that apply across accessible projects.
+Use task comments for temporary findings and implementation progress. Do not save code or
+documentation snapshots as lasting memory. `memory_save.body` replaces the body;
+`memory_append` adds related context. Keep each record within 1024 characters.
+Never store secrets or unconfirmed guesses. After a user correction, save the lasting
+agreement that prevents recurrence.
+
+5. Handle outages explicitly. If backlog is unavailable, report the failure and continue
+authorized work that does not require missing context. Keep pending task and memory updates
+in the conversation and save them when access returns. Do not claim a write succeeded
+unless the tool confirmed it.
 
 Scope. Every tool works on one project, the current one, unless the call names another with \
 `project`. The current project is the one fixed for this connection (`--project` on stdio, \
@@ -85,8 +117,10 @@ deploy is visible from the client.
 
 Computers. One logical project can have several `(computer, root)` bindings. `project_current` \
 reports the computer this session works from and every computer with a binding; a project lists \
-its bindings in `roots` and says `here: true` only when this computer has a non-empty path. An \
-empty root is a contextual binding with no files. Do not read, edit, build or run a path belonging \
+its bindings as `user@computer:path` strings in `roots`. `here: true` means this computer has \
+a non-empty path. An \
+empty stored root is a contextual binding with no files and is omitted from output. \
+Do not read, edit, build or run a path belonging \
 to another computer. Tasks and notes belong to the logical project, not to one computer.
 
 Projects are private to their creator until shared with project_share. Owners manage access
@@ -94,7 +128,7 @@ and deletion; editors change project content; readers can read it. project_membe
 members. Lists, direct IDs, resources, search and notifications require project membership.
 Shared notes do not bypass membership. IDs are unique in the common database. Roots belong
 to a principal and computer. project_current reports the authenticated principal. Comments
-record principal and computer; records expose created_by and updated_by actors.
+record `principal` as `user@computer`; records expose created_by and updated_by as the same strings.
 Use owner/slug names, such as alice/foo, to distinguish projects. Short slugs work only
 when unambiguous; #42 selects a stable numeric ID.
 
@@ -146,7 +180,7 @@ note ids are unique across projects and computers, so `task_get`, `task_update`,
 `task_delete`, `memory_get`, `memory_append` and `memory_delete` take an id and no project.
 
 Search. `search` is the default retrieval tool for project knowledge, previous work, and user \
-preferences. Search at session start, before investigating a problem or choosing an approach, \
+preferences. Search after registration, before investigating a problem or choosing an approach, \
 before asking the user for project facts, and before creating a task or note. Search again \
 whenever any uncertainty or question arises during work. Use a short natural-language question \
 or specific terms; try another phrasing if the results are weak. Inspect returned matches and \
@@ -258,7 +292,7 @@ def bound() -> Backlog:
     return ACTIVE.get()
 
 
-def project_out(project: Project, *, computer: str) -> ProjectOut:
+def project_out(project: Project, *, computer: str, principal: str) -> ProjectOut:
     """The project as the tools return it; `computer` is the one this session works from."""
     return ProjectOut(
         id=project.id,
@@ -267,7 +301,11 @@ def project_out(project: Project, *, computer: str) -> ProjectOut:
         owner=project.owner,
         role=project.role,
         name=project.name,
-        roots=[ProjectRootOut(computer=root.computer, root=root.root) for root in project.roots],
+        roots=[
+            ProjectRootOut(principal=principal, computer=root.computer, root=root.root)
+            for root in project.roots
+            if root.root
+        ],
         here=any(root.computer == computer and root.root for root in project.roots),
         description=project.description,
         preferred_language=project.preferred_language,
@@ -393,7 +431,9 @@ async def scope_of(backlog: Backlog) -> Scope:
     """Where the tools work, and why there."""
     project, origin = await backlog.scope()
     return Scope(
-        project=project_out(project, computer=backlog.computer) if project else None,
+        project=project_out(project, computer=backlog.computer, principal=backlog.store.principal)
+        if project
+        else None,
         origin=origin,
         principal=backlog.store.principal,
         computer=backlog.computer,
@@ -414,6 +454,7 @@ async def stats_of(backlog: Backlog, reach: Reach) -> Stats:
     return Stats(
         project=reach.slug,
         computer=reach.scope_computer,
+        principal=backlog.store.principal,
         this_computer=backlog.computer,
         total=sum(by_status.values()),
         open=sum(by_status.get(status.value, 0) for status in OPEN_STATUSES),
@@ -492,7 +533,8 @@ async def changed(event: Event, *, recipients: list[str] | None = None) -> None:
                     member["principal"] for member in await store.members(event.project_id)
                 ]
     for identity in recipients:
-        token = namespace.set(None if identity == '["local"]' else identity)
+        anonymous_default = ACTIVE_REGISTRY.get().auth is None and identity == store.principal
+        token = namespace.set(None if anonymous_default else identity)
         try:
             await publish_change(event)
         finally:
@@ -536,6 +578,7 @@ def project_event(project: Project, action: Action, *, computer: str) -> Event:
         project_id=project.id,
         title=project.name,
         computer=computer,
+        principal=bound().store.principal,
     )
 
 
@@ -577,34 +620,44 @@ class ProjectRef(BaseModel):
 
 class ShareProject(ProjectRef):
     principal: str = Field(
-        description="Principal from project_current, or a configured Basic username."
+        description="user@computer or a username without @; computer does not affect access."
     )
     role: Literal["reader", "editor"] = "reader"
 
 
-class Members(BaseModel):
+class Members(Actor):
     items: list[dict[str, str]]
+
+    @field_serializer("items", when_used="json")
+    def principal_labels(self, values: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [{**item, "principal": principal_label(item["principal"])} for item in values]
 
 
 @registry.tool()
 async def project_members(args: ProjectRef, backlog: Backlog) -> Members:
     """List principals with access to a project and their roles."""
     project = await backlog.resolve(args.project)
-    return Members(items=await backlog.store.members(project.id))
+    return Members(
+        items=await backlog.store.members(project.id),
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+    )
 
 
 @registry.tool()
 async def project_share(args: ShareProject, backlog: Backlog) -> Members:
     """Grant read or edit access to a registered principal. Only the owner can share."""
-    from .auth import basic_namespace
+    from .auth import user_identity
 
     project = await backlog.resolve(args.project)
-    principal = (
-        args.principal if args.principal.startswith("[") else basic_namespace(args.principal)
-    )
+    principal = user_identity(principal_user(args.principal))
     await backlog.store.share(project.id, principal, args.role)
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
-    return Members(items=await backlog.store.members(project.id))
+    return Members(
+        items=await backlog.store.members(project.id),
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+    )
 
 
 class ListProjects(BaseModel):
@@ -798,6 +851,22 @@ class StatsOf(BaseModel):
     all_computers: bool = Field(default=False, description="Every project of every computer.")
 
 
+@registry.tool(title="Current identity", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+async def whoami(args: Nothing, backlog: Backlog) -> Identity:
+    """Report principal as user@computer, auth type and owner handle without selecting a project.
+
+    Stdio and HTTP without authorizers use --default-user (default: $USER), with the same
+    principal as that Basic username. Authenticated Basic and JWT connections report their
+    verified identity. Computer is context, not identity.
+    """
+    return Identity(
+        principal=backlog.store.principal,
+        handle=owner_name(backlog.store.principal),
+        auth_type=backlog.auth_type,
+        computer=backlog.computer,
+    )
+
+
 @registry.tool(title="Current project", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def project_current(args: Nothing, backlog: Backlog) -> Scope:
     """Report the current project, how it was chosen, the computer, and the storage paths.
@@ -816,7 +885,13 @@ async def project_list(args: ListProjects, backlog: Backlog) -> Projects:
     )
     found = await backlog.store.projects(archived=args.archived, computer=reach.computer)
     return Projects(
-        items=[project_out(item, computer=backlog.computer) for item in found], count=len(found)
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+        items=[
+            project_out(item, computer=backlog.computer, principal=backlog.store.principal)
+            for item in found
+        ],
+        count=len(found),
     )
 
 
@@ -840,7 +915,7 @@ async def project_save(args: SaveProject, backlog: Backlog) -> ProjectOut:
         ),
     )
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
-    return project_out(project, computer=backlog.computer)
+    return project_out(project, computer=backlog.computer, principal=backlog.store.principal)
 
 
 @registry.tool(title="Delete a project", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
@@ -856,6 +931,8 @@ async def project_delete(args: DeleteProject, ex: Exchange, backlog: Backlog) ->
     await backlog.store.require(project.id, role="owner")
     contents = await backlog.store.project_contents(project.id)
     found = ProjectDeleted(
+        principal=backlog.store.principal,
+        computer=backlog.computer,
         id=project.id,
         slug=project.slug,
         full_name=project.full_name,
@@ -951,12 +1028,14 @@ async def task_list(args: ListTasks, backlog: Backlog) -> Tasks | FullTasks:
             count=total,
             project=reach.slug,
             computer=reach.scope_computer,
+            principal=backlog.store.principal,
         )
     return Tasks(
         items=[task_list_item(item) for item in found],
         count=total,
         project=reach.slug,
         computer=reach.scope_computer,
+        principal=backlog.store.principal,
     )
 
 
@@ -994,6 +1073,8 @@ async def task_comment_list(args: ListComments, backlog: Backlog) -> Comments:
         raise LookupError(f"no task #{args.task_id}")
     details = await task_details(task, backlog)
     return Comments(
+        principal=backlog.store.principal,
+        computer=backlog.computer,
         items=details.comments,
         task_id=task.id,
         count=len(details.comments),
@@ -1055,7 +1136,14 @@ async def confirm_cross_project_delete(
     if (answer := ex.answers.get(key)) is not None:
         if answer.get("ok"):
             return None
-        return Deleted(id=record.id, title=record.title, deleted=False, detail="cancelled")
+        return Deleted(
+            principal=backlog.store.principal,
+            computer=backlog.computer,
+            id=record.id,
+            title=record.title,
+            deleted=False,
+            detail="cancelled",
+        )
     where = record.project
     if not ex.can_ask:
         raise PermissionError(
@@ -1088,7 +1176,13 @@ async def task_delete(args: TaskId, backlog: Backlog) -> Deleted:
         gone = await backlog.store.update_task(task.id, status=Status.DELETED)
         assert gone is not None
         await changed(task_event(gone, Action.DELETED, computer=backlog.computer))
-    return Deleted(id=args.id, title=task.title, deleted=True)
+    return Deleted(
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+        id=args.id,
+        title=task.title,
+        deleted=True,
+    )
 
 
 @registry.tool(title="Save a note", annotations=Hint.IDEMPOTENT)
@@ -1176,12 +1270,14 @@ async def memory_list(args: ListNotes, backlog: Backlog) -> Notes | FullNotes:
             count=total,
             project=reach.slug,
             computer=reach.scope_computer,
+            principal=backlog.store.principal,
         )
     return Notes(
         items=[note_list_item(item) for item in found],
         count=total,
         project=reach.slug,
         computer=reach.scope_computer,
+        principal=backlog.store.principal,
     )
 
 
@@ -1199,7 +1295,13 @@ async def memory_delete(args: NoteId, ex: Exchange, backlog: Backlog) -> Deleted
         return refusal
     deleted = await backlog.store.delete_note(args.id)
     await changed(note_event(found, Action.DELETED, computer=backlog.computer))
-    return Deleted(id=args.id, title=found.title, deleted=deleted)
+    return Deleted(
+        principal=backlog.store.principal,
+        computer=backlog.computer,
+        id=args.id,
+        title=found.title,
+        deleted=deleted,
+    )
 
 
 @registry.tool(title="Search the backlog", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
@@ -1232,7 +1334,13 @@ async def stats(args: StatsOf, backlog: Backlog) -> Stats:
 async def current_project(args: Nothing, backlog: Backlog) -> dict[str, Any]:
     """The project the tools work on, or `null` with origin `none` when there is none."""
     project, origin = await backlog.scope()
-    shown = project_out(project, computer=backlog.computer).model_dump() if project else None
+    shown = (
+        project_out(
+            project, computer=backlog.computer, principal=backlog.store.principal
+        ).model_dump(mode="json")
+        if project
+        else None
+    )
     return {"project": shown, "origin": origin.value, "computer": backlog.computer}
 
 
@@ -1240,7 +1348,12 @@ async def current_project(args: Nothing, backlog: Backlog) -> dict[str, Any]:
 async def all_projects(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
     """Every registered project of this computer."""
     found = await backlog.store.projects(computer=backlog.computer)
-    return [project_out(item, computer=backlog.computer).model_dump() for item in found]
+    return [
+        project_out(item, computer=backlog.computer, principal=backlog.store.principal).model_dump(
+            mode="json"
+        )
+        for item in found
+    ]
 
 
 @registry.resource("backlog://tasks", mime_type="application/json")
@@ -1248,7 +1361,7 @@ async def open_tasks(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
     """Open tasks of the current project, most important first."""
     project = await backlog.resolve(None)
     found = await backlog.store.tasks(project_id=project.id, status=list(OPEN_STATUSES), limit=200)
-    return [task_out(item).model_dump() for item in found]
+    return [task_out(item).model_dump(mode="json") for item in found]
 
 
 class TaskUri(BaseModel):
@@ -1263,7 +1376,7 @@ async def one_task(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
     task = await backlog.store.task(int(args.id))
     if task is None:
         return {"error": f"no task #{args.id}"}
-    return (await task_details(task, backlog)).model_dump()
+    return (await task_details(task, backlog)).model_dump(mode="json")
 
 
 @registry.resource("backlog://memory", mime_type="application/json")
@@ -1271,7 +1384,7 @@ async def known_notes(args: Nothing, backlog: Backlog) -> list[dict[str, Any]]:
     """Notes of the current project plus every shared note, most recently changed first."""
     project = await backlog.resolve(None)
     found = await backlog.store.notes(project_id=project.id, limit=200)
-    return [note_out(item).model_dump() for item in found]
+    return [note_out(item).model_dump(mode="json") for item in found]
 
 
 @registry.resource("backlog://memory/{id}", name="note", mime_type="application/json")
@@ -1282,7 +1395,7 @@ async def one_note(args: TaskUri, backlog: Backlog) -> dict[str, Any]:
     found = await backlog.store.note(int(args.id))
     if found is None:
         return {"error": f"no note #{args.id}"}
-    return note_out(found).model_dump()
+    return note_out(found).model_dump(mode="json")
 
 
 class SkillName(BaseModel):

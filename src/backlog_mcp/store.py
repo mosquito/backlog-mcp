@@ -20,7 +20,7 @@ from .models import CLOSED_STATUSES, OPEN_STATUSES, PRIORITIES, RANKS, Actor, Pr
 from .names import owner_name, project_name
 
 QUERIES = aiosql.from_path(Path(__file__).with_name("queries.sql"), "aiosqlite")
-LOCAL_PRINCIPAL = '["local"]'
+LOCAL_PRINCIPAL = "local"
 ACCESS = (
     "EXISTS (SELECT 1 FROM project_members membership "
     "WHERE membership.project_id = p.id AND membership.principal = ?)"
@@ -364,7 +364,7 @@ class Store:
                     connection,
                     identity=self.principal,
                     handle=owner_name(self.principal),
-                    name="local",
+                    name=owner_name(self.principal),
                 )
                 await connection.commit()
                 self.connection = connection

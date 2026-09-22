@@ -7,6 +7,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .computer import check
 from .models import Origin
@@ -84,6 +85,7 @@ class Backlog:
         project: str | None = None,
         computer: str | None = None,
     ) -> None:
+        self.auth_type: Literal["basic", "jwt", "none"] = "none"
         self.store = store
         self.state = state
         self.cwd = Path(cwd).expanduser().resolve() if cwd else Path.cwd().resolve()
@@ -114,6 +116,7 @@ class Backlog:
             project=project or self.named,
             computer=computer or self.computer,
         )
+        seen.auth_type = self.auth_type
         seen.remote = seen.computer != self.computer
         return seen
 

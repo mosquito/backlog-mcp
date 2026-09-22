@@ -138,14 +138,14 @@ async def test_a_view_of_another_computer_never_touches_this_file_system(tmp_pat
 
 async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backlog) -> None:
     current = await call(client, "project_current")
-    assert current["computer"] == "here"
-    assert current["computers"] == ["here"]
+    assert current["principal"] == "local@here"
+    assert current["principals"] == ["local@here"]
     assert current["project"]["here"] is True
     mine = current["project"]["slug"]
 
     app = await backlog.view(computer="laptop").save(root="/srv/app", name="App")
     await backlog.store.add_task(project_id=app.id, title="Deploy on the laptop")
-    assert (await call(client, "project_current"))["computers"] == ["here", "laptop"]
+    assert (await call(client, "project_current"))["principals"] == ["local@here", "local@laptop"]
 
     listed = await call(client, "project_list")
     assert [item["slug"] for item in listed["items"]] == [mine]
@@ -155,42 +155,42 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
         "app": False,
     }
     theirs = await call(client, "project_list", computer="laptop")
-    assert theirs["items"][0]["roots"] == [{"computer": "laptop", "root": "/srv/app"}]
+    assert theirs["items"][0]["roots"] == ["local@laptop:/srv/app"]
 
     local = await call(client, "task_add", title="Local work")
     assert local["project"] == current["project"]["full_name"]
     #: A listing of one project names that project's computer, not the filter given.
-    assert (await call(client, "task_list"))["computer"] is None
-    assert (await call(client, "stats"))["computer"] is None
+    assert (await call(client, "task_list"))["principal"] == "local@unknown"
+    assert (await call(client, "stats"))["principal"] == "local@unknown"
     assert (await call(client, "task_list", all_projects=True))["count"] == 1
     away = await call(client, "task_list", computer="laptop")
-    assert away["computer"] == "laptop"
+    assert away["principal"] == "local@laptop"
     assert (await call(client, "task_list", all_computers=True))["count"] == 2
 
     #: Semantic matches score anything above zero, so only exact matches count here.
     assert (await call(client, "search", query="laptop", min_score=1))["count"] == 0
     found = await call(client, "search", query="laptop", all_computers=True)
-    assert found["computer"] is None
-    assert found["tasks"][0]["project"] == "@local/app"
+    assert found["principal"] == "local@unknown"
+    assert found["tasks"][0]["project"] == "local/app"
 
     counted = await call(client, "stats", computer="laptop")
-    assert (counted["computer"], counted["total"]) == ("laptop", 1)
+    assert (counted["principal"], counted["total"]) == ("local@laptop", 1)
     scoped_task = await call(client, "task_list", project="app", computer="laptop")
-    assert (scoped_task["project"], scoped_task["computer"], scoped_task["count"]) == (
-        "@local/app",
-        "laptop",
+    assert (scoped_task["project"], scoped_task["principal"], scoped_task["count"]) == (
+        "local/app",
+        "local@laptop",
         1,
     )
     scoped_stats = await call(client, "stats", project="app", computer="laptop")
-    assert (scoped_stats["project"], scoped_stats["computer"], scoped_stats["total"]) == (
-        "@local/app",
-        "laptop",
+    assert (scoped_stats["project"], scoped_stats["principal"], scoped_stats["total"]) == (
+        "local/app",
+        "local@laptop",
         1,
     )
     scoped_search = await call(client, "search", query="laptop", project="app", computer="laptop")
-    assert (scoped_search["project"], scoped_search["computer"]) == ("@local/app", "laptop")
+    assert (scoped_search["project"], scoped_search["principal"]) == ("local/app", "local@laptop")
     assert [item["id"] for item in scoped_search["tasks"]] == [away["items"][0]["id"]]
-    assert counted["this_computer"] == "here"
+    assert counted["this_principal"] == "local@here"
     assert (await call(client, "stats", all_computers=True))["total"] == 2
 
     result = await client.call_tool("task_list", {"computer": "nowhere"})

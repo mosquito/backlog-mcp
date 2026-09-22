@@ -324,8 +324,6 @@ async def test_invalid_principal_claims_are_rejected(claims: dict[str, object]) 
             "issuer|alice",
             frozenset({"read", "write"}),
         ),
-        ({"sub": "", "client_id": "cli", "scp": ["read"]}, "|client:cli", frozenset({"read"})),
-        ({"sub": "", "azp": "cli"}, "|client:cli", frozenset()),
     ],
 )
 async def test_verified_claims_define_the_principal(
@@ -361,7 +359,7 @@ async def test_jwt_identity_namespaces_cannot_collide() -> None:
         {"iss": "a|b", "sub": "c"},
         {"iss": "a", "sub": "b|c"},
         {"sub": "client:alice"},
-        {"sub": "", "client_id": "alice"},
+        {"sub": "alice"},
     ]
     namespaces = set()
     for claims in identities:
@@ -625,3 +623,22 @@ async def test_cached_principals_are_specific_to_each_policy(
         response = await client.get("/check", headers={"Authorization": f"Bearer {encoded}"})
         assert response.status == 200
     assert calls == [HMACJWTVerifier, PublicKeyJWTVerifier]
+
+
+@pytest.mark.parametrize("claims", [{"sub": "", "client_id": "alice"}, {"sub": "", "azp": "alice"}])
+async def test_jwt_client_id_does_not_replace_username(claims: dict[str, object]) -> None:
+    policy = JWTAuthentication(HMACJWTVerifier(PSK))
+    request = make_mocked_request(
+        "GET", "/mcp", headers={"Authorization": f"Bearer {token(**claims)}"}
+    )
+    assert await policy.authenticate(request) is None
+
+
+async def test_same_subject_from_accepted_issuers_maps_to_same_user() -> None:
+    policy = JWTAuthentication(HMACJWTVerifier(PSK))
+    for issuer in ("issuer-one", "issuer-two"):
+        request = make_mocked_request(
+            "GET", "/mcp", headers={"Authorization": f"Bearer {token(sub='alice', iss=issuer)}"}
+        )
+        principal = await policy.authenticate(request)
+        assert principal is not None and principal.namespace == "alice"

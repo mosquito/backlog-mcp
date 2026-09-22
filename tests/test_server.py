@@ -13,6 +13,21 @@ from backlog_mcp.server import ACTIVE, registry
 from backlog_mcp.version import VERSION
 
 
+def check_public_identity(value: Any) -> None:
+    if isinstance(value, dict):
+        assert not {"computer", "computers", "this_computer"} & value.keys()
+        if "principal" in value:
+            assert isinstance(value["principal"], str) and "@" in value["principal"]
+        for field in ("created_by", "updated_by"):
+            if value.get(field) is not None:
+                assert isinstance(value[field], str) and "@" in value[field]
+        for item in value.values():
+            check_public_identity(item)
+    elif isinstance(value, list):
+        for item in value:
+            check_public_identity(item)
+
+
 async def call(client: BaseClient, tool_name: str, **arguments: Any) -> dict[str, Any]:
     result = await client.call_tool(tool_name, arguments)
     assert isinstance(result, CallToolResult), result
@@ -24,6 +39,7 @@ async def call(client: BaseClient, tool_name: str, **arguments: Any) -> dict[str
         assert isinstance(result.content[0], TextContent)
         value = json.loads(result.content[0].text)
     assert isinstance(value, dict)
+    check_public_identity(value)
     return value
 
 
@@ -39,6 +55,7 @@ async def resource(client: BaseClient, uri: str) -> Any:
 async def test_catalogue(client: BaseClient) -> None:
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert set(tools) == {
+        "whoami",
         "project_current",
         "project_share",
         "project_members",
@@ -79,7 +96,7 @@ async def test_catalogue(client: BaseClient) -> None:
 async def test_scope_follows_the_directory(client: BaseClient, backlog: Backlog) -> None:
     current = await call(client, "project_current")
     assert current["origin"] == "created"
-    assert current["project"]["roots"] == [{"computer": "here", "root": str(backlog.cwd)}]
+    assert current["project"]["roots"] == [f"local@here:{backlog.cwd}"]
     assert current["database"] == str(backlog.store.path)
     assert current["state"] == str(backlog.state.path)
     assert (await call(client, "project_current"))["origin"] == "directory"
@@ -374,7 +391,7 @@ async def test_scoped_completions(client: BaseClient) -> None:
     task = await call(client, "task_add", title="Local", tags=["api"])
     other = await call(client, "project_save", root="../other", name="Other")
     await call(client, "task_add", title="Remote", tags=["away"], project=other["slug"])
-    for argument, prefix, expected in [("tag", "a", ["api"]), ("project", "ot", ["@local/other"])]:
+    for argument, prefix, expected in [("tag", "a", ["api"]), ("project", "ot", ["local/other"])]:
         result = await client.complete(
             {"type": "ref/prompt", "name": "groom"}, {"name": argument, "value": prefix}
         )
@@ -760,3 +777,76 @@ async def test_note_bodies_are_limited_to_1024_characters(client: BaseClient) ->
         assert isinstance(result.content[0], TextContent)
         assert "1024" in result.content[0].text
     assert (await call(client, "memory_get", id=saved["id"]))["body"] == "x" * 1024
+
+
+async def test_whoami_does_not_create_a_project(client: BaseClient, backlog: Backlog) -> None:
+    from backlog_mcp.store import LOCAL_PRINCIPAL
+
+    result = await client.call_tool("whoami", {})
+    assert not result.is_error
+    assert result.structured_content == {
+        "principal": f"{LOCAL_PRINCIPAL}@here",
+        "handle": "local",
+        "auth_type": "none",
+    }
+    assert await backlog.store.projects() == []
+
+
+async def test_output_formats_principals_roots_and_seconds(
+    client: BaseClient, backlog: Backlog
+) -> None:
+    task = await call(client, "task_add", title="Rounded timestamps")
+    connection = await backlog.store.open()
+    await connection.execute(
+        "UPDATE tasks SET created_at=?, updated_at=? WHERE id=?",
+        (1700000000.4, 1700000001.6, task["id"]),
+    )
+    await connection.commit()
+    shown = await call(client, "task_get", id=task["id"])
+    assert shown["created_at"] == 1700000000 and type(shown["created_at"]) is int
+    assert shown["updated_at"] == 1700000002 and type(shown["updated_at"]) is int
+    assert shown["created_by"] == "local@here"
+    stored = await backlog.store.task(task["id"])
+    assert stored and stored.created_at == 1700000000.4 and stored.updated_at == 1700000001.6
+    assert await resource(client, f"backlog://tasks/{task['id']}") == shown
+    project = (await call(client, "project_current"))["project"]
+    assert project["roots"] == [f"local@here:{backlog.cwd}"]
+    assert project["owner"] == "local@unknown"
+    assert type(project["created_at"]) is int and type(project["updated_at"]) is int
+    comment = await call(client, "task_comment_add", task_id=task["id"], body="Rounded")
+    assert comment["principal"] == "local@here" and type(comment["created_at"]) is int
+    memory = await call(client, "memory_save", title="A rule", body="A fact")
+    assert type(memory["created_at"]) is int and type(memory["updated_at"]) is int
+    await backlog.store.register("alice@example.org", "Alice")
+    shared = await call(client, "project_share", principal="alice%40example.org@laptop")
+    assert any(item["principal"] == "alice%40example.org@unknown" for item in shared["items"])
+
+
+async def test_initialize_includes_agent_workflow(client: BaseClient) -> None:
+    from backlog_mcp.server import INSTRUCTIONS
+
+    result = await client.initialize()
+    assert result["instructions"] == INSTRUCTIONS
+    for tool in ("project_current", "search", "task_comment_add", "memory_save"):
+        assert tool in result["instructions"]
+
+
+def test_attribution_strings_round_trip_and_schema() -> None:
+    from backlog_mcp.models import Actor, Attributed
+
+    actor = Actor(principal="alice@example.org", computer="laptop")
+    item = Attributed(created_by=actor, updated_by=actor)
+    encoded = item.model_dump(mode="json")
+    assert encoded == {
+        "created_by": "alice%40example.org@laptop",
+        "updated_by": "alice%40example.org@laptop",
+    }
+    assert Attributed.model_validate(encoded) == item
+    assert item.model_dump()["created_by"] == {
+        "principal": "alice@example.org",
+        "computer": "laptop",
+    }
+    assert Attributed().model_dump(mode="json") == {"created_by": None, "updated_by": None}
+    schema = Attributed.model_json_schema(mode="serialization")
+    for field in ("created_by", "updated_by"):
+        assert schema["properties"][field]["anyOf"] == [{"type": "string"}, {"type": "null"}]

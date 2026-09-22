@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from backlog_mcp import store
-from backlog_mcp.auth import basic_namespace
+from backlog_mcp.auth import user_identity
 from backlog_mcp.names import owner_name
 
 HEADING = re.compile(r"# UPDATE: (\d{4}-\d{2}-\d{2}(?:T| )\d{2}:\d{2}:\d{2}Z?)$")
@@ -105,7 +105,7 @@ def migrate(
     destination = destination.absolute()
     if destination.exists() or destination.is_symlink():
         raise ValueError("destination already exists; choose a new file")
-    principal = basic_namespace(user)
+    principal = user_identity(user)
     with closing(sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)) as original:
         original.row_factory = sqlite3.Row
         original.execute("BEGIN")
@@ -284,7 +284,10 @@ def main() -> int:
     parser.add_argument("source", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument(
-        "--user", required=True, help="Basic username that will own all imported projects"
+        "--user",
+        "--default-user",
+        default=os.environ.get("USER", ""),
+        help="Username that will own all imported projects (default: $USER)",
     )
     parser.add_argument(
         "--computer", default="unknown", help="Actor computer for old records without attribution"

@@ -15,7 +15,7 @@ from aiohttp_tiny_mcp.console import Console
 from aiohttp_tiny_mcp.storage.namespaces import namespace
 from aiohttp_tiny_mcp.storage.sqlite import SqliteStorage
 
-from .auth import BasicAuthentication, JWTAuthentication, basic_namespace
+from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, user_identity
 from .backlog import Backlog
 from .server import ACTIVE_REGISTRY, VERSION, persistent_registry, use
 
@@ -57,7 +57,14 @@ def bind(backlog: Backlog, configured: Registry | None = None) -> Middleware:
                 await backlog.store.register(
                     identity, principal.subject or principal.client_id or identity
                 )
-            use(backlog.view(computer=computer, project=project, principal=identity))
+            view = backlog.view(computer=computer, project=project, principal=identity)
+            if identity is not None:
+                jwt = any(
+                    isinstance(policy, JWTAuthentication) and result is principal
+                    for policy, result in request.get(VERIFIED, {}).items()
+                )
+                view.auth_type = "jwt" if jwt else "basic"
+            use(view)
             if configured is not None:
                 ACTIVE_REGISTRY.set(configured)
         except ValueError as error:
@@ -156,7 +163,7 @@ def application(
         await backlog.store.open()
         try:
             for user, _password in accounts:
-                await backlog.store.register(basic_namespace(user), user)
+                await backlog.store.register(user_identity(user), user)
             log.info("database %s", backlog.store.path)
             async for _ in storage.cleanup_ctx(app):
                 yield

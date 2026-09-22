@@ -62,6 +62,7 @@ def run(
     #: A fixed width keeps the tables and the panels off the width of whatever terminal runs this.
     for output in (render.console, render.errors):
         monkeypatch.setattr(output, "size", (120, 40))
+    monkeypatch.setenv("USER", "stdio-user")
     yield Runner(root, capsys)
 
 
@@ -117,12 +118,12 @@ def test_aliases_are_unique_and_show_the_same_help(capsys: pytest.CaptureFixture
 def test_add_list_search_and_close_one_task(run: Runner) -> None:
     code, output = run("task", "add", "Ship", "the", "release", "-t", "ops", "-t", "urgent-ish")
     assert code == 0
-    assert "added #1 to @local/workspace" in output
+    assert "added #1 to stdio-user/workspace" in output
     assert "ops, urgent-ish" in output
 
     code, output = run("task", "list")
     assert code == 0
-    assert "1 task(s) of @local/workspace" in output
+    assert "1 task(s) of stdio-user/workspace" in output
     assert "Ship the release" in output
 
     code, output = run("search", "rele")
@@ -263,7 +264,7 @@ def test_move_between_projects_and_count(run: Runner, tmp_path: Path) -> None:
     run("-r", str(second), "current")
     code, output = run("task", "move", "1", "second")
     assert code == 0
-    assert "#1 now belongs to @local/second" in output
+    assert "#1 now belongs to stdio-user/second" in output
     assert run("task", "list")[1].count("Travelling task") == 0
     assert "Travelling task" in run("--project", "second", "task", "list")[1]
     assert "2 open of 2" not in run("current")[1]
@@ -651,12 +652,12 @@ def test_note_group_prints_its_help_and_opens_nothing(run: Runner, command: str)
 def test_notes_add_replace_append_search_and_show(run: Runner) -> None:
     code, output = run("memory", "add", "dev", "vm", "-b", "host: vm-3.internal", "-t", "infra")
     assert code == 0
-    assert "added note #1 to @local/workspace" in output
+    assert "added note #1 to stdio-user/workspace" in output
     assert "vm-3.internal" in output
 
     code, output = run("memory", "add", "dev", "vm", "-b", "host: vm-4.internal")
     assert code == 0
-    assert "replaced note #1 in @local/workspace" in output
+    assert "replaced note #1 in stdio-user/workspace" in output
     assert "vm-3.internal" not in output
 
     code, output = run("memory", "append", "1", "port", "2222")
@@ -666,14 +667,14 @@ def test_notes_add_replace_append_search_and_show(run: Runner) -> None:
 
     code, output = run("memory", "list")
     assert code == 0
-    assert "1 note(s) of @local/workspace" in output
+    assert "1 note(s) of stdio-user/workspace" in output
     assert "dev vm" in output
 
     run("task", "add", "Move the vm, see note #1")
     code, output = run("search", "vm")
     assert code == 0
-    assert "1 task match(es) for 'vm' in @local/workspace" in output
-    assert "1 note match(es) for 'vm' in @local/workspace" in output
+    assert "1 task match(es) for 'vm' in stdio-user/workspace" in output
+    assert "1 note match(es) for 'vm' in stdio-user/workspace" in output
     #: The title column keeps the title; the excerpt with the hit is the `match` column.
     assert "dev vm" in output
     assert "[vm]" in output
@@ -695,7 +696,7 @@ def test_shared_notes_show_up_in_another_project(run: Runner, tmp_path: Path) ->
 
     code, output = run("memory", "list")
     assert code == 0
-    assert "1 note(s) of @local/workspace" in output
+    assert "1 note(s) of stdio-user/workspace" in output
     assert "staging" in output
     assert "private" not in output
     #: A note from another board says where it comes from, and that it is shared.
@@ -731,7 +732,7 @@ def test_project_delete_asks_unless_yes(
     assert "fixed for this client" in output
     assert run("projects", "delete", "other", "--yes") == (
         0,
-        "deleted project '@local/other': 1 task(s), 1 note(s)\n",
+        "deleted project 'stdio-user/other': 1 task(s), 1 note(s)\n",
     )
     assert "other" not in run("projects")[1]
     assert "0 task match(es)" in run("search", "Doomed", "--all-projects")[1]
@@ -904,7 +905,103 @@ def test_search_renders_projects_as_qualified_names(run: Runner) -> None:
     run("task", "add", "A task")
     code, output = run("search", "workspace", "--kind", "projects", "--all-computers")
     assert code == 0
-    assert "@local/workspace" in output
+    assert "stdio-user/workspace" in output
     assert "A task" not in output
     assert "1 project match(es)" in output
     assert "task match(es)" not in output
+
+
+def test_whoami_does_not_prompt_for_registration(
+    run: Runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> str:
+        pytest.fail("whoami must not ask to register a project")
+
+    monkeypatch.setattr(cli.Prompt, "ask", refuse)
+    code, output = run("whoami")
+    assert (
+        code == 0 and "stdio-user" in output and "principal" in output and "computer" not in output
+    )
+    assert run("wi") == (code, output)
+
+
+def test_stdio_default_user_override_and_isolation(run: Runner) -> None:
+    assert run("--default-user", "alice", "task", "add", "Private Alice")[0] == 0
+    code, output = run("--default-user", "alice", "whoami")
+    assert code == 0 and "alice" in output and "none" in output
+    code, output = run("--default-user", "bob", "task", "show", "1")
+    assert code == 1 and "no task #1" in output
+    assert "Private Alice" in run("--default-user", "alice", "task", "show", "1")[1]
+
+
+def test_stdio_requires_user_when_environment_is_missing(
+    run: Runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("USER")
+    code, output = run("whoami")
+    assert code != 0
+    assert "set --default-user" in output
+    assert run("--default-user", "explicit", "whoami")[0] == 0
+
+
+def test_server_default_user_without_authorizers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backlog_mcp.auth import user_identity
+
+    monkeypatch.setenv("USER", "environment-user")
+    for arguments, expected in (
+        ([], user_identity("environment-user")),
+        (["--default-user", "override"], user_identity("override")),
+        (["--protocol", "http"], user_identity("environment-user")),
+        (["--protocol", "http", "--default-user", "override"], user_identity("override")),
+        (["--protocol", "http", "--auth-basic", "alice:password"], "local"),
+        (["--protocol", "http", "--auth-jwt-pre-shared-key", "x" * 32], "local"),
+        (["--protocol", "http", "--auth-jwt-public-key", "/unused.pem"], "local"),
+    ):
+        parser = cli.CLI()
+        parser.parse_args(["--database", str(tmp_path / "unused.db"), "mcp", *arguments])
+        assert cli.build(parser).store.principal == expected
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        ["--auth-basic", "alice:password"],
+        ["--auth-jwt-pre-shared-key", "x" * 32],
+        ["--auth-jwt-public-key", "/unused.pem"],
+    ],
+)
+@pytest.mark.parametrize("global_option", [True, False])
+def test_http_rejects_default_user_with_authorizers(
+    tmp_path: Path, auth: list[str], global_option: bool
+) -> None:
+    parser = cli.CLI()
+    user = ["--default-user", "alice"]
+    parser.parse_args(
+        [
+            "--database",
+            str(tmp_path / "unused.db"),
+            *(user if global_option else []),
+            "mcp",
+            "--protocol",
+            "http",
+            *([] if global_option else user),
+            *auth,
+        ]
+    )
+    with pytest.raises(ValueError, match="cannot be combined"):
+        cli.build(parser)
+    assert not (tmp_path / "unused.db").exists()
+
+
+def test_root_output_parses_paths_with_colons() -> None:
+    from backlog_mcp.models import ProjectRootOut
+
+    root = ProjectRootOut(
+        principal="alice@example.org", computer="laptop", root="/work/project:copy"
+    )
+    assert root.model_dump(mode="json") == "alice%40example.org@laptop:/work/project:copy"
+    assert ProjectRootOut.model_validate(root.model_dump(mode="json")) == root
+    empty = ProjectRootOut.model_validate("alice@laptop:")
+    assert empty.root == ""

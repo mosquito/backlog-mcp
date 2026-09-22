@@ -1,6 +1,5 @@
 """Basic and JWT credentials verified against trusted server configuration."""
 
-import json
 from base64 import b64decode
 from dataclasses import replace
 
@@ -26,9 +25,15 @@ def decode_pair(token: str) -> tuple[str, str] | None:
 REALM = "backlog-mcp"
 
 
-def basic_namespace(username: str) -> str:
-    """A stable identity that cannot collide with a JWT identity."""
-    return json.dumps(["basic", username], ensure_ascii=True, separators=(",", ":"))
+def user_identity(username: str) -> str:
+    """A username identifies one account across supported authentication methods."""
+    if (
+        not username
+        or username != username.strip()
+        or any(ord(c) < 32 or ord(c) == 127 for c in username)
+    ):
+        raise ValueError("principal must be a non-empty username without control characters")
+    return username
 
 
 # Trusted request-local result from the pre-dispatch authentication middleware.
@@ -67,7 +72,7 @@ class BasicAuthentication(StaticBasicAuth):
             return None
         principal = await self.verify(*given)
         verified[self] = (
-            replace(principal, namespace=basic_namespace(given[0])) if principal else None
+            replace(principal, namespace=user_identity(given[0])) if principal else None
         )
         return verified[self]
 
@@ -85,16 +90,13 @@ class JWTAuthentication(Authentication):
             return verified[self]
         token = request_token(request, scheme="Bearer", query_parameter="token")
         principal = await self.verifier.verify(token) if token else None
-        if principal and (principal.subject or principal.client_id):
-            identity = [
-                "jwt",
-                principal.issuer or "",
-                "subject" if principal.subject else "client",
-                principal.subject or principal.client_id,
-            ]
-            verified[self] = replace(
-                principal, namespace=json.dumps(identity, ensure_ascii=True, separators=(",", ":"))
-            )
+        if principal and principal.subject:
+            try:
+                identity = user_identity(principal.subject)
+            except ValueError:
+                verified[self] = None
+            else:
+                verified[self] = replace(principal, namespace=identity)
         else:
             verified[self] = None
         return verified[self]

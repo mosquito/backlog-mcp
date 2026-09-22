@@ -26,6 +26,7 @@ from rich.prompt import Confirm, Prompt
 
 from . import computer as computer_names
 from . import embeddings, httpd, paths, skills
+from .auth import user_identity
 from .backlog import Backlog, UnknownProject, slugify
 from .client import Connection, Registration, ToolError, bind_directory, connect, directory_project
 from .models import (
@@ -36,6 +37,7 @@ from .models import (
     Event,
     FullNotes,
     FullTasks,
+    Identity,
     NoteOut,
     Priority,
     ProjectDeleted,
@@ -50,6 +52,7 @@ from .models import (
 from .models import (
     Stats as StatsOut,
 )
+from .names import default_user, principal_label
 from .render import (
     comment_panel,
     comments_table,
@@ -57,6 +60,7 @@ from .render import (
     errors,
     event_line,
     fail,
+    fields,
     note,
     note_panel,
     notes_table,
@@ -157,7 +161,22 @@ def build(options: CLI) -> Backlog:
     """The backlog the global options describe."""
     state = State(options.state or paths.state_path())
     computer = state.computer_name(options.computer)
-    store = Store(options.database or paths.database_path(), computer=computer)
+    principal = "local"
+    auth = options.mcp.auth
+    authorized_http = options.mcp.protocol == "http" and (
+        auth.basic or auth.jwt.public_key or auth.jwt.pre_shared_key
+    )
+    configured_user = (
+        options.mcp.default_user_override
+        if options.mcp.default_user_override is not None
+        else options.default_user
+    )
+    if authorized_http and configured_user is not None:
+        raise ValueError("HTTP --default-user cannot be combined with authentication")
+    if not authorized_http:
+        username = default_user(configured_user)
+        principal = user_identity(username)
+    store = Store(options.database or paths.database_path(), computer=computer, principal=principal)
     return Backlog(store, state, cwd=options.root, project=options.project, computer=computer)
 
 
@@ -429,6 +448,12 @@ class Serve(Command):
         choices=("stdio", "http"),
         help="stdio speaks MCP on stdin and stdout; http serves the endpoint and the console",
     )
+    default_user_override: str | None = argclass.Argument(
+        "--default-user",
+        default=None,
+        type=str,
+        help="Username for stdio or HTTP without authorizers (default: global option, then $USER)",
+    )
     http = HTTPOptions(title="HTTP transport")
     auth = AuthOptions(title="HTTP authentication")
     generate_config: str = argclass.Argument(
@@ -479,6 +504,23 @@ class Serve(Command):
                 )
             case _:
                 await self.stdio()
+        return 0
+
+
+class Whoami(Command):
+    """Show the identity used by this connection without registering a project."""
+
+    async def __call__(self) -> int:
+        identity = await self.connection.call(Identity, "whoami")
+        console.print(
+            fields(
+                [
+                    ("principal", principal_label(identity.principal, identity.computer)),
+                    ("auth_type", identity.auth_type),
+                    ("handle", identity.handle),
+                ]
+            )
+        )
         return 0
 
 
@@ -1580,6 +1622,11 @@ class CLI(argclass.Parser):
     token: str = argclass.Secret(
         "--token", default="", help="MCP HTTP Bearer token; mutually exclusive with Basic auth"
     )
+    default_user: str | None = argclass.Argument(
+        default=None,
+        type=str,
+        help="Default username for stdio or HTTP without authorizers (default: $USER)",
+    )
     timeout: float = argclass.Argument(default=120.0, help="MCP request timeout in seconds")
 
     database: Path = argclass.Argument(
@@ -1652,6 +1699,7 @@ class CLI(argclass.Parser):
         config_argument="--config",
         config_parser_class=argclass.TOMLDefaultsParser,
     )
+    whoami = Whoami(aliases=["wi"], help="Show the current principal and computer")
     current = Current(
         aliases=["cu"],
         help="Show which project the commands work on",

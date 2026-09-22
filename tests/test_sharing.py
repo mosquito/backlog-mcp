@@ -11,7 +11,7 @@ from test_events import call, collect
 from test_tenants import account
 
 from backlog_mcp import embeddings, httpd
-from backlog_mcp.auth import basic_namespace
+from backlog_mcp.auth import user_identity
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 from backlog_mcp.store import Store
@@ -20,9 +20,9 @@ from backlog_mcp.store import Store
 async def test_project_access_and_search_candidates(backlog: Backlog) -> None:
     base = backlog.store
     for user in ("alice", "bob", "eve"):
-        await base.register(basic_namespace(user), user)
-    alice = base.view(principal=basic_namespace("alice"), computer="same")
-    bob = base.view(principal=basic_namespace("bob"), computer="same")
+        await base.register(user_identity(user), user)
+    alice = base.view(principal=user_identity("alice"), computer="same")
+    bob = base.view(principal=user_identity("bob"), computer="same")
     private = await alice.add_project(slug="private", name="Private", root="/work", computer="same")
     shared = await alice.add_project(slug="shared", name="Shared", root="", computer="same")
     hidden = await alice.add_task(project_id=private.id, title="needle " * 10)
@@ -69,13 +69,20 @@ async def test_project_access_and_search_candidates(backlog: Backlog) -> None:
         bob.delete_note(visible_note.id),
         bob.update_project(shared.id, description="Forbidden"),
         bob.delete_project(shared.id),
-        bob.share(shared.id, basic_namespace("eve"), "editor"),
+        bob.share(shared.id, user_identity("eve"), "editor"),
     ):
         with pytest.raises(PermissionError):
             await mutation
     await bob.add_root(shared.id, computer="same", root="/work")
     assert (await bob.roots(shared.id))[0].root == "/work"
     assert await alice.roots(shared.id) != await bob.roots(shared.id)
+    from backlog_mcp.server import project_out
+
+    viewed = await bob.project(shared.id)
+    assert viewed is not None
+    output = project_out(viewed, computer="same", principal=bob.principal).model_dump(mode="json")
+    assert output["roots"] == ["bob@same:/work"]
+    assert output["owner"] == "alice@unknown"
 
     await alice.share(shared.id, bob.principal, "editor")
     await bob.update_task(visible.id, status=Status.DOING)
@@ -102,7 +109,7 @@ async def test_sharing_tools_and_member_notifications(backlog: Backlog) -> None:
             alice, "project_share", project=project["slug"], principal="bob", role="reader"
         )
         assert {m["role"] for m in members["items"]} == {"owner", "reader"}
-        assert (await call(bob, "project_current"))["principal"] == basic_namespace("bob")
+        assert (await call(bob, "project_current"))["principal"] == f"bob@{backlog.computer}"
         assert (await call(bob, "project_list", all_computers=True))["items"][0]["role"] == "reader"
         denied = await bob.call_tool("task_add", {"project": project["slug"], "title": "No"})
         assert denied.is_error
@@ -114,15 +121,15 @@ async def test_sharing_tools_and_member_notifications(backlog: Backlog) -> None:
                     await asyncio.sleep(0.01)
             task = await call(alice, "task_add", project=project["slug"], title="Together")
             event = (await asyncio.wait_for(frames.get(), 5))["params"]["_meta"]["backlog/event"]
-            assert event["principal"] == basic_namespace("alice")
+            assert event["principal"] == f"alice@{backlog.computer}"
             assert event["project_id"] == project["id"]
             assert (await call(bob, "task_get", id=task["id"]))["title"] == "Together"
         finally:
             collecting.cancel()
             await asyncio.gather(collecting, return_exceptions=True)
         comment = await call(alice, "task_comment_add", task_id=task["id"], body="Written by Alice")
-        assert comment["principal"] == basic_namespace("alice")
-        assert comment["computer"] == backlog.computer
+        assert comment["principal"] == f"alice@{backlog.computer}"
+        assert "computer" not in comment
         tables = await backlog.store.rows("SELECT name FROM sqlite_master WHERE type='table'")
         assert {"mcp_sessions", "mcp_events", "projects"} <= {row[0] for row in tables}
 
@@ -144,8 +151,8 @@ async def test_old_database_is_refused_and_left_intact(tmp_path: Path) -> None:
 
 async def test_same_slugs_are_private_and_shared_ids_are_unambiguous(backlog: Backlog) -> None:
     alice = backlog.store
-    await alice.register(basic_namespace("bob"), "bob")
-    bob = alice.view(principal=basic_namespace("bob"))
+    await alice.register(user_identity("bob"), "bob")
+    bob = alice.view(principal=user_identity("bob"))
     first = await alice.add_project(slug="same", name="A", root="", computer="here")
     second = await bob.add_project(slug="same", name="B", root="", computer="here")
     assert (await alice.project_by_slug("same")).id == first.id
@@ -188,10 +195,10 @@ async def test_qualified_names_resolve_shared_projects_without_exposing_private_
 
 
 async def test_shared_names_do_not_reserve_the_recipients_own_slug(backlog: Backlog) -> None:
-    await backlog.store.register(basic_namespace("alice"), "alice")
-    await backlog.store.register(basic_namespace("bob"), "bob")
-    alice = backlog.view(principal=basic_namespace("alice"))
-    bob = backlog.view(principal=basic_namespace("bob"))
+    await backlog.store.register(user_identity("alice"), "alice")
+    await backlog.store.register(user_identity("bob"), "bob")
+    alice = backlog.view(principal=user_identity("alice"))
+    bob = backlog.view(principal=user_identity("bob"))
     first = await alice.create("", name="Foo")
     await alice.store.share(first.id, bob.store.principal, "reader")
     own = await bob.create("", name="Foo")
@@ -203,19 +210,17 @@ async def test_shared_names_do_not_reserve_the_recipients_own_slug(backlog: Back
 
 
 async def test_owner_handles_are_stable_and_do_not_collide(backlog: Backlog) -> None:
-    import json
-
     from backlog_mcp.names import owner_name
 
     identities = [
-        basic_namespace("alice"),
-        basic_namespace("a/b"),
-        basic_namespace("a%2Fb"),
-        basic_namespace("@local"),
-        basic_namespace(".."),
-        '["local"]',
-        json.dumps(["jwt", "issuer-one", "subject", "alice"]),
-        json.dumps(["jwt", "issuer-two", "subject", "alice"]),
+        user_identity("alice"),
+        user_identity("a/b"),
+        user_identity("a%2Fb"),
+        user_identity("@local"),
+        user_identity(".."),
+        "local",
+        user_identity("~alice"),
+        user_identity("alice@example.org"),
     ]
     handles = [owner_name(identity) for identity in identities]
     assert len(set(handles)) == len(identities)
@@ -232,9 +237,9 @@ async def test_owner_handles_are_stable_and_do_not_collide(backlog: Backlog) -> 
 
 async def test_project_search_filters_acl_scope_and_archived_before_limit(backlog: Backlog) -> None:
     for user in ("alice", "bob"):
-        await backlog.store.register(basic_namespace(user), user)
-    alice = backlog.store.view(principal=basic_namespace("alice"), computer="same")
-    bob = backlog.store.view(principal=basic_namespace("bob"), computer="same")
+        await backlog.store.register(user_identity(user), user)
+    alice = backlog.store.view(principal=user_identity("alice"), computer="same")
+    bob = backlog.store.view(principal=user_identity("bob"), computer="same")
     hidden = await alice.add_project(slug="hidden", name="Needle " * 10, root="", computer="same")
     visible = await alice.add_project(slug="visible", name="Needle", root="", computer="same")
     archived = await alice.add_project(slug="archived", name="Needle", root="", computer="same")

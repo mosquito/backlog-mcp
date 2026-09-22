@@ -12,7 +12,7 @@ from aiohttp.test_utils import TestServer
 
 from backlog_mcp import cli
 from backlog_mcp import client as transport
-from backlog_mcp.auth import basic_namespace
+from backlog_mcp.auth import user_identity
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 
@@ -70,7 +70,7 @@ async def remote(
 
     monkeypatch.setattr(cli, "build", forbidden)
     # Assertions inspect storage as the authenticated client, not the local principal.
-    backlog.store.principal = basic_namespace("tester")
+    backlog.store.principal = user_identity("tester")
     async with TestServer(
         cli.httpd.application(
             backlog,
@@ -346,10 +346,10 @@ async def test_qualified_project_names_are_not_normalized_as_paths(
     remote: RemoteRunner,
     backlog: Backlog,
 ) -> None:
-    await backlog.store.register(basic_namespace("alice"), "alice")
-    alice = backlog.view(principal=basic_namespace("alice"))
+    await backlog.store.register(user_identity("alice"), "alice")
+    alice = backlog.view(principal=user_identity("alice"))
     shared = await alice.create("", name="Foo")
-    await alice.store.share(shared.id, basic_namespace("tester"), "editor")
+    await alice.store.share(shared.id, user_identity("tester"), "editor")
     code, output = await remote("init", "Foo")
     assert code == 0, output
     own = await backlog.store.project_by_slug("tester/foo")
@@ -364,3 +364,8 @@ async def test_qualified_project_names_are_not_normalized_as_paths(
     assert code != 0 and "ambiguous project" in output
     code, output = await remote("init", "--existing", "foo")
     assert code != 0 and "ambiguous project" in output
+
+
+async def test_remote_whoami(remote: RemoteRunner) -> None:
+    code, output = await remote("whoami")
+    assert code == 0 and "tester" in output and "principal" in output and "computer" not in output

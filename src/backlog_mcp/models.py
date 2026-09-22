@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Any, Literal
+from urllib.parse import unquote
 
-from pydantic import BaseModel, Field
+from pydantic import (
+    BaseModel,
+    Field,
+    PlainSerializer,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
+
+from .names import principal_label
+
+Seconds = Annotated[float, PlainSerializer(round, return_type=int, when_used="json")]
 
 
 class Status(StrEnum):
@@ -49,19 +64,110 @@ class Origin(StrEnum):
     NONE = "none"
 
 
+def principal_schema(schema: dict[str, Any]) -> None:
+    properties = schema.get("properties", {})
+    if "computers" in properties:
+        properties["principals"] = {"type": "array", "items": {"type": "string"}}
+    if "this_computer" in properties:
+        properties["this_principal"] = {"type": "string"}
+    for key in ("computer", "computers", "this_computer"):
+        schema.get("properties", {}).pop(key, None)
+        if key in schema.get("required", []):
+            schema["required"].remove(key)
+
+
 class Actor(BaseModel):
+    model_config = {"json_schema_extra": principal_schema}
+
     principal: str
-    computer: str
+    computer: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_principal(cls, value: Any) -> Any:
+        if (
+            isinstance(value, dict)
+            and "computer" not in value
+            and "@" in value.get("principal", "")
+        ):
+            value = dict(value)
+            user, _, computer = value["principal"].rpartition("@")
+            value["principal"] = unquote(user)
+            value["computer"] = (
+                None
+                if computer == "unknown" and cls.model_fields["computer"].annotation is not str
+                else unquote(computer)
+            )
+            if "principals" in value:
+                value["computers"] = [
+                    unquote(item.rpartition("@")[2]) for item in value["principals"]
+                ]
+            if "this_principal" in value:
+                value["this_computer"] = unquote(value["this_principal"].rpartition("@")[2])
+        return value
+
+    @model_serializer(mode="wrap")
+    # No return annotation: preserve the model schema for the wrapping serializer.
+    def actor_output(  # type: ignore[no-untyped-def]
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ):
+        output: dict[str, Any] = handler(self)
+        if info.mode == "json":
+            output["principal"] = principal_label(self.principal, self.computer)
+            output.pop("computer", None)
+            if "computers" in output:
+                output["principals"] = [
+                    principal_label(self.principal, item) for item in output.pop("computers")
+                ]
+            if "this_computer" in output:
+                output["this_principal"] = principal_label(
+                    self.principal, output.pop("this_computer")
+                )
+        return output
+
+
+class Identity(Actor):
+    auth_type: Literal["basic", "jwt", "none"] = Field(
+        description="Authentication used by this connection."
+    )
+    handle: str = Field(description="Owner handle used in qualified project names.")
 
 
 class Attributed(BaseModel):
     created_by: Actor | None = None
     updated_by: Actor | None = None
 
+    @field_serializer("created_by", "updated_by", when_used="json")
+    def actor_text(self, value: Actor | None) -> str | None:
+        return principal_label(value.principal, value.computer) if value is not None else None
+
+    @field_validator("created_by", "updated_by", mode="before")
+    @classmethod
+    def parse_actor(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return Actor.model_validate({"principal": value})
+        return value
+
 
 class ProjectRootOut(BaseModel):
+    principal: str = Field(description="User this binding belongs to.")
     computer: str = Field(description="Computer this binding belongs to.")
     root: str = Field(description="Root directory; empty when the project has no files here.")
+
+    @model_serializer(when_used="json")
+    def root_text(self) -> str:
+        return f"{principal_label(self.principal, self.computer)}:{self.root}"
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_root(cls, value: object) -> object:
+        if isinstance(value, str):
+            actor, separator, root = value.partition(":")
+            principal, at, computer = actor.rpartition("@")
+            if not separator or not at or not principal or not computer:
+                raise ValueError("root must use user@computer:path format")
+            return {"principal": unquote(principal), "computer": unquote(computer), "root": root}
+        return value
 
 
 class ProjectOut(Attributed):
@@ -73,6 +179,11 @@ class ProjectOut(Attributed):
     name: str
     owner: str
     role: str
+
+    @field_serializer("owner", when_used="json")
+    def owner_text(self, value: str) -> str:
+        return principal_label(value)
+
     roots: list[ProjectRootOut] = Field(default_factory=list)
     here: bool = Field(
         description=("True when this computer has a non-empty filesystem binding for the project.")
@@ -85,22 +196,20 @@ class ProjectOut(Attributed):
     archived: bool = False
     open_tasks: int = 0
     total_tasks: int = 0
-    created_at: float
-    updated_at: float
+    created_at: Seconds
+    updated_at: Seconds
 
 
-class CommentOut(BaseModel):
-    principal: str
-    computer: str
+class CommentOut(Actor):
     id: int = Field(description="Stable comment id.")
     task_id: int
     project: str
     body: str
     kind: Literal["comment", "status", "move"] = "comment"
-    created_at: float
+    created_at: Seconds
 
 
-class Comments(BaseModel):
+class Comments(Actor):
     items: list[CommentOut]
     task_id: int
     count: int = Field(description="Total number of comments and history entries.")
@@ -114,8 +223,8 @@ class TaskOut(Attributed):
     status: Status
     priority: Priority
     tags: list[str] = Field(default_factory=list)
-    created_at: float
-    updated_at: float
+    created_at: Seconds
+    updated_at: Seconds
     closed_at: float | None = None
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
@@ -133,8 +242,8 @@ class TaskListItem(Attributed):
     status: Status
     priority: Priority
     tags: list[str] = Field(default_factory=list)
-    created_at: float
-    updated_at: float
+    created_at: Seconds
+    updated_at: Seconds
     closed_at: float | None = None
     snippet: str = Field(
         description="First meaningful body paragraph, shortened to 150 characters."
@@ -153,8 +262,8 @@ class NoteOut(Attributed):
         default=False,
         description="Visible across accessible projects; source-project membership is required.",
     )
-    created_at: float
-    updated_at: float
+    created_at: Seconds
+    updated_at: Seconds
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
 
@@ -169,14 +278,14 @@ class NoteListItem(Attributed):
         default=False,
         description="Visible across accessible projects; source-project membership is required.",
     )
-    created_at: float
-    updated_at: float
+    created_at: Seconds
+    updated_at: Seconds
     snippet: str = Field(
         description="First meaningful body paragraph, shortened to 150 characters."
     )
 
 
-class Projects(BaseModel):
+class Projects(Actor):
     items: list[ProjectOut]
     count: int
 
@@ -185,7 +294,7 @@ class Projects(BaseModel):
 COVERED = "Computer of the project or computer covered, absent when every computer."
 
 
-class Tasks(BaseModel):
+class Tasks(Actor):
     items: list[TaskListItem]
     count: int
     project: str | None = Field(
@@ -194,7 +303,7 @@ class Tasks(BaseModel):
     computer: str | None = Field(default=None, description=COVERED)
 
 
-class Notes(BaseModel):
+class Notes(Actor):
     items: list[NoteListItem]
     count: int
     project: str | None = Field(
@@ -203,7 +312,7 @@ class Notes(BaseModel):
     computer: str | None = Field(default=None, description=COVERED)
 
 
-class FullTasks(BaseModel):
+class FullTasks(Actor):
     """Task listing with complete task bodies."""
 
     items: list[TaskOut]
@@ -214,7 +323,7 @@ class FullTasks(BaseModel):
     computer: str | None = Field(default=None, description=COVERED)
 
 
-class FullNotes(BaseModel):
+class FullNotes(Actor):
     """Note listing with complete note bodies."""
 
     items: list[NoteOut]
@@ -225,8 +334,8 @@ class FullNotes(BaseModel):
     computer: str | None = Field(default=None, description=COVERED)
 
 
-class Scope(BaseModel):
-    principal: str = '["local"]'
+class Scope(Actor):
+    principal: str = "local"
     """The project the tools work on when no project is named, and the computer this is."""
 
     project: ProjectOut | None = Field(
@@ -252,7 +361,7 @@ class Scope(BaseModel):
     )
 
 
-class Stats(BaseModel):
+class Stats(Actor):
     project: str | None = None
     computer: str | None = Field(default=None, description=COVERED)
     this_computer: str = Field(description="Computer this session works from.")
@@ -265,14 +374,14 @@ class Stats(BaseModel):
     memory: int = Field(default=0, description="Notes in scope, including shared notes.")
 
 
-class Deleted(BaseModel):
+class Deleted(Actor):
     id: int
     title: str
     deleted: bool
     detail: str = ""
 
 
-class ProjectDeleted(BaseModel):
+class ProjectDeleted(Actor):
     """What `project_delete` found on the board, and whether the project is gone."""
 
     id: int
@@ -327,13 +436,13 @@ class Action(StrEnum):
     DELETED = "deleted"
 
 
-class Event(BaseModel):
+class Event(Actor):
     """What a write did.
 
     Travels in `_meta["backlog/event"]` of each `notifications/resources/updated`.
     """
 
-    principal: str | None = None
+    principal: str
     project_id: int | None = None
     kind: Kind
     action: Action

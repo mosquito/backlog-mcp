@@ -11,6 +11,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 
 from backlog_mcp import cli
+from backlog_mcp.auth import user_identity
 from backlog_mcp.backlog import Backlog
 
 
@@ -62,6 +63,8 @@ async def registration(
         async with TestServer(cli.httpd.application(backlog, console=False)) as server:
             yield RegistrationRunner(backlog, root, str(server.make_url("/mcp")), capsys)
     else:
+        monkeypatch.setenv("USER", "stdio-user")
+        backlog.store.principal = user_identity("stdio-user")
         yield RegistrationRunner(backlog, root, "", capsys)
 
 

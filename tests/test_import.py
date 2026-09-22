@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from backlog_mcp.auth import basic_namespace
+from backlog_mcp.auth import user_identity
 from backlog_mcp.store import Store
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "migrate_db_from_0.1.py"
@@ -50,7 +50,7 @@ async def test_import_preserves_records_and_assigns_owner(source: Path, tmp_path
     assert counts == {"projects": 1, "tasks": 1, "memory": 1, "comments": 1}
     assert source.read_bytes() == original
     store = Store(target)
-    alice = store.view(principal=basic_namespace("alice"), computer="old-host")
+    alice = store.view(principal=user_identity("alice"), computer="old-host")
     try:
         project = await alice.project(7)
         assert project and project.full_name == "alice/infra" and project.role == "owner"
@@ -64,7 +64,7 @@ async def test_import_preserves_records_and_assigns_owner(source: Path, tmp_path
         assert [item.id for item in await alice.comments(query="needle")] == [9]
         assert [item.id for item in await alice.search_projects("orchestration")] == [7]
         assert (await alice.add_task(project_id=7, title="Next")).id == 100
-        bob = store.view(principal=basic_namespace("bob"), computer="old-host")
+        bob = store.view(principal=user_identity("bob"), computer="old-host")
         assert await bob.projects() == []
         assert await bob.search("needle") == []
         assert await bob.search_notes("needle") == []
@@ -130,7 +130,7 @@ async def test_import_extracts_updates_and_preserves_existing_comment_ids(
     assert counts["comments"] == 3
     assert source.read_bytes() == original
     store = Store(target)
-    alice = store.view(principal=basic_namespace("alice"), computer="unknown")
+    alice = store.view(principal=user_identity("alice"), computer="unknown")
     try:
         task = await alice.task(12)
         assert task and task.body.endswith("Example\n```\n") and task.updated_at == 22
@@ -176,3 +176,44 @@ def test_equal_or_out_of_order_dates_keep_text_and_original_dates() -> None:
     assert not ambiguous and description == ""
     assert [entry[0] for entry in entries] == ["Later\n", "Earlier\n", "Same\n"]
     assert entries[0][1] > entries[1][1] == entries[2][1]
+
+
+@pytest.mark.parametrize(
+    "arguments,owner",
+    [
+        ([], "environment-user"),
+        (["--user", "explicit"], "explicit"),
+        (["--default-user", "override"], "override"),
+    ],
+)
+def test_import_command_defaults_to_user(
+    source: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    owner: str,
+) -> None:
+    import sys
+
+    destination = tmp_path / "result.sqlite3"
+    monkeypatch.setenv("USER", "environment-user")
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(source), str(destination), *arguments])
+    assert migration.main() == 0
+    with sqlite3.connect(destination) as connection:
+        assert connection.execute("SELECT DISTINCT owner FROM projects").fetchall() == [
+            (user_identity(owner),)
+        ]
+
+
+def test_import_command_requires_user_if_environment_is_missing(
+    source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    destination = tmp_path / "result.sqlite3"
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), str(source), str(destination)])
+    with pytest.raises(SystemExit) as failure:
+        migration.main()
+    assert failure.value.code == 1
+    assert not destination.exists()

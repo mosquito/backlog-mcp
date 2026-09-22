@@ -92,7 +92,7 @@ async def test_project_for_path_takes_the_deepest_root(store: Store, tmp_path: P
     assert await store.project_by_root(tmp_path / "inner", computer="here") == inner
     assert await store.project_by_root(tmp_path / "inner", computer="elsewhere") is None
     assert await store.project_by_slug("missing") is None
-    assert await store.slugs() == ["@local/inner", "@local/outer"]
+    assert await store.slugs() == ["local/inner", "local/outer"]
 
 
 async def test_archiving_hides_a_project_from_the_default_listing(store: Store) -> None:
@@ -192,7 +192,7 @@ async def test_notes_are_saved_by_title_appended_and_deleted(store: Store) -> No
     )
     assert saved.tags == ["infra"]
     assert saved.shared is False
-    assert saved.project == "@local/one"
+    assert saved.project == "local/one"
     assert await store.note_by_title("dev vm", project_id=project.id) == saved
     assert await store.note_by_title("dev vm", project_id=project.id + 1) is None
     #: One note per title per project, so "save" always has one target.

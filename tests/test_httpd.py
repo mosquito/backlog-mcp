@@ -11,7 +11,7 @@ from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextRe
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
 
-from backlog_mcp.auth import basic_namespace, credentials
+from backlog_mcp.auth import credentials, user_identity
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import CONSOLE_PATH, ENDPOINT_PATH, application
 from backlog_mcp.server import ACTIVE
@@ -78,7 +78,7 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
     assert backlog.store.connection is None
     # Reopening preserves data and still requires the authenticated principal.
     assert await backlog.store.task(task["id"]) is None
-    stored = await backlog.store.view(principal=basic_namespace("user")).task(task["id"])
+    stored = await backlog.store.view(principal=user_identity("user")).task(task["id"])
     assert stored is not None
     assert stored.title == "Over HTTP"
 
@@ -92,20 +92,20 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
         async with Client(fixed, pick(None)) as client:
             await client.initialize()
             scope = payload(await client.call_tool("project_current", {}))
-            assert scope["computer"] == "laptop"
+            assert scope["principal"] == "local@laptop"
             assert scope["origin"] == "argument"
             assert scope["project"]["slug"] == "app"
             assert scope["project"]["here"] is True
             task = payload(await client.call_tool("task_add", {"title": "From the laptop"}))
-            assert task["project"] == "@local/app"
+            assert task["project"] == "local/app"
         async with Client(str(endpoint.with_query(computer="laptop")), pick(None)) as client:
             await client.initialize()
             #: No project chosen is a state, not an error.
             scope = payload(await client.call_tool("project_current", {}))
-            assert (scope["project"], scope["origin"], scope["computer"]) == (
+            assert (scope["project"], scope["origin"], scope["principal"]) == (
                 None,
                 "none",
-                "laptop",
+                "local@laptop",
             )
             result = await client.call_tool("task_add", {"title": "Nowhere"})
             assert isinstance(result, CallToolResult) and result.is_error
@@ -114,7 +114,7 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
         async with Client(str(endpoint), pick(None)) as client:
             await client.initialize()
             scope = payload(await client.call_tool("project_current", {}))
-            assert scope["computer"] == "here"
+            assert scope["principal"] == "local@here"
             assert scope["project"]["here"] is True
             listed = payload(await client.call_tool("project_list", {"all_computers": True}))
             assert {item["slug"]: item["here"] for item in listed["items"]}["app"] is False
@@ -193,7 +193,7 @@ async def test_http_binding_uses_application_backlog(backlog: Backlog) -> None:
             result = await client.read_resource("backlog://project")
             assert isinstance(result.contents[0], TextResourceContents)
             assert json.loads(result.contents[0].text)["project"]["roots"] == [
-                {"computer": "here", "root": str(backlog.cwd)}
+                f"local@here:{backlog.cwd}"
             ]
     finally:
         ACTIVE.reset(token)
