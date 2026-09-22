@@ -351,6 +351,7 @@ class Store:
                 connection = await aiosqlite.connect(str(self.path))
                 connection.row_factory = aiosqlite.Row
                 try:
+                    await connection.execute("PRAGMA busy_timeout=5000")
                     await connection.execute("PRAGMA foreign_keys=ON")
                     await migrate(connection)
                     # Switching journal mode can return BUSY immediately when another startup
