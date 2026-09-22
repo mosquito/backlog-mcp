@@ -727,6 +727,9 @@ Pending migrations are the set difference of `(path, SHA-256)` pairs, sorted by 
 Applied files are not run again. A changed checksum or missing applied file stops startup.
 Add a new numbered file for each subsequent schema change.
 
+INFO logs report the pending count, including `0 migrations needed`, and each file being
+applied. Success is logged only after commit. Failures and transaction rollback are logged.
+
 `0001-initial.sql` creates the complete schema with `IF NOT EXISTS`. It also registers an
 existing 0.2 database without replacing its records. No manual task-links upgrade is needed.
 The SQL files contain no transaction commands: the migrator applies pending statements and

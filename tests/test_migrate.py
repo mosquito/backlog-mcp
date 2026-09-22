@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sqlite3
 import threading
 from hashlib import sha256
@@ -149,3 +150,41 @@ async def test_candidates_are_collected_on_a_worker_thread(
         await migrate(connection)
     assert len(seen) == 1 and isinstance(seen[0], dict)
     assert list(seen[0]) == [MIGRATIONS / "0001-initial.sql"]
+
+
+async def test_migration_logs_include_commit_and_no_work(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.INFO, logger="backlog_mcp.migrate")
+    async with aiosqlite.connect(":memory:") as connection:
+        await migrate(connection)
+        assert "1 migrations needed" in caplog.messages
+        assert "Applying migration 0001-initial.sql" in caplog.messages
+        assert any(
+            message.startswith("Applied migration 0001-initial.sql (sha256=")
+            for message in caplog.messages
+        )
+        caplog.clear()
+        await migrate(connection)
+        assert caplog.messages == ["0 migrations needed"]
+
+
+async def test_failed_batch_never_logs_applied_migrations(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="backlog_mcp.migrate")
+    (tmp_path / "0001-initial.sql").write_bytes((MIGRATIONS / "0001-initial.sql").read_bytes())
+    (tmp_path / "0002-failure.sql").write_text("INSERT INTO missing VALUES (1);")
+    async with aiosqlite.connect(":memory:") as connection:
+        with pytest.raises(sqlite3.OperationalError):
+            await migrate(connection, tmp_path)
+        assert "2 migrations needed" in caplog.messages
+        assert "Applying migration 0001-initial.sql" in caplog.messages
+        assert "Applying migration 0002-failure.sql" in caplog.messages
+        assert any("0002-failure.sql; rolling back" in message for message in caplog.messages)
+        assert "Migration transaction rolled back" in caplog.messages
+        assert not any(message.startswith("Applied migration") for message in caplog.messages)
+        assert (
+            await connection.execute_fetchall(
+                "SELECT 1 FROM sqlite_master WHERE name = 'migrations'"
+            )
+            == []
+        )

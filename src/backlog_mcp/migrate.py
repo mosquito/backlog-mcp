@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import sqlite3
 import time
@@ -13,6 +14,7 @@ import aiosqlite
 
 MIGRATIONS = Path(__file__).with_name("migrations")
 APPLICATION_ID = 1112296275
+log = logging.getLogger(__name__)
 
 
 def candidates(directory: Path) -> dict[Path, str]:
@@ -37,8 +39,9 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
     SQL files contain statements, without BEGIN/COMMIT. complete_statement preserves trigger
     bodies and quoted semicolons; executescript would implicitly commit an existing transaction.
     """
-    await connection.execute("BEGIN IMMEDIATE")
+    current = "migration setup"
     try:
+        await connection.execute("BEGIN IMMEDIATE")
         async with connection.execute("PRAGMA application_id") as cursor:
             row = await cursor.fetchone()
         assert row is not None
@@ -65,7 +68,10 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
         changed = {path for path, _ in pending} & applied.keys()
         if changed:
             raise ValueError(f"applied migration SHA-256 changed: {min(changed).name}")
+        log.info("%d migrations needed", len(pending))
         for path, checksum in sorted(pending):
+            current = path.name
+            log.info("Applying migration %s", path.name)
             content = await asyncio.to_thread(path.read_bytes)
             if sha256(content).hexdigest() != checksum:
                 raise ValueError(f"migration changed after discovery: {path.name}")
@@ -81,7 +87,12 @@ async def migrate(connection: aiosqlite.Connection, directory: Path = MIGRATIONS
                 "INSERT INTO migrations(filename, sha256, applied_at) VALUES (?, ?, ?)",
                 (path.name, checksum, time.time()),
             )
+        current = "migration commit"
         await connection.commit()
     except BaseException:
+        log.exception("Migration failed during %s; rolling back", current)
         await connection.rollback()
+        log.warning("Migration transaction rolled back")
         raise
+    for path, checksum in sorted(pending):
+        log.info("Applied migration %s (sha256=%s)", path.name, checksum)
