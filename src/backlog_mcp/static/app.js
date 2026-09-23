@@ -1035,7 +1035,18 @@ query.setAttribute("aria-controls", "search-results");
 query.setAttribute("aria-expanded", "false");
 results.setAttribute("role", "listbox");
 results.setAttribute("aria-label", "Search results");
+let renderedSearchKey = null;
+let searchPosition = null;
+function rememberSearchPosition() {
+  if (!dialog.open || !renderedSearchKey) return;
+  const active = results.querySelectorAll("a")[selectedResult];
+  searchPosition = {
+    key: renderedSearchKey, id: active?.id, scroll: results.scrollTop,
+  };
+}
+results.addEventListener("scroll", rememberSearchPosition);
 function searchState(text, loading = false) {
+  renderedSearchKey = null;
   results.replaceChildren(el("p", { class: "search-state", role: "status" }, text));
   query.removeAttribute("aria-activedescendant");
   query.setAttribute("aria-expanded", "false");
@@ -1123,6 +1134,8 @@ async function search() {
     else if (searchScope.value === "current") args.all_projects = true;
     else if (searchScope.value === "computer") args.computer = searchComputer.value.trim();
     else args.all_computers = true;
+    const key = JSON.stringify([endpoint, identity.principal, args]);
+    const position = searchPosition?.key === key ? searchPosition : null;
     const found = await call("search", args);
     if (current !== searchGeneration || !identity || !dialog.open) return;
     query.setAttribute("aria-busy", "false");
@@ -1145,7 +1158,11 @@ async function search() {
                   : kind === "projects"
                     ? projectRoute(item.full_name)
                     : taskRoute(item.task_id || item.id),
-              onclick: () => dialog.close(),
+              onclick: (event) => {
+                selectedResult = [...results.querySelectorAll("a")].indexOf(event.currentTarget);
+                highlight(false);
+                dialog.close();
+              },
             },
             el(
               "strong",
@@ -1170,7 +1187,11 @@ async function search() {
     if (!results.children.length)
       searchState("No matches. Try another query or search all projects.");
     query.setAttribute("aria-expanded", String(Boolean(results.querySelector("a"))));
-    selectedResult = 0;
+    const links = [...results.querySelectorAll("a")];
+    const restoredIndex = position ? links.findIndex((link) => link.id === position.id) : -1;
+    selectedResult = Math.max(0, restoredIndex);
+    results.scrollTop = restoredIndex >= 0 ? position.scroll : 0;
+    renderedSearchKey = key;
     highlight(false);
   } catch (error) {
     if (current === searchGeneration)
@@ -1192,6 +1213,7 @@ function highlight(scroll = true) {
         results.scrollTop = active.offsetTop + active.offsetHeight - results.clientHeight;
     }
   }
+  rememberSearchPosition();
 }
 query.onkeydown = (e) => {
   if (e.isComposing) return;

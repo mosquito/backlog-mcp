@@ -33,7 +33,11 @@ try {
         tasks: [],
         comments: [],
         memory: [],
-        projects: [{ id: 1, full_name: "test/project", name: args.query }],
+        projects: args.query === "positions"
+          ? Array.from({ length: 40 }, (_, index) => ({
+              id: index + 1, full_name: "test/project", name: `Result ${index + 1}`,
+            }))
+          : [{ id: 1, full_name: "test/project", name: args.query }],
       };
     } else return route.continue();
     await route.fulfill({
@@ -160,6 +164,29 @@ try {
   assert.equal(calls.at(-1).project, "test/project");
   assert.equal(calls.at(-1).computer, undefined);
   assert.equal(await page.locator("#search-scope").isDisabled(), true);
+  await page.locator("#search-query").fill("positions");
+  await page.locator("#search-projects-40").waitFor();
+  for (let i = 0; i < 15; i++) await page.locator("#search-query").press("ArrowDown");
+  const selected = await page.locator("#search-query").getAttribute("aria-activedescendant");
+  const scroll = await page.locator("#search-results").evaluate((node) => node.scrollTop);
+  assert.ok(scroll > 0);
+  await page.locator("#search-query").press("Escape");
+  await page.locator("#search-open").click();
+  await page.locator("#search-projects-40").waitFor();
+  assert.equal(await page.locator("#search-query").getAttribute("aria-activedescendant"), selected);
+  assert.equal(await page.locator("#search-results").evaluate((node) => node.scrollTop), scroll);
+  await page.locator("#search-projects-20").click();
+  await page.waitForFunction(() => !document.querySelector("#content").hasAttribute("aria-busy"));
+  await page.locator("#search-open").click();
+  await page.locator("#search-projects-40").waitFor();
+  assert.equal(
+    await page.locator("#search-query").getAttribute("aria-activedescendant"),
+    "search-projects-20",
+  );
+  await page.locator("#search-query").fill("fresh");
+  await page.getByRole("option").filter({ hasText: "fresh" }).waitFor();
+  assert.equal(await page.locator("#search-query").getAttribute("aria-activedescendant"), "search-projects-1");
+  assert.equal(await page.locator("#search-results").evaluate((node) => node.scrollTop), 0);
   console.log(
     "Search filters: scopes, limits, persistence, stale replies, keyboard and responsive layout passed",
   );
