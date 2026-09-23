@@ -62,3 +62,20 @@ async def test_root_redirects_to_public_ui(backlog: Backlog) -> None:
         assert response.status == 302
         assert response.headers["Location"] == "/ui/"
         assert "WWW-Authenticate" not in response.headers
+
+
+async def test_index_supports_head_and_conditional_requests(backlog: Backlog) -> None:
+    async with TestClient(TestServer(application(backlog, console=False))) as client:
+        for path in ["/ui", "/ui/"]:
+            response = await client.get(path)
+            assert response.status == 200
+            assert response.content_type == "text/html"
+            body = await response.read()
+            etag = response.headers["ETag"]
+            head = await client.head(path)
+            assert head.status == 200
+            assert head.content_length == len(body)
+            assert await head.read() == b""
+            cached = await client.get(path, headers={"If-None-Match": etag})
+            assert cached.status == 304
+            assert await cached.read() == b""

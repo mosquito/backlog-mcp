@@ -182,7 +182,7 @@ def application(
         raise web.HTTPFound("/ui/")
 
     app.router.add_get("/", index)
-    app.add_subapp("/ui", webui.application(ENDPOINT_PATH))
+    app.add_subapp("/ui", webui.application())
     if console:
         page = Console(
             endpoint_path=ENDPOINT_PATH,
