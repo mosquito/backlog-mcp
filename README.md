@@ -522,6 +522,12 @@ columns to change its status. Filters are saved in the page URL. The board loads
 up to 500 open tasks and the 50 most recently changed completed tasks. Use Refresh
 to reload it; changes from other clients do not appear automatically.
 
+Markdown supports fenced code blocks with language names such as `python`, `js`,
+`json`, or `sql`. A `mermaid` fence renders a diagram. Unknown languages remain
+plain code; invalid diagrams show their source and an error. Diagrams follow the
+system theme and scroll horizontally when needed. Rendering uses local vendored
+browser libraries stored in Git LFS, with no frontend build step or runtime CDN.
+
 Use **Memory** in the header to browse notes for the current project or all
 accessible projects. Filter by tag or shared status, scroll to load more notes, and
 open a note to read its Markdown content, source project, tags, and author dates.

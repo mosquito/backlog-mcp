@@ -1,3 +1,5 @@
 src/backlog_mcp/model/*.safetensors filter=lfs diff=lfs merge=lfs -text
 src/backlog_mcp/model/model.safetensors filter=lfs diff=lfs merge=lfs -text
 src/backlog_mcp/model/tokenizer.json filter=lfs diff=lfs merge=lfs -text
+src/backlog_mcp/static/vendor/*.js filter=lfs diff=lfs merge=lfs -text
+src/backlog_mcp/static/vendor/*.mjs filter=lfs diff=lfs merge=lfs -text

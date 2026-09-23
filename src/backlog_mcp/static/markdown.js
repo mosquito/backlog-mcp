@@ -1,6 +1,7 @@
 import { taskRoute, noteRoute } from "./dom.js";
 import { marked } from "./vendor/marked.esm.js";
 import DOMPurify from "./vendor/purify.es.mjs";
+import "./diagrams.js";
 
 export function markdown(source = "") {
   const fragment = DOMPurify.sanitize(marked.parse(source, { gfm: true, async: false }), {
@@ -41,6 +42,30 @@ export function markdown(source = "") {
     else if (!href.startsWith("/ui/#")) {
       link.target = "_blank";
       link.rel = "noopener noreferrer";
+    }
+  }
+  for (const code of fragment.querySelectorAll("pre > code")) {
+    const language = [...code.classList]
+      .find((name) => name.startsWith("language-"))
+      ?.slice(9)
+      .toLowerCase();
+    if (language === "mermaid") {
+      const diagram = document.createElement("backlog-diagram");
+      diagram.source = code.textContent;
+      code.parentElement.replaceWith(diagram);
+    } else if (language && globalThis.hljs?.getLanguage(language)) {
+      const html = globalThis.hljs.highlight(code.textContent, {
+        language,
+        ignoreIllegals: true,
+      }).value;
+      code.replaceChildren(
+        DOMPurify.sanitize(html, {
+          RETURN_DOM_FRAGMENT: true,
+          ALLOWED_TAGS: ["span"],
+          ALLOWED_ATTR: ["class"],
+        }),
+      );
+      code.classList.add("hljs");
     }
   }
   return fragment;

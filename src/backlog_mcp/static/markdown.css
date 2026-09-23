@@ -1,0 +1,33 @@
+.markdown pre code.hljs {
+  padding: 0;
+  background: transparent;
+}
+backlog-diagram {
+  display: block;
+  min-width: 0;
+  margin: 1.25rem 0;
+}
+.diagram-output {
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.markdown .diagram-image {
+  display: block;
+  max-width: none;
+  height: auto;
+  margin: auto;
+}
+.diagram-source {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.diagram-source summary {
+  cursor: pointer;
+}
+.diagram-source pre {
+  color: var(--text);
+}
