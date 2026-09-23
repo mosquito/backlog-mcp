@@ -562,6 +562,7 @@ async function detail(task) {
         query,
         kinds: ["tasks"],
         limit: 9,
+        min_score: 0.12,
       });
       return found.tasks.filter((item) => item.id !== task.id).slice(0, 8);
     },
@@ -770,7 +771,7 @@ async function search() {
   }
   searchState("Searching…", true);
   try {
-    const args = { query: query.value, kinds: ["tasks", "comments"], limit: 15 };
+    const args = { query: query.value, kinds: ["tasks", "comments"], limit: 15, min_score: 0.12 };
     if (project) args.project = project;
     if (all.checked || !project) args.all_computers = true;
     const found = await call("search", args);

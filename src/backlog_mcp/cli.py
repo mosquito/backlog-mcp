@@ -820,9 +820,9 @@ class Search(Command):
         default="", help="Filter by task or note tags; comments use their task tags"
     )
     limit: int = argclass.Argument(default=20, help="Most matches to print, of each kind")
-    min_score: float = argclass.Argument(
-        default=0.15,
-        help="Minimum semantic similarity (-1 to 1); FTS matches are retained, with a 0.25 floor",
+    min_score: float | None = argclass.Argument(
+        default=None,
+        help="Minimum semantic similarity (-1 to 1); default: 0.15, or 0.25 with FTS matches",
     )
 
     async def __call__(self) -> int:

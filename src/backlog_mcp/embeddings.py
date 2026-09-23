@@ -125,7 +125,8 @@ class Search(BaseModel):
         allow_inf_nan=False,
         description=(
             "Minimum cosine similarity for semantic matches; FTS matches are retained. "
-            "Semantic results need at least 0.25 when an FTS result exists."
+            "When omitted, use 0.15, or 0.25 when an FTS result exists. "
+            "An explicit value overrides both automatic thresholds."
         ),
     )
 
@@ -530,7 +531,8 @@ async def search(
     del lexical_tasks, lexical_notes
     min_score = (
         max(args.min_score, FTS_MIN_SCORE)
-        if task_snippets or note_snippets or comment_snippets or project_fts
+        if "min_score" not in args.model_fields_set
+        and (task_snippets or note_snippets or comment_snippets or project_fts)
         else args.min_score
     )
     vectors = await indexes(backlog, connection, transaction)

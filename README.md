@@ -225,7 +225,8 @@ Shared memory remains visible across projects only when the caller can access it
 Use `backlog search orchestration --kind projects --all-computers` to find accessible projects
 without selecting a current project. `min_score` (`--min-score` in the terminal) defaults to `0.15`
 and filters semantic matches only; it never removes FTS matches. When FTS finds anything,
-additional semantic matches need a score of at least `0.25`. MCP results include `match`
+the automatic cutoff rises to `0.25`. An explicit `min_score` overrides both automatic
+cutoffs. Web UI searches use `0.12`. MCP results include `match`
 (`fts` or `semantic`) and a cosine `score` for semantic candidates (`null` for FTS-only
 matches). FTS excerpts remain in `snippet`. Semantic matches can use different words or
 languages from the query.

@@ -197,12 +197,14 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
         connection=await backlog.open(),
         transaction=backlog.transaction,
     )
-    assert len(global_result.tasks) == 2
+    # An explicit -1 includes every nonzero vector, even with lexical matches.
+    assert len(global_result.tasks) == 3
     assert len(global_result.memory) == 2
 
 
-async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
-    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("min_score", [None, 0.12, 0.15, 0.5])
+async def test_search_marks_sources_and_honors_semantic_floor_after_fts(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch, min_score: float | None
 ) -> None:
     project, _ = await backlog.current()
     lexical = await mutate(
@@ -227,13 +229,15 @@ async def test_search_marks_sources_and_raises_semantic_floor_after_fts(
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(
-        embeddings.Search(query="Needle"),
+        embeddings.Search(
+            query="Needle", **({"min_score": min_score} if min_score is not None else {})
+        ),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
     )
 
-    assert scores == [embeddings.FTS_MIN_SCORE]
+    assert scores == [embeddings.FTS_MIN_SCORE if min_score is None else min_score]
     assert [(item.id, item.match) for item in result.tasks] == [
         (lexical.id, "fts"),
         (semantic.id, "semantic"),
