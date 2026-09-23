@@ -1329,7 +1329,6 @@ button,
 .task-table-region {
   margin-top: 18px;
   overflow: auto;
-  max-height: 68dvh;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
@@ -1465,9 +1464,38 @@ button,
   .task-table td {
     padding: 12px;
   }
-  .task-table-region {
-    max-height: 65dvh;
-  }
+}
+
+body:has(.task-table-region) {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+body:has(.task-table-region) > header,
+body:has(.task-table-region) > footer {
+  flex-shrink: 0;
+}
+main:has(.task-table-region) {
+  width: 100%;
+  padding-bottom: 12px;
+  margin: 0 auto;
+}
+main:has(.task-table-region),
+.board-page:has(.task-table-region),
+.board-results:has(.task-table-region) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: auto;
+}
+.board-page:has(.task-table-region) > :not(.board-results),
+.board-results:has(.task-table-region) > :not(.task-table-region) {
+  flex-shrink: 0;
+}
+.task-table-region {
+  flex: 1;
+  min-height: 200px;
+  contain: size;
 }
 
 .table-scroll-hint {

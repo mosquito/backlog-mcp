@@ -227,7 +227,7 @@ wheels = [
 
 [[package]]
 name = "backlog-mcp"
-version = "0.15.6"
+version = "0.15.7"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp-tiny-mcp", extra = ["jwt"] },
