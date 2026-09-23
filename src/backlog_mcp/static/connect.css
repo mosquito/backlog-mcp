@@ -1,0 +1,103 @@
+.connect-header {
+  justify-content: space-between;
+}
+.connect-page {
+  max-width: 1180px;
+  padding-top: 48px;
+}
+.connect-page h1 {
+  font-size: clamp(28px, 4vw, 40px);
+  max-width: 750px;
+}
+.connect-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+  margin-top: 32px;
+}
+.connect-layout > .panel {
+  margin: 0;
+  min-width: 0;
+}
+.connection-form {
+  display: grid;
+  gap: 18px;
+}
+.connection-form h2,
+.connection-form label,
+.connection-form p {
+  margin: 0;
+}
+.connection-note {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.agent-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.agent-tabs [aria-pressed="true"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+}
+.setup-empty {
+  padding: 50px 12px;
+  color: var(--muted);
+  text-align: center;
+}
+.setup-block {
+  margin: 24px 0;
+  min-width: 0;
+}
+.setup-block .section-heading {
+  margin-bottom: 8px;
+}
+.setup-block h3 {
+  margin: 0;
+}
+.setup-block p {
+  font-size: 13px;
+  margin: 0 0 12px;
+}
+.setup-code {
+  width: 100%;
+  font:
+    12px/1.7 ui-monospace,
+    monospace;
+  padding: 14px;
+  background: var(--code-bg);
+  overflow-wrap: anywhere;
+  resize: vertical;
+  min-height: 100px;
+}
+.setup-next {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+#copy-status:empty {
+  display: none;
+}
+@media (max-width: 760px) {
+  .connect-page {
+    padding-top: 28px;
+  }
+  .connect-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+    margin-top: 24px;
+  }
+  .setup-empty {
+    padding: 24px 0;
+  }
+  .agent-tabs {
+    gap: 6px;
+  }
+  .agent-tabs button {
+    padding: 8px 10px;
+  }
+}

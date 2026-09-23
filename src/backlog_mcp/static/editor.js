@@ -1,4 +1,4 @@
-import { el, button, link, select, field, projectRoute, modal } from "./dom.js";
+import { el, button, link, select, field, projectRoute, taskRoute, modal } from "./dom.js";
 
 const fields = ["title", "priority", "status", "tags", "body"];
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -115,7 +115,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
       "div",
       { class: "form-actions" },
       submit,
-      link("Cancel", task ? `#/t/${task.id}` : projectRoute(project), "button"),
+      link("Cancel", task ? taskRoute(task.id) : projectRoute(project), "button"),
       button(
         "Discard draft",
         async () => {
@@ -128,7 +128,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
             })
           ) {
             localStorage.removeItem(key);
-            navigate(task ? `#/t/${task.id}` : projectRoute(project));
+            navigate(task ? taskRoute(task.id) : projectRoute(project));
           }
         },
         "quiet",
@@ -150,7 +150,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
       if (!task) {
         const created = await call("task_add", { project, ...values });
         localStorage.removeItem(key);
-        navigate(`#/t/${created.id}`);
+        navigate(taskRoute(created.id));
         return;
       }
       const current = await call("task_get", { id: task.id });
@@ -166,7 +166,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
       const updates = changed(base, values);
       if (Object.keys(updates).length) await call("task_update", { id: task.id, ...updates });
       localStorage.removeItem(key);
-      navigate(`#/t/${task.id}`);
+      navigate(taskRoute(task.id));
     } catch (error) {
       notify(error);
     } finally {

@@ -1107,3 +1107,10 @@ button.destructive {
 .modal-content .relation-matches:empty {
   display: none;
 }
+
+@media (max-width: 600px) {
+  header .connect-agent {
+    order: 5;
+    width: 100%;
+  }
+}

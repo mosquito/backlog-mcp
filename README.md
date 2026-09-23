@@ -499,6 +499,17 @@ Open `/` or `/ui/` on the HTTP server. The root redirects to the tracker.
 The diagnostic MCP console is at `/console`; `--http-no-console` disables it.
 The MCP URL remains `/mcp`, including its existing query parameters.
 
+Use **Connect agent** in the header to open the public setup page at
+`/ui/static/connect.html`. It derives the MCP URL from the current origin and
+accepts Basic credentials or a Bearer token. Configuration generation runs in
+the browser without sending or saving credentials. Copy commands or configuration
+for Claude Code, Codex, and Antigravity; each tab links to its official guide.
+The Codex command applies to one session; its TOML section provides persistent setup.
+
+Task links use `/ui/#123`. Other state uses query parameters, such as
+`/ui/?view=edit#123` or `/ui/?project=owner%2Frepo&priority=high`.
+Existing hash routes redirect to this format.
+
 The tracker supports projects, a kanban board, task details, Markdown editing,
 comments, task relations, and search with Cmd+K or Ctrl+K. Drag a task between
 columns to change its status. Filters are saved in the page URL. The board loads
@@ -520,7 +531,7 @@ does not offer server-side compare-and-swap.
 
 The UI uses native JavaScript modules without a build step or npm installation.
 Marked and DOMPurify are vendored with their licenses; Markdown is sanitized
-before display. Run the client tests with `node --test tests/webui_client.mjs`
+before display. Run the client tests with `node --test tests/webui_*.mjs`
 using Node.js 22 or newer.
 
 ## JWT authentication

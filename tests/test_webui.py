@@ -18,7 +18,17 @@ async def test_ui_is_public_and_mcp_is_protected(backlog: Backlog, console: bool
             text = await response.text()
             assert 'data-endpoint="/mcp"' in text
             assert "/ui/static/app.js" in text
-        for path in ["app.js", "app.css", "mcp.js", "editor.js", "vendor/purify.es.mjs"]:
+        for path in [
+            "app.js",
+            "app.css",
+            "mcp.js",
+            "editor.js",
+            "vendor/purify.es.mjs",
+            "connect.html",
+            "connect.js",
+            "agent-config.js",
+            "connect.css",
+        ]:
             response = await client.get("/ui/static/" + path)
             assert response.status == 200
             assert await response.read()

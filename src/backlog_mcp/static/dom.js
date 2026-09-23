@@ -19,23 +19,47 @@ export const select = (values, value, attributes = {}) => {
 };
 export const field = (text, control) => el("label", {}, text, control);
 export const date = (value) => (value ? new Date(value * 1000).toLocaleString() : "—");
-export const projectRoute = (project) =>
-  "#/p/" + project.split("/").map(encodeURIComponent).join("/");
-export function route(hash = location.hash) {
-  const [path, query = ""] = (hash || "#/").slice(1).split("?");
-  const params = new URLSearchParams(query);
-  if (path === "/") return { kind: "projects", params };
-  if (path === "/t/new") return { kind: "new", params };
-  const task = path.match(/^\/t\/(\d+)(\/edit)?$/);
-  if (task) return { kind: task[2] ? "edit" : "task", id: Number(task[1]), params };
-  const project = path.match(/^\/p\/([^/]+)\/([^/]+)$/);
-  if (project)
-    return {
-      kind: "board",
-      project: decodeURIComponent(project[1]) + "/" + decodeURIComponent(project[2]),
-      params,
-    };
-  return { kind: "missing", params };
+export const projectRoute = (project, filters = new URLSearchParams()) => {
+  const params = new URLSearchParams(filters);
+  params.set("project", project);
+  return "/ui/?" + params;
+};
+export const taskRoute = (id, edit = false) => `/ui/${edit ? "?view=edit" : ""}#${id}`;
+export function route(href = location.href) {
+  const url = new URL(href, "https://backlog.invalid/ui/");
+  const params = url.searchParams;
+  // Redirect saved links from the original hash router.
+  if (url.hash.startsWith("#/")) {
+    const [path, query = ""] = url.hash.slice(1).split("?");
+    const old = new URLSearchParams(query);
+    const task = path.match(/^\/t\/(\d+)(\/edit)?$/);
+    if (task) return { redirect: taskRoute(task[1], Boolean(task[2])) };
+    if (path === "/t/new") {
+      old.set("view", "new");
+      return { redirect: "/ui/?" + old };
+    }
+    const project = path.match(/^\/p\/([^/]+)\/([^/]+)$/);
+    if (project) {
+      try {
+        return {
+          redirect: projectRoute(
+            decodeURIComponent(project[1]) + "/" + decodeURIComponent(project[2]),
+            old,
+          ),
+        };
+      } catch {
+        return { kind: "missing", params };
+      }
+    }
+    if (path === "/") return { redirect: "/ui/" + (old.size ? "?" + old : "") };
+  }
+  const task = url.hash.match(/^#([1-9]\d*)$/);
+  if (task && Number.isSafeInteger(Number(task[1])))
+    return { kind: params.get("view") === "edit" ? "edit" : "task", id: Number(task[1]), params };
+  if (url.hash) return { kind: "missing", params };
+  if (params.get("view") === "new") return { kind: "new", params };
+  if (params.get("project")) return { kind: "board", project: params.get("project"), params };
+  return { kind: "projects", params };
 }
 
 /** Accessible modal with one async action and an inline error state. */

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Connect your agent · Backlog</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./app.css" />
+    <link rel="stylesheet" href="./connect.css" />
+    <script type="module" src="./connect.js"></script>
+  </head>
+  <body>
+    <header class="connect-header">
+      <a class="brand" href="/ui/">Backlog<span class="brand-dot">.</span></a>
+      <a class="button quiet" href="/ui/">Back to workspace</a>
+    </header>
+    <main class="connect-page">
+      <div class="eyebrow">Bring your agent</div>
+      <h1>Your backlog, inside your agent.</h1>
+      <p class="subtitle">Connect through MCP to work with projects, tasks, and shared context.</p>
+      <div class="connect-layout">
+        <form id="connection-form" class="panel connection-form">
+          <h2>1. Connection details</h2>
+          <label>MCP endpoint<input id="endpoint" type="url" required readonly /></label>
+          <label
+            >Authentication<select id="method">
+              <option value="basic">Username &amp; password</option>
+              <option value="bearer">Bearer token</option>
+              <option value="none">No authentication</option>
+            </select></label
+          >
+          <label id="username-field"
+            >Username<input id="username" autocomplete="username" required
+          /></label>
+          <label id="secret-field"
+            ><span id="secret-label">Password</span
+            ><input id="secret" type="password" autocomplete="current-password" required
+          /></label>
+          <p class="muted connection-note">
+            Generation runs in your browser. This page does not send or save your credentials.
+          </p>
+          <p id="connection-error" class="error" role="alert" hidden></p>
+          <button type="submit" class="primary">Generate setup</button>
+        </form>
+        <section class="panel setup-panel" aria-labelledby="setup-title">
+          <h2 id="setup-title">2. Choose your agent</h2>
+          <div id="agent-tabs" class="agent-tabs" aria-label="Agent">
+            <button type="button" data-agent="claude" aria-pressed="true">Claude Code</button>
+            <button type="button" data-agent="codex" aria-pressed="false">Codex</button>
+            <button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button>
+          </div>
+          <p id="setup-empty" class="setup-empty">
+            Enter your connection details to generate a ready-to-copy setup.
+          </p>
+          <div id="setup-output" hidden></div>
+          <p id="copy-status" class="muted" role="status"></p>
+        </section>
+      </div>
+      <noscript
+        ><p class="panel">Enable JavaScript to generate your agent configuration.</p></noscript
+      >
+    </main>
+  </body>
+</html>

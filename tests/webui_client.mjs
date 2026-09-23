@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MCP, HttpError, RpcError, ToolError } from "../src/backlog_mcp/static/mcp.js";
-import { route } from "../src/backlog_mcp/static/dom.js";
+import { route, taskRoute, projectRoute } from "../src/backlog_mcp/static/dom.js";
 import { changed } from "../src/backlog_mcp/static/editor.js";
 
 globalThis.location = { origin: "https://backlog.test" };
@@ -121,12 +121,28 @@ test("401 exposes discovery without retry", async () => {
 test("cross-origin endpoints are refused", () => {
   assert.throws(() => new MCP("https://other.test/mcp"));
 });
-test("routes preserve project and filter state", () => {
-  const parsed = route("#/p/alice/project?tag=needs+review&priority=high");
+test("routes use task fragments and query parameters", () => {
+  const parsed = route("/ui/?project=alice%2Fproject&tag=needs+review&priority=high");
   assert.equal(parsed.project, "alice/project");
   assert.equal(parsed.params.get("tag"), "needs review");
-  assert.equal(route("#/t/new?project=alice%2Fproject").kind, "new");
-  assert.equal(route("#/t/42/edit").id, 42);
+  assert.equal(route("/ui/?view=new&project=alice%2Fproject").kind, "new");
+  assert.equal(route("/ui/?view=edit#42").kind, "edit");
+  assert.equal(route("#42").id, 42);
+  assert.equal(route("#42").kind, "task");
+  assert.equal(route("/ui/").kind, "projects");
+  for (const hash of ["#0", "#-1", "#abc", "#9007199254740992"])
+    assert.equal(route(hash).kind, "missing");
+  assert.equal(route(taskRoute(42, true)).kind, "edit");
+  assert.equal(route(projectRoute("owner/a & b")).project, "owner/a & b");
+});
+test("saved hash routes redirect without losing filters", () => {
+  const parsed = route(route("#/p/alice/project?tag=needs+review&priority=high").redirect);
+  assert.equal(parsed.project, "alice/project");
+  assert.equal(parsed.params.get("tag"), "needs review");
+  assert.equal(parsed.params.get("priority"), "high");
+  assert.equal(route(route("#/t/new?project=alice%2Fproject").redirect).kind, "new");
+  assert.equal(route(route("#/t/42/edit").redirect).id, 42);
+  assert.equal(route(route("#/?archived=true").redirect).params.get("archived"), "true");
 });
 test("editing sends only changed fields", () => {
   const base = { title: "Task", status: "todo", priority: "normal", body: "Text", tags: ["a"] };

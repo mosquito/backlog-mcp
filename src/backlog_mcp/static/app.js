@@ -1,6 +1,17 @@
 import { MCP, HttpError } from "./mcp.js";
 import { markdown } from "./markdown.js";
-import { el, button, link, select, field, date, projectRoute, route, modal } from "./dom.js";
+import {
+  el,
+  button,
+  link,
+  select,
+  field,
+  date,
+  projectRoute,
+  taskRoute,
+  route,
+  modal,
+} from "./dom.js";
 import { editor } from "./editor.js";
 
 const content = document.querySelector("#content");
@@ -32,9 +43,10 @@ const actions = {
     return identity?.principal;
   },
 };
-function navigate(hash) {
-  if (location.hash === hash) render();
-  else location.hash = hash;
+function navigate(href) {
+  const url = new URL(href, location.href);
+  if (url.href !== location.href) history.pushState(null, "", url);
+  render();
 }
 function notify(error) {
   if (error.name === "AbortError") return;
@@ -160,9 +172,13 @@ document.querySelector("#logout").onclick = () => {
 };
 
 async function render() {
+  let target = route();
+  if (target.redirect) {
+    history.replaceState(null, "", target.redirect);
+    target = route();
+  }
   if (!identity) return;
   const current = ++generation;
-  const target = route();
   let selectedProject = "";
   content.replaceChildren(el("p", { class: "muted" }, "Loading…"));
   try {
@@ -181,7 +197,7 @@ async function render() {
       selectedProject = task?.project || target.params.get("project") || "";
       if (!selectedProject) throw new Error("Choose a project before creating a task.");
       page = editor(task, selectedProject, actions);
-    } else page = el("div", {}, el("h1", {}, "Page not found"), link("Back to projects", "#/"));
+    } else page = el("div", {}, el("h1", {}, "Page not found"), link("Back to projects", "/ui/"));
     if (current !== generation || !identity) return;
     project = selectedProject;
     content.replaceChildren(page);
@@ -195,7 +211,7 @@ async function render() {
         el("h1", {}, "Could not load this page"),
         el("p", { class: "error" }, error.message),
         button("Try again", render),
-        link("Projects", "#/"),
+        link("Projects", "/ui/"),
       ),
     );
   }
@@ -206,7 +222,7 @@ async function projects(target) {
   const toggle = el("input", {
     type: "checkbox",
     checked: archived,
-    onchange: () => navigate(toggle.checked ? "#/?archived=true" : "#/"),
+    onchange: () => navigate(toggle.checked ? "/ui/?archived=true" : "/ui/"),
   });
   return el(
     "section",
@@ -261,7 +277,7 @@ async function board(target) {
     const p = new URLSearchParams();
     if (tag.value.trim()) p.set("tag", tag.value.trim());
     if (priority.value) p.set("priority", priority.value);
-    navigate(projectRoute(target.project) + "?" + p);
+    navigate(projectRoute(target.project, p));
   };
   const heading = el(
     "div",
@@ -277,7 +293,7 @@ async function board(target) {
         button("Refresh", render),
         link(
           "+ New task",
-          "#/t/new?project=" + encodeURIComponent(target.project),
+          "/ui/?view=new&project=" + encodeURIComponent(target.project),
           "button primary",
         ),
       ),
@@ -322,7 +338,7 @@ async function board(target) {
           `#${task.id}`,
           el("span", { class: `priority ${task.priority}` }, task.priority),
         ),
-        link(task.title, `#/t/${task.id}`),
+        link(task.title, taskRoute(task.id)),
         el("div", {}, ...(task.tags || []).map((t) => el("span", { class: "tag" }, t))),
         el(
           "small",
@@ -407,7 +423,7 @@ async function detail(task) {
       { class: "task-actions" },
       field("Status", status),
       field("Priority", priority),
-      link("Edit task", `#/t/${task.id}/edit`, "button"),
+      link("Edit task", taskRoute(task.id, true), "button"),
       button(
         "Move",
         operation(async () => {
@@ -463,7 +479,7 @@ async function detail(task) {
           "div",
           { class: "row" },
           el("span", { class: "tag" }, item.relation),
-          link(`#${item.task} ${item.title}`, `#/t/${item.task}`),
+          link(`#${item.task} ${item.title}`, taskRoute(item.task)),
           el("small", { class: "muted" }, item.status),
           button(
             "Remove",
@@ -727,7 +743,7 @@ async function search() {
             "a",
             {
               class: "search-result",
-              href: `#/t/${item.task_id || item.id}`,
+              href: taskRoute(item.task_id || item.id),
               onclick: () => dialog.close(),
             },
             el(
@@ -767,6 +783,24 @@ query.onkeydown = (e) => {
     links[selectedResult]?.click();
   }
 };
+document.addEventListener("click", (event) => {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  )
+    return;
+  const anchor = event.target.closest("a[href]");
+  if (!anchor || anchor.target || anchor.hasAttribute("download")) return;
+  const url = new URL(anchor.href);
+  if (url.origin !== location.origin || !["/ui", "/ui/"].includes(url.pathname)) return;
+  event.preventDefault();
+  navigate(url.href);
+});
+window.addEventListener("popstate", render);
 window.addEventListener("hashchange", render);
 connect().catch((error) => {
   if (error instanceof HttpError && error.status === 401) showLogin(error, Boolean(credentials()));
