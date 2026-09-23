@@ -16,6 +16,7 @@ MODULES = (
     "task-pagination.js",
     "memory.js",
     "memory-editor.js",
+    "memory-append.js",
     "comment-composer.js",
     "breadcrumbs.js",
     "project-settings.js",

@@ -1,3 +1,4 @@
+import { appendNote } from "./memory-append.js";
 import { el, button, link, field, select, date, projectRoute, memoryRoute, modal } from "./dom.js";
 import { memoryEditor } from "./memory-editor.js";
 
@@ -204,6 +205,7 @@ export async function memoryPage(target, actions) {
                 "button",
               )
             : null,
+          canEdit ? button("Append to note", () => appendNote(note, actions)) : null,
           canEdit ? remove : null,
         ),
         el(
