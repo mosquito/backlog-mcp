@@ -1924,3 +1924,7 @@ main {
 .search-options label { margin: 0; min-width: 0; }
 .search-options input, .search-options select { width: 100%; }
 .search-advanced p { font-size: 12px; margin-bottom: 0; }
+
+.search-help { margin-top: 10px; font-size: 13px; }
+.search-help summary { cursor: pointer; width: 28px; text-align: center; border: 1px solid var(--line); border-radius: 50%; }
+.search-help p { color: var(--muted); line-height: 1.5; }

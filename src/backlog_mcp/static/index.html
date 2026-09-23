@@ -56,6 +56,28 @@
           Close
         </button>
       </div>
+      <details class="search-help">
+        <summary aria-label="Search syntax" title="Search syntax">?</summary>
+        <p>
+          Plain text searches word prefixes and meaning. Start with a double quote for an exact
+          phrase, without semantic matches.
+        </p>
+        <p>
+          Use <code>fts:</code> for
+          <a
+            href="https://www.sqlite.org/fts5.html#full_text_query_syntax"
+            target="_blank"
+            rel="noopener"
+            >FTS5 expressions</a
+          >: <code>fts: auth OR login</code>, <code>fts: auth NOT legacy</code>,
+          <code>fts: (auth OR login) AND token*</code>, <code>fts: NEAR(login token, 5)</code>.
+        </p>
+        <p>
+          Use the Tag filter for an exact tag. Column filters such as
+          <code>fts: tags:ui</code> require compatible content types (Tasks or Memory). Invalid
+          expressions show an error.
+        </p>
+      </details>
       <fieldset class="search-kinds">
         <legend>Search in:</legend>
         <label class="inline"><input id="search-all" type="checkbox" />All projects</label>

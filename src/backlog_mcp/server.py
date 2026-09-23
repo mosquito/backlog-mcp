@@ -2013,9 +2013,10 @@ async def search_projects(
     *,
     project_id: int | None = None,
     computer: str | None = None,
+    raw: bool = False,
     limit: int = 20,
 ) -> list[Project]:
-    match = match_query(query)
+    match = query if raw else match_query(query)
     if not match:
         return []
     rows = QUERIES.search_projects(
@@ -2404,6 +2405,7 @@ async def read_comments(
     status: Sequence[Status] | None = None,
     tag: str | None = None,
     query: str | None = None,
+    raw: bool = False,
     limit: int = -1,
 ) -> list[Comment]:
     parameters = filters(
@@ -2417,7 +2419,7 @@ async def read_comments(
     )
     parameters.update(task_id=task_id, exclude_deleted=task_id is None and not status, limit=limit)
     if query is not None:
-        match = match_query(query)
+        match = query if raw else match_query(query)
         if not match:
             return []
         rows = QUERIES.search_comments(connection, match=match, **parameters)
@@ -2506,9 +2508,10 @@ async def search_tasks(
     status: Sequence[Status] | None = None,
     tag: str | None = None,
     computer: str | None = None,
+    raw: bool = False,
     limit: int = 20,
 ) -> list[Task]:
-    match = match_query(query)
+    match = query if raw else match_query(query)
     if not match:
         return []
     parameters = filters(
@@ -2758,9 +2761,10 @@ async def search_notes(
     tag: str | None = None,
     shared: bool | None = None,
     computer: str | None = None,
+    raw: bool = False,
     limit: int = 20,
 ) -> list[Note]:
-    match = match_query(query)
+    match = query if raw else match_query(query)
     if not match:
         return []
     parameters = note_filters(

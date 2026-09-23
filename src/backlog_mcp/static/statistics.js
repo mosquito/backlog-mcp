@@ -74,7 +74,13 @@ export async function statisticsPage(target, { call, navigate, principal }) {
       { class: "panel" },
       el("h2", {}, "Tags"),
       ...(stats.tags.length
-        ? stats.tags.map((tag) => el("span", { class: "tag" }, tag))
+        ? stats.tags.map((tag) => {
+            const params = new URLSearchParams(target.params);
+            params.set("view", "tasks");
+            params.set("status", "all");
+            params.set("tag", tag);
+            return link(tag, `/ui/?${params}`, "tag");
+          })
         : [el("p", { class: "muted" }, "No tags.")]),
     ),
   );

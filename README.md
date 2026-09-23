@@ -556,6 +556,10 @@ the query to select content types; the All projects checkbox controls the scope.
 **Filters** adds task status, tag, computer scope, results per type, and minimum
 semantic similarity. Status applies only to tasks. Computer scope applies when
 **All projects** is selected. The browser remembers search filters in localStorage.
+Start a query with a double quote to search a phrase through FTS only. Prefix a query
+with `fts:` to use FTS5 operators, such as `fts: (auth OR login) AND token*`, without
+semantic matches. The **?** control explains the syntax. Statistics tags open a
+filtered task list in the same scope.
 Task drafts also survive
 refresh and are removed after a successful save or explicit discard.
 

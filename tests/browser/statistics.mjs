@@ -73,6 +73,12 @@ try {
   await apply("current", { all_projects: true });
   await apply("computer", { computer: "laptop" });
   await apply("project", { project: "test/project" });
+  const tagLink = page.getByRole("link", { name: "ui", exact: true });
+  const tagURL = new URL(await tagLink.getAttribute("href"), page.url());
+  assert.equal(tagURL.searchParams.get("view"), "tasks");
+  assert.equal(tagURL.searchParams.get("tag"), "ui");
+  assert.equal(tagURL.searchParams.get("project"), "test/project");
+  assert.equal(tagURL.searchParams.get("status"), "all");
   empty = true;
   await apply("all", { all_computers: true });
   assert.equal(await page.locator(".stats-totals strong").first().innerText(), "0");

@@ -106,6 +106,7 @@ class Search(BaseModel):
     query: Text = Field(
         description=(
             "Words or meaning to find in project names, descriptions, titles, bodies and tags. "
+            "Start with a double quote or fts: for FTS5 syntax without semantic matches. "
             "ALWAYS search when starting work, facing uncertainty, or checking past agreements."
         )
     )
@@ -475,55 +476,97 @@ async def search(
             return True
         return True
 
-    lexical_tasks = await server.search_tasks(
-        connection,
-        backlog.actor,
-        args.query,
-        project_id=project_id,
-        computer=computer,
-        status=args.status,
-        tag=args.tag,
-        limit=args.limit,
-    )
-    lexical_notes = await server.search_notes(
-        connection,
-        backlog.actor,
-        args.query,
-        project_id=project_id,
-        computer=computer,
-        tag=args.tag,
-        limit=args.limit,
-    )
-    lexical_comments = (
-        await server.read_comments(
-            connection,
-            backlog.actor,
-            query=args.query,
-            project_id=project_id,
-            computer=computer,
-            status=args.status,
-            tag=args.tag,
-            limit=args.limit,
+    literal = args.query.startswith(('"', "fts:"))
+    lexical_query = args.query.removeprefix("fts:").strip() if literal else args.query
+    if not lexical_query:
+        raise ValueError("An FTS5 expression is required after fts:")
+    try:
+        lexical_tasks = (
+            await server.search_tasks(
+                connection,
+                backlog.actor,
+                lexical_query,
+                project_id=project_id,
+                computer=computer,
+                status=args.status,
+                tag=args.tag,
+                limit=args.limit,
+                raw=literal,
+            )
+            if "tasks" in args.kinds
+            else []
         )
-        if "comments" in args.kinds
-        else []
-    )
-    if "tasks" not in args.kinds:
-        lexical_tasks = []
-    if "memory" not in args.kinds:
-        lexical_notes = []
-    lexical_projects = (
-        await server.search_projects(
-            connection,
-            backlog.actor,
-            args.query,
-            project_id=project_id,
-            computer=computer,
-            limit=args.limit,
+        lexical_notes = (
+            await server.search_notes(
+                connection,
+                backlog.actor,
+                lexical_query,
+                project_id=project_id,
+                computer=computer,
+                tag=args.tag,
+                limit=args.limit,
+                raw=literal,
+            )
+            if "memory" in args.kinds
+            else []
         )
-        if "projects" in args.kinds
-        else []
-    )
+        lexical_comments = (
+            await server.read_comments(
+                connection,
+                backlog.actor,
+                query=lexical_query,
+                project_id=project_id,
+                computer=computer,
+                status=args.status,
+                tag=args.tag,
+                limit=args.limit,
+                raw=literal,
+            )
+            if "comments" in args.kinds
+            else []
+        )
+        lexical_projects = (
+            await server.search_projects(
+                connection,
+                backlog.actor,
+                lexical_query,
+                project_id=project_id,
+                computer=computer,
+                limit=args.limit,
+                raw=literal,
+            )
+            if "projects" in args.kinds
+            else []
+        )
+    except aiosqlite.OperationalError as error:
+        if literal and any(
+            token in str(error) for token in ("fts5:", "unterminated", "no such column")
+        ):
+            raise ValueError(f"Invalid FTS5 expression: {error}") from error
+        raise
+    if literal:
+        exact_tasks = [TaskHit(**asdict(item), match="fts") for item in lexical_tasks]
+        exact_notes = [NoteHit(**asdict(item), match="fts") for item in lexical_notes]
+        exact_comments = [CommentHit(**asdict(item), match="fts") for item in lexical_comments]
+        exact_projects = [
+            ProjectHit(
+                **server.project_out(
+                    item, computer=backlog.computer, principal=backlog.principal
+                ).model_dump(),
+                match="fts",
+            )
+            for item in lexical_projects
+        ]
+        return Matches(
+            tasks=exact_tasks,
+            memory=exact_notes,
+            comments=exact_comments,
+            projects=exact_projects,
+            count=len(exact_tasks) + len(exact_notes) + len(exact_comments) + len(exact_projects),
+            project=reach.slug,
+            computer=backlog.computer,
+            principal=backlog.principal,
+        )
     project_fts = {item.id for item in lexical_projects}
     comment_snippets = {item.id: item.snippet for item in lexical_comments}
     task_snippets = {item.id: item.snippet for item in lexical_tasks}
