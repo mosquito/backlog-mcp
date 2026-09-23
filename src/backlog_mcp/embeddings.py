@@ -108,10 +108,12 @@ class Search(BaseModel):
             "Words or meaning to find in project names, descriptions, titles, bodies and tags. "
             "Quoted expressions search text; unquoted text searches vectors. "
             "Mixed queries use both. "
-            "ALWAYS search when starting work, facing uncertainty, or checking past agreements."
+            "See guide('search') for syntax and examples."
         )
     )
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    project: str | None = Field(
+        default=None, description="Defaults to connection project scope; required if unscoped."
+    )
     all_projects: bool = Field(default=False, description="Every project of this computer.")
     computer: str | None = Field(
         default=None, description="Every project of the named computer instead."

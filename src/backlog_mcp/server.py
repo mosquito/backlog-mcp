@@ -17,7 +17,7 @@ from aiohttp_tiny_mcp.protocol.models import CompleteParams, TextResourceContent
 from aiohttp_tiny_mcp.storage.hub import NOTIFICATIONS, topic
 from pydantic import BaseModel, Field, field_serializer
 
-from . import embeddings, skills
+from . import embeddings, guidance, skills
 from .backlog import (
     Backlog,
     Reach,
@@ -101,207 +101,9 @@ from .version import VERSION
 
 log = logging.getLogger(__name__)
 
-INSTRUCTIONS = """
-A task backlog and persistent project knowledge store. It holds three kinds of thing: a project, \
-which is one board covering one directory tree, a task, which is one item on that board, and a \
-note, which is one piece of lasting context from the user that persists across sessions.
-
-`whoami` reports `principal` as `user@computer`, auth type and owner handle without a project.
-
-Agent workflow:
-1. Check project registration first. The simplest way to find a project is to read its board
-by absolute local path. At session start or when changing projects or directories, first call
-`project_board(project=<absolute local project path>)`. Compare the returned principal
-(`user@computer`) and project roots with the actual local workspace.
-For HTTP connections, the server cwd is not the local cwd. If the binding matches, use the
-returned `full_name` for subsequent calls. No `project_list` or `project_save` call is needed.
-If the project is not found or the binding is wrong, use `project_list`; use
-`all_computers=true` to find an existing logical project on another computer.
-Use `whoami` when the authenticated principal needs clarification. If the local binding is
-missing or wrong, call
-`project_save(project=<existing full_name>, root=<absolute local project root>)`.
-Create a project only if no matching logical project exists. Leave correct bindings unchanged.
-Complete this check before searching context, managing tasks or investigating code.
-The board provides project context, counts and ready/claimed tasks.
-Registration and reading a board do not select a project for an unscoped HTTP connection;
-pass `project=` explicitly when needed.
-
-2. Search context before decisions. After registration, use `search` before investigating,
-choosing an approach, creating tasks or memory, or asking about prior agreements.
-Use natural-language queries. Search again when a new question arises. Read relevant matches
-with `task_get` or `memory_get` when needed. Check memory before guessing user preferences
-or project conventions. Use filtered lists for board reviews and `stats` for counts.
-Verify current technical facts in code or documentation.
-
-3. Track work through tasks. Reuse a relevant task or create one with `task_add` before
-substantive work, including investigation and verification. Define one verifiable outcome
-per task. A brief answer with no separate work does not need a task. Set `doing` when work
-starts. Use `task_comment_add` for findings, decisions, checks, blockers, remaining work,
-and relevant commit hashes or deployment state. Send only new update text.
-`task_update(body=...)` replaces the description; it does not append history.
-If scope must be replaced, close the old task and create a successor referencing it.
-Set `done` only after verification, `blocked` with the blocker and next step, or `cancelled`
-when work is abandoned. Before ending a turn, leave task status and history accurate.
-Keep task tracking in backlog. Never create task lists, work plans, progress logs, or task
-checklists in files, even when backlog is unavailable.
-
-4. Keep lasting agreements in memory. Proactively save user preferences, constraints, and
-decisions with `memory_save` or `memory_append`. Search first and update an existing record
-when appropriate. Use `shared=true` for agreements that apply across accessible projects.
-Use task comments for temporary findings and implementation progress. Do not save code or
-documentation snapshots as lasting memory. `memory_save.body` replaces the body;
-`memory_append` adds related context. Keep each record within 1024 characters.
-Never store secrets or unconfirmed guesses. After a user correction, save the lasting
-agreement that prevents recurrence.
-
-5. Handle outages explicitly. If backlog is unavailable, report the failure and continue
-authorized work that does not require missing context. Keep pending task and memory updates
-in the conversation and save them when access returns. Do not claim a write succeeded
-unless the tool confirmed it.
-
-Scope. `project_board(project=...)` requires an explicit existing project. It returns project
-context, task counts, accessible memory count and up to ten ready tasks and ten tasks claimed
-by this principal on this computer.
-It never creates a project or changes connection scope. Read a task before claiming it;
-another agent can claim it after the board was read.
-Other project-scoped tools use their explicit `project`, then the connection project
-(`--project` on stdio or `?project=<slug>` over HTTP). Local connections can fall back to
-the working directory and register it. An unscoped remote computer must pass `project=`.
-There is no mutable or remembered project selection shared between clients.
-
-Computers. One logical project can have several `(computer, root)` bindings.
-`whoami` reports the authenticated principal as `user@computer`. Project roots use
-`user@computer:path` strings. In `project_list`, `here: true` means this computer has
-a non-empty path. Empty contextual bindings are omitted from roots.
-Do not read, edit, build or run a path belonging to another computer.
-Tasks and memory belong to the logical project, not to one computer.
-
-Projects are private to their creator until shared with project_share. Owners manage access
-and deletion; editors change project content; readers can read it. project_members lists
-members. Lists, direct IDs, resources, search and notifications require project membership.
-Shared notes do not bypass membership. IDs are unique in the common database. Roots belong
-to a principal and computer. whoami reports the authenticated principal. Comments
-record `principal` as `user@computer`; records expose created_by and updated_by as the same strings.
-Use owner/slug names, such as alice/foo, to distinguish projects. Short slugs work only
-when unambiguous; #42 selects a stable numeric ID.
-
-Naming a project. A `project` argument accepts owner/slug, an unambiguous short slug,
-#id, or an explicit path such as `./src`, `/srv/app`, or `~/dev/thing`.
-Unknown names are errors and create nothing. Use `project_save` to register a directory.
-`project_list` shows accessible projects with their full names and task counts.
-
-Project language. A project's nullable `preferred_language` specifies the language for project \
-work. Follow it when writing task titles, descriptions, and progress updates. Read it from \
-`project_board` or `project_list` before writing tasks. Null means no language preference. \
-Set or change it with `project_save`; omit the field to keep it, or send null to clear it.
-
-Tasks. A task has a title, a Markdown description in `body`, a status, a priority, and tags.
-Write task descriptions for the user who will read them in the Web UI. Prefer Markdown:
-use headings, lists, and tables when they make the task easier to understand. Put code in
-triple-backtick fenced blocks with a language label, such as `python`, for syntax highlighting.
-Use fenced blocks labelled `mermaid` for diagrams when they clarify a flow or relationship.
-The Web UI renders Markdown, highlights code, and displays Mermaid diagrams. Explain the
-intent in prose so the task remains understandable when read as plain text through MCP.
-Always track work: set `doing` when starting and `done`, `cancelled`, or `deleted` when appropriate.
-Listings show open statuses, most important first, unless filters ask for others.
-
-Task references. This is an internal agent tracker. Readers outside the agent session cannot
-access its tasks. Never cite backlog task IDs in source code, including comments and docstrings.
-Describe the behavior or reason directly instead. When mentioning a task ID to the user,
-always put its title in quotation marks next to the ID. Never show a bare task ID.
-
-Assignment. Before starting work, claim the task with task_claim(task, expected, assigned).
-Both nullable fields are required. Use expected=null for a free task and assigned=null to
-release. Non-null assigned must be your principal from whoami plus :marker, with a distinct
-URL-safe marker per agent run. On conflict, do not start the task. Status does not release an
-assignment. task_assigned(prefix=null) lists your assignments across accessible projects;
-an explicit literal prefix selects another principal or marker. whoami reports assigned_tasks.
-
-Comments. Use `task_comment_add` for progress, findings, blockers, decisions, and verification.
-Comments are stored separately from the description. `task_update(body=...)` replaces the
-whole description; use it only to revise the task definition. An empty body clears it.
-Status transitions and moves create separate history entries. `task_get` returns all `comments`
-in chronological order. Use `task_comment_list` to read the complete history separately.
-Each entry has its own id, task_id, kind, and creation time.
-
-Notes. Code changes; notes remain. Keep lasting user context unavailable elsewhere: \
-preferences, working agreements, people and responsibilities, business constraints, and reasons \
-for decisions. Check notes whenever you are unsure what to do or need guidance. Notes concern the \
-context around the work, not the project's implementation. Do not save snapshots of code, \
-architecture, configuration, bugs, or documentation. They become stale as the project changes. \
-A useful note should still help after the code is rewritten. Project scope organizes notes; it \
-does not define their subject.
-
-Use `search` as the primary retrieval tool alongside web search. Check saved notes to recall \
-past agreements, preferences, and constraints before making decisions or asking the user again. \
-Use code, documentation, and the web for current technical facts. Retrieve relevant notes by \
-search instead of reading them all. Recheck an old agreement when the user provides new context.
-
-Save useful new context proactively as soon as the user supplies it. Do not wait for a request \
-to remember it or for the session to end. Search first, then update an existing note or create \
-one short note per topic. Use `memory_save` to replace outdated context and `memory_append` for \
-related facts. A supplied body replaces the whole body. Omit guesses, duplicates, and secrets. \
-Shared notes are visible across projects. Use `#note{ID}` as the short identifier for a memory
-note (for example, `#note3`), and `#{ID}` for a task (for example, `#42`). The Web UI opens
-these identifiers as URL fragments: `/ui/#note3` and `/ui/#42`. Pass numeric IDs to MCP tools.
-
-Reach. `task_list`, `memory_list`, `search` and `stats` stay inside one project, cover every \
-project of this computer with `all_projects=true`, every project of another computer with \
-`computer=<name>`, and everything with `all_computers=true`; `project_list` takes the same two \
-computer arguments. Shared notes are visible from every project and every computer. Task and \
-note ids are unique across projects and computers, so `task_get`, `task_update`, `task_move`, \
-`task_delete`, `memory_get`, `memory_append` and `memory_delete` take an id and no project.
-
-Search. `search` is the default retrieval tool for project knowledge, previous work, and user \
-preferences. Search after registration, before investigating a problem or choosing an approach, \
-before asking the user for project facts, and before creating a task or note. Search again \
-whenever any uncertainty or question arises during work. Use a short natural-language question \
-or specific terms; try another phrasing if the results are weak. Inspect returned matches and \
-fetch individual records with `memory_get` or `task_get` only when more detail is needed. Check \
-facts that may have changed. Avoid full listings and reading every task or note. Reserve \
-`task_list` and `memory_list` for an explicitly requested inventory or a complete review; \
-use filters and pagination then. Use `stats` when only counts are needed.
-
-`search` uses text matching for queries with double quotes, or vector search without quotes.
-Use `kinds`
-to select projects, tasks, comments, memory, or several kinds. Task descriptions and comments
-are indexed separately; comment matches include the comment id and task_id.
-Mixed queries search quoted expressions as text and the whole query without quotes as vectors.
-Text matches come first, without duplicate IDs. Embeddings run locally.
-Project results include full_name and exclude archived projects. Membership and scope filter
-FTS and semantic candidates before ranking and limits. Use all_computers=true to discover
-accessible projects when no current project is selected.
-
-Writes. `task_add`, `task_comment_add`, `task_update`, `task_move`, `task_delete`,
-`task_link`, `task_unlink`, `task_claim`,
-`memory_save`, `memory_append`, \
-`memory_delete`, `project_save` and `project_delete` are the only tools that change anything; each \
-one tells subscribed clients which resources went stale, and `_meta["backlog/event"]` of that \
-notification says what the write did: kind, action, id, project, title, status, priority and \
-the writer's computer. The extension `backlog-mcp/events` sends the same event to every \
-listener as `notifications/backlog/task`, `notifications/backlog/memory` (multicast by project \
-slug) and `notifications/backlog/project`; a 2026-07-28 client asks for them in \
-`subscriptions/listen`, older streams get them all. `task_delete` marks a task's status as \
-`deleted` without removing the record. `memory_delete` and `project_delete` are destructive and \
-irreversible: call them only when the user asked for exactly that, never on your own initiative. \
-`memory_delete` deletes at once within the current project and asks the user to confirm when the \
-note belongs to another project or no project is chosen. `project_delete` removes a project with \
-every task and note it holds and always asks the user to confirm. Nothing stands in for the \
-user's answer: a client that cannot ask is refused. Archive with `project_save` when the history \
-should stay.
-
-Skills. This server carries written skills: `triage`, for keeping a board true, and `planning`, \
-for cutting a request into tasks. A client that speaks the skills extension gets them from \
-`skills/list` and `skills/get`. Older clients read \
-`mcp-extensions://io.modelcontextprotocol/skills/skills/list` through `resources/read`, \
-then read the file URIs in that catalogue. Older clients see ordinary namespaced resources. \
-Skills are instructions only: read them, then use the tools above to do the work.
-
-Also available: the resources `backlog://project`, `backlog://projects`, `backlog://tasks`, \
-`backlog://tasks/{id}`, `backlog://memory` and `backlog://memory/{id}` for reading without a tool \
-call, and the prompts `standup`, which drafts an update from recent work, and `groom`, which \
-reviews the open backlog. The parameterless prompt `install_backlog_rules` provides the
-Backlog rules and instructions to install them in global AGENTS.md and CLAUDE.md files.
+INSTRUCTIONS = """Backlog is a task tracker and memory for agents.
+Start with project_board(project). For workflow rules and topic help, call guide().
+The same Markdown is available at backlog://guide and backlog://guide/<topic>.
 """.strip()
 
 #: The backlog the handlers work on. A context variable, so tests can run several at once.
@@ -508,7 +310,7 @@ def note_out(note: Note) -> NoteOut:
 
 
 def note_list_item(note: Note) -> NoteListItem:
-    """The compact note shape used by listings."""
+    """The compact memory entry shape used by listings."""
     return NoteListItem(
         id=note.id,
         project=note.project,
@@ -584,7 +386,7 @@ async def publish_change(event: Event) -> None:
 
     Subscribers by URI get `resources/updated` with the event in `_meta`; listeners of the
     `backlog-mcp/events` extension get the event as `notifications/backlog/<kind>`, task and
-    note events only for the projects they named.
+    memory entry events only for the projects they named.
     """
     match event.kind:
         case Kind.TASK:
@@ -702,10 +504,10 @@ def project_event(project: Project, action: Action, *, computer: str) -> Event:
 async def note_of(
     backlog: Backlog, note_id: int | None, title: str | None, project: str | None
 ) -> Note:
-    """The note an id or a title names, or `LookupError`.
+    """The memory entry an id or a title names, or `LookupError`.
 
-    A title is looked up in the resolved project first, then among the shared notes of the other
-    projects, so a shared note reads from anywhere and only its own project can replace it.
+    A title is looked up in the resolved project first, then among shared memory entries
+    of other projects. Only the owning project can replace it by title.
     """
     connection = await backlog.open()
     if note_id is not None:
@@ -736,7 +538,10 @@ class Nothing(BaseModel):
 class ProjectRef(BaseModel):
     project: str | None = Field(
         default=None,
-        description="Project owner/slug, unique short slug, #id, or path. Defaults to current.",
+        description=(
+            "Project owner/slug, unique short slug, #id, or path. Defaults to connection "
+            "project scope; required if unscoped."
+        ),
     )
 
 
@@ -805,7 +610,10 @@ class ListProjects(BaseModel):
 
 class SaveProject(BaseModel):
     project: str | None = Field(
-        default=None, description="Project to update. Defaults to the one for `root`, else current."
+        default=None,
+        description=(
+            "Project to update. Defaults to the one for `root`, else connection project scope."
+        ),
     )
     root: str | None = Field(
         default=None, description="Directory to register. Defaults to the working directory."
@@ -834,7 +642,10 @@ class AddTask(BaseModel):
     title: str = Field(description="Clear title stating what outcome is to be achieved.")
     body: str = Field(
         default="",
-        description="Reason, constraints, acceptance criteria, and dependent task ids.",
+        description=(
+            "Reason, constraints and acceptance criteria. Express dependencies, parents "
+            "and causes with task_link."
+        ),
     )
     status: Status = Field(
         default=Status.TODO,
@@ -845,11 +656,23 @@ class AddTask(BaseModel):
         description="Priority ranking (urgent, high, normal, low).",
     )
     tags: list[str] = Field(default_factory=list, description="Tags for grouping and filtering.")
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
 
 
 class ListTasks(BaseModel):
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
     all_projects: bool = Field(
         default=False, description="List tasks from every project of this computer."
     )
@@ -960,9 +783,11 @@ class MoveTask(BaseModel):
 
 
 class SaveNote(BaseModel):
+    model_config = {"title": "SaveMemory"}
+
     create_only: bool = Field(
         default=False,
-        description="Create a new note; fail if its title already exists. No id allowed.",
+        description="Create a new memory entry; fail if its title already exists. No id allowed.",
     )
     title: str | None = Field(
         default=None,
@@ -978,58 +803,105 @@ class SaveNote(BaseModel):
         ),
     )
     tags: list[str] | None = Field(default=None, description="Replaces the whole tag list.")
-    shared: bool | None = Field(default=None, description="Make note visible across all projects.")
-    id: int | None = Field(default=None, description="Change this note, whatever its title.")
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    shared: bool | None = Field(
+        default=None, description="Make memory entry visible across all projects."
+    )
+    id: int | None = Field(
+        default=None, description="Change this memory entry, whatever its title."
+    )
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
 
 
 class AppendNote(BaseModel):
+    model_config = {"title": "AppendMemory"}
+
     text: str = Field(
         max_length=NOTE_LIMIT,
         description=(
             "One related fact, preference, or constraint from the user. "
-            f"The whole note must stay within {NOTE_LIMIT} characters."
+            f"The whole memory entry must stay within {NOTE_LIMIT} characters."
         ),
     )
-    id: int | None = Field(default=None, description="The note to extend.")
+    id: int | None = Field(default=None, description="The memory entry to extend.")
     title: str | None = Field(default=None, description="Its title instead, in `project`.")
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
 
 
 class NoteId(BaseModel):
+    model_config = {"title": "MemoryId"}
+
     id: int
 
 
 class ReadNote(BaseModel):
+    model_config = {"title": "ReadMemory"}
+
     id: int | None = Field(
         default=None,
-        description="Note to read. Check notes whenever uncertain about preferences or rules.",
+        description="Memory entry id.",
     )
     title: str | None = Field(default=None, description="Its title instead, in `project`.")
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
 
 
 class ListNotes(BaseModel):
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    model_config = {"title": "ListMemory"}
+
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
     all_projects: bool = Field(
-        default=False, description="List notes from every project of this computer."
+        default=False, description="List memory entries from every project of this computer."
     )
     computer: str | None = Field(
         default=None, description="Every project of the named computer instead."
     )
     all_computers: bool = Field(default=False, description="Every project of every computer.")
     tag: str | None = None
-    shared: bool | None = Field(default=None, description="Only shared notes, or only local.")
+    shared: bool | None = Field(
+        default=None, description="Only shared memory entries, or only local."
+    )
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
     full: bool = Field(
         default=False,
-        description="Include complete note bodies. Defaults to compact note metadata and snippets.",
+        description=(
+            "Include complete memory entry bodies. Defaults to compact memory entry "
+            "metadata and snippets."
+        ),
     )
 
 
 class StatsOf(BaseModel):
-    project: str | None = Field(default=None, description="Defaults to the current project.")
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Defaults to connection project scope (?project= in HTTP, --project on "
+            "stdio); required if unscoped."
+        ),
+    )
     all_projects: bool = Field(
         default=False, description="Count every project of this computer together."
     )
@@ -1041,12 +913,8 @@ class StatsOf(BaseModel):
 
 @registry.tool(title="Current identity", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def whoami(args: Nothing, backlog: Backlog, connection: aiosqlite.Connection) -> Identity:
-    """Report principal as user@computer, auth type and owner handle without selecting a project.
-
-    Stdio and HTTP without authorizers use --default-user (default: $USER), with the same
-    principal as that Basic username. Authenticated Basic and JWT connections report their
-    verified identity. Computer is context, not identity.
-    """
+    """Report principal as user@computer, authentication type and owner handle without selecting a
+    project."""
     return Identity(
         principal=backlog.principal,
         handle=owner_name(backlog.principal),
@@ -1071,18 +939,10 @@ class ReadBoard(BaseModel):
 async def project_board(
     args: ReadBoard, backlog: Backlog, connection: aiosqlite.Connection
 ) -> ProjectBoard:
-    """Start here for an existing project's context, counts and ready/claimed tasks.
-
-    Project is required; this read never creates a project or changes connection scope.
-    Ready tasks are unassigned todo/doing tasks with all direct dependencies closed
-    (done/cancelled/deleted). Inaccessible dependencies prevent readiness.
-    Claimed lists open tasks assigned to this principal and computer, across all markers.
-    Each section has a full count and up to ten {id, title} items ordered by priority, age and id.
-    Task counters cover the whole project; blocked includes status and dependency blockers.
-    Read task_get before claiming one with task_claim; the board is not a reservation.
-    Memory counts include accessible shared memory; search it for relevant agreements.
-    Follow project.preferred_language when writing tasks and progress updates.
-    """
+    """Start here for project context, counts and ready/claimed tasks.
+    Read memory_list(full=true) before work. Verify principal and roots, and follow
+    preferred_language. Read task_get before claiming; the board is not a reservation.
+    This read never creates a project or changes connection scope. See guide('workflow')."""
     project = await backlog.lookup(args.project)
     shown = project_out(project, computer=backlog.computer, principal=backlog.principal)
     counts, ready, claimed = await board(connection, backlog.actor, project.id)
@@ -1156,7 +1016,7 @@ async def project_delete(
     connection: aiosqlite.Connection,
     transaction: Transaction,
 ) -> ProjectDeleted:
-    """Delete a project with every task and note on its board, and free its directories.
+    """Delete a project with every task and memory entry on its board, and free its directories.
 
     DESTRUCTIVE and irreversible. Call it only when the user asked to delete this project in so
     many words. Never call it on your own initiative, and never to tidy up: archive with
@@ -1220,10 +1080,8 @@ async def project_delete(
 async def task_add(
     args: AddTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> TaskOut:
-    """Always work through tasks: create a task to track work on the board before doing it.
-
-    Deconstruct user requests into discrete, verifiable tasks. Search for existing work first
-    to avoid duplicates. Returns the created task with its id."""
+    """Create a task for work that spans more than one step or session. Search for an existing task
+    first. See guide('tasks')."""
     project = await backlog.resolve(args.project)
     async with transaction:
         task = await add_task(
@@ -1245,10 +1103,8 @@ async def task_add(
 async def task_list(
     args: ListTasks, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Tasks | FullTasks:
-    """List tasks to review current work, inspect open items, or pick the next task to work on.
-
-    Always work through tasks. Defaults to open tasks (todo, doing, blocked) ordered by priority.
-    For finding specific topics, prefer `search`. Use filters and pagination."""
+    """List tasks with filters. To pick the next task, use project_board. Defaults to open tasks
+    ordered by priority. See guide('tasks')."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1336,17 +1192,19 @@ async def task_assigned(
 async def task_claim(
     args: ClaimTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> TaskOut:
-    """Atomically replace assigned only if its current value equals expected.
+    """Atomically replace assigned only when it equals expected (CAS).
+    Both nullable arguments are required; null expected requires an unassigned task.
+    A mismatch is an error even if assigned already has the requested value.
 
-    Both nullable arguments are required. A mismatch is an error with the current assignment,
-    even if it already equals the requested value. Requires editor access. Non-null assigned
-    must use the current principal and a URL-safe marker chosen by the agent. Keep the marker
-    across reconnects. Claim before starting work; on conflict do not start the task.
-    Use assigned=null to release. Status is independent; closing does not release ownership.
-    temporary=true saves the previous assignment for exclusive UI editing. restore=true with
-    assigned=null restores it; only that claimant may restore. Other writes require the edit
-    marker as expected_assigned. Ordinary CAS reassignment invalidates a temporary claim.
-    """
+    Assignment is advisory: it keeps two agents from starting the same task.
+    Any editor may take a task over through CAS. Non-null assigned must use this principal
+    and a URL-safe marker. Keep the marker across reconnects. On conflict, reread before
+    retrying.
+    Closing does not release assignment; release with assigned=null. See guide('tasks').
+
+    temporary=true saves the previous assignment for exclusive UI editing. restore=true
+    with assigned=null restores it; only that claimant may restore. Writes require the edit
+    marker as expected_assigned. Ordinary CAS reassignment invalidates a temporary claim."""
     async with transaction:
         task, updated = await claim_task(
             connection,
@@ -1460,7 +1318,9 @@ async def task_update(
     Closing stamps the closing time; reopening clears it. expected_assigned, when supplied,
     is compared under the writer lock. An active temporary edit claim requires that marker.
     release_edit=true restores its previous assignment in the same transaction.
-    """
+    Waiting for another task is a depends_on link, not blocked status. Use blocked for external
+    blockers and explain in a comment. Before closing, update project memory this task made
+    obsolete. After closing, release through task_claim(assigned=null). See guide('tasks')."""
     async with transaction:
         task = await update_task(
             connection,
@@ -1524,7 +1384,7 @@ async def task_move(
 async def confirm_cross_project_delete(
     record: Note, ex: Exchange, backlog: Backlog
 ) -> Deleted | None:
-    """Ask when the note belongs to another project, or when no project is chosen.
+    """Ask when the memory entry belongs to another project, or when no project is chosen.
 
     A client that cannot ask is refused with `PermissionError`: nothing stands in for the
     user's answer.
@@ -1593,16 +1453,16 @@ async def task_delete(
     )
 
 
-@registry.tool(title="Save a note", annotations=Hint.IDEMPOTENT)
+@registry.tool(title="Save a memory entry", annotations=Hint.IDEMPOTENT)
 async def memory_save(
     args: SaveNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> NoteOut:
-    """Save lasting user context: preferences, agreements, architectural invariants, or constraints.
-
-    Proactively save useful new knowledge as soon as the user supplies it; do not wait.
-    Check notes first if unsure what to do. Code changes; notes remain. Exclude temporary
-    implementation details and doc summaries. Update by id or title; otherwise create a note.
-    Only supplied fields change. Body replaces whole body. Use id to update shared notes."""
+    """Record a lasting agreement, preference or invariant the user stated.
+    Read project memory first and update an existing entry by id instead of creating a
+    near-duplicate. A correction rewrites the body with the current truth; do not append
+    history.
+    Do not store task status, progress or code snapshots; use tasks and comments.
+    Body replaces the whole body, at most 1024 characters. See guide('memory')."""
     if args.create_only and args.id is not None:
         raise ValueError("create_only cannot be used with id")
     if args.id is None:
@@ -1644,13 +1504,12 @@ async def memory_save(
     return note_out(updated)
 
 
-@registry.tool(title="Append to a note")
+@registry.tool(title="Append to a memory entry")
 async def memory_append(
     args: AppendNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> NoteOut:
-    """Append a related fact, preference, or constraint to lasting user context.
-
-    Find the note with `search` first. Use `memory_save` to correct or replace existing content."""
+    """Add a new related fact to an entry. To correct or update existing content, use memory_save.
+    See guide('memory')."""
     found = await note_of(backlog, args.id, args.title, args.project)
     async with transaction:
         updated = await append_note(connection, backlog.actor, found.id, args.text)
@@ -1661,24 +1520,19 @@ async def memory_append(
     return note_out(updated)
 
 
-@registry.tool(title="Read a note", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+@registry.tool(title="Read a memory entry", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
-    """Read saved user context, preferences, conventions, or past agreements.
-
-    ALWAYS check notes whenever you do not know what to do, what style or architecture to follow,
-    or what the user prefers. Check notes before asking questions or making assumptions.
-    Ids work across projects. Titles resolve within the selected project and shared notes."""
+    """Read one memory entry by id or title. IDs work across accessible projects; titles resolve
+    within project scope and shared memory. See guide('memory')."""
     return note_out(await note_of(backlog, args.id, args.title, args.project))
 
 
-@registry.tool(title="List notes", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+@registry.tool(title="List memory entries", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def memory_list(
     args: ListNotes, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Notes | FullNotes:
-    """List persistent notes containing user context, preferences, and agreements.
-
-    Browse notes whenever you lack direction, are unsure how to proceed, or need rules.
-    For targeted topic search, prefer `search`. Use filters and pagination."""
+    """List project memory, including accessible shared entries. Read it with full=true before
+    working on a project; project memory is kept small on purpose. See guide('memory')."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1720,7 +1574,7 @@ async def memory_list(
     )
 
 
-@registry.tool(title="Delete a note", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
+@registry.tool(title="Delete a memory entry", annotations=Hint.DESTRUCTIVE | ~Hint.OPEN_WORLD)
 async def memory_delete(
     args: NoteId,
     ex: Exchange,
@@ -1728,11 +1582,9 @@ async def memory_delete(
     connection: aiosqlite.Connection,
     transaction: Transaction,
 ) -> Deleted:
-    """Delete a note permanently. DESTRUCTIVE: call it only when the user asked for exactly that.
-
-    Never delete a note on your own initiative. A note of the current project goes at once. A
-    note of another project, or any note when no project is chosen, goes only after the user
-    confirms; a client that cannot ask is refused."""
+    """Delete a memory entry permanently, only at the user's request. Entries within the
+    connection's project scope are deleted immediately. Other entries require user confirmation;
+    clients without elicitation are refused."""
     found = await read_note(connection, backlog.actor, args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
@@ -1758,70 +1610,18 @@ async def search(
     connection: aiosqlite.Connection,
     transaction: Transaction,
 ) -> embeddings.Matches:
-    """Primary discovery tool. ALWAYS search first before investigating or deciding.
-
-    Use frequently: at session start, before choosing an approach, before asking questions, and
-    whenever you are uncertain what to do or what conventions apply. Double quotes select
-    full-text search; unquoted words enable multilingual vector search. Mixed queries use both.
-    Prefer targeted search over full listings. Read individual matches with `memory_get` or
-    `task_get` only when detail is needed.
-
-    ## Query syntax
-
-    Without double quotes, search uses vectors to find related meanings only.
-    Quoted expressions alone search text only. Add unquoted words to search both:
-    text search receives only the quoted expressions; vector search receives the whole query
-    with double quotes removed. Mixed results show text matches first, then vector matches,
-    without duplicates. Quoted expressions in a mixed query are combined with AND.
-
-    | Query | Finds |
-    | --- | --- |
-    | `token` | Related meanings, using vector similarity. |
-    | `"token" reset "production"` | Text: token AND production; vector: token reset production |
-    | `"token"` | Only the word token, without prefixes or related meanings. |
-    | `"token*"` | Only the word token. A star inside quotes does not enable prefixes. |
-    | `"token"*` | Words starting with token, including tokens and tokenizer. |
-    | `"refresh token"` | The adjacent words refresh token, in this order. |
-    | `"refresh token"*` | The word refresh followed by a word starting with token. |
-    | `"token" "refresh"` | Both words, anywhere in the same field set. |
-    | `"token" AND "refresh"` | Both words, like the previous example. |
-    | `"token" OR "password"` | Either word, or both. |
-    | `"token" NOT "legacy"` | The word token, excluding records with legacy. |
-    | `("token" OR "password") AND "reset"` | Either token or password, and also reset. |
-    | `"refresh" + "token"` | The phrase refresh token, like quoted adjacent words. |
-    | `NEAR("refresh" "token", 5)` | Both words, either order; at most five words between them. |
-    | `NEAR("refresh" "token")` | The same proximity search with a default distance of ten words. |
-    | `^"token"` | A field starting with the word token. |
-    | `title:"token"` | The word token in the title field. |
-    | `title:("token" OR "password")` | Either word in the title field. |
-    | `{title body}:"token"` | The word token in title or body. |
-    | `-tags:"token"` | The word token in fields other than tags. |
-    | `tags:"web-ui"` | The adjacent words web ui in tags; punctuation is a separator. |
-    | `"say ""hello"" now"` | The phrase say hello now. Double an inner quote to escape it. |
-
-    **Fields:** Tasks and Memory support `title`, `body`, `tags`; Comments support `body`;
-    Projects support `slug`, `name`, `description`. Select compatible content types before
-    using a field filter. An unknown field or incomplete expression produces an error.
-
-    Words are case-insensitive; punctuation separates words. Quotes match words, not an entire
-    field or punctuation. Use uppercase `AND`, `OR`, `NOT`, and `NEAR`.
-    Use parentheses to make grouping explicit.
-    A trailing star outside quotes is a word-prefix operator; leading and middle wildcards
-    are not supported. To match punctuation-containing text, put it in double quotes.
-
-    **Filters:** Use the Tag filter (`tag` in MCP) for an exact tag, such as `web-ui`.
-    Choose content types with `kinds`, task statuses with `status`, and scope with `project`,
-    `all_projects`, `computer`, or `all_computers`. `limit` is 1–200 results per content type.
-    `min_score` is -1–1 and filters semantic matches only; it never filters text matches.
-    """
+    """Find tasks, comments, memory and projects by text or meaning.
+    Use it to look up past work or agreements on a topic; for project context, use
+    project_board.
+    Quoted expressions use full-text search, unquoted text uses vectors, mixed queries use both.
+    Examples: `"refresh token"` matches a phrase; `"token"*` matches a prefix;
+    `token reset` searches meaning. See guide('search') for full syntax and filters."""
     return await embeddings.search(args, backlog, connection, transaction)
 
 
 @registry.tool(title="Backlog statistics", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def stats(args: StatsOf, backlog: Backlog) -> Stats:
-    """Count open tasks, closed tasks, and notes, with status and priority breakdowns and tags.
-
-    Use for a high-level board overview before planning or after triage."""
+    """Aggregate counts across projects or computers. For one project, use project_board."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1829,6 +1629,28 @@ async def stats(args: StatsOf, backlog: Backlog) -> Stats:
         all_computers=args.all_computers,
     )
     return await stats_of(backlog, reach)
+
+
+class GuideTopic(BaseModel):
+    topic: str | None = Field(default=None, description="Topic name; omit for the index.")
+
+
+@registry.tool(title="Backlog guide", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
+async def guide(args: GuideTopic) -> str:
+    """Read workflow rules or help on tasks, memory, search and projects."""
+    return guidance.read(args.topic)
+
+
+def register_guide(topic: str | None) -> None:
+    uri = "backlog://guide" + (f"/{topic}" if topic else "")
+
+    @registry.resource(uri, name=f"guide_{topic or 'index'}", mime_type="text/markdown")
+    async def content(args: Nothing) -> TextResourceContents:
+        return TextResourceContents(uri=uri, mime_type="text/markdown", text=guidance.read(topic))
+
+
+for guide_topic in (None, *guidance.TOPICS):
+    register_guide(guide_topic)
 
 
 @registry.resource("backlog://project", mime_type="application/json")
@@ -1892,7 +1714,7 @@ async def one_task(
 async def known_notes(
     args: Nothing, backlog: Backlog, connection: aiosqlite.Connection
 ) -> list[dict[str, Any]]:
-    """Notes of the current project plus every shared note, most recently changed first."""
+    """Memory entries in connection project scope, including accessible shared entries."""
     project = await backlog.resolve(None)
     found = await read_notes(connection, backlog.actor, project_id=project.id, limit=200)
     return [note_out(item).model_dump(mode="json") for item in found]
@@ -1902,7 +1724,7 @@ async def known_notes(
 async def one_note(
     args: TaskUri, backlog: Backlog, connection: aiosqlite.Connection
 ) -> dict[str, Any]:
-    """One note by id."""
+    """One memory entry by id."""
     if not args.id.isdigit():
         return {"error": f"invalid note id {args.id!r}"}
     found = await read_note(connection, backlog.actor, int(args.id))
@@ -2058,7 +1880,7 @@ async def groom(args: Groom, backlog: Backlog, connection: aiosqlite.Connection)
 async def complete(
     args: CompleteParams, backlog: Backlog, connection: aiosqlite.Connection
 ) -> list[str]:
-    """Complete owner-qualified project names, tags, statuses, priorities, task ids and note ids."""
+    """Complete project names, tags, statuses, priorities, task ids and memory entry ids."""
     value = args.argument.value
     #: The task and the note templates both call their argument `id`; the URI tells them apart.
     about_notes = "memory" in (args.ref.uri or "")

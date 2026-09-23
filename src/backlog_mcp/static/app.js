@@ -956,17 +956,14 @@ syntaxHelp.addEventListener("toggle", async () => {
   const source = client;
   syntaxContent.replaceChildren(el("p", {}, "Loading query syntax…"));
   try {
-    let cursor, description;
-    do {
-      const page = await source.request("tools/list", cursor ? { cursor } : {});
-      description = page.tools.find(tool => tool.name === "search")?.description;
-      cursor = page.nextCursor;
-    } while (!description && cursor);
-    const marker = "## Query syntax";
-    const start = description?.indexOf(marker) ?? -1;
-    if (start < 0) throw new Error("The server does not provide query syntax help.");
+    const response = await source.request("tools/call", {
+      name: "guide", arguments: { topic: "search" },
+    });
+    const text = (response.content || []).filter(item => item.type === "text")
+      .map(item => item.text).join("\n");
+    if (response.isError || !text) throw new Error(text || "Query syntax is unavailable.");
     if (source !== client) return;
-    syntaxContent.replaceChildren(markdown(description.slice(start + marker.length).trim()));
+    syntaxContent.replaceChildren(markdown(text));
     syntaxClient = source;
   } catch (error) {
     if (source === client) syntaxContent.replaceChildren(el("p", {}, `${error.message} Close and reopen query syntax to retry.`));

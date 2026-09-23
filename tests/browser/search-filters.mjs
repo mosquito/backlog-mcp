@@ -10,7 +10,7 @@ let release,
 try {
   await page.route("**/mcp", async (route) => {
     const rpc = route.request().postDataJSON();
-    if (rpc.method === "tools/list" && helpFailure) {
+    if (rpc.method === "tools/call" && rpc.params?.name === "guide" && helpFailure) {
       helpFailure = false;
       return route.fulfill({ status: 503, body: "Unavailable" });
     }

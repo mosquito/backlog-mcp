@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from helpers import mutate
 
-from backlog_mcp import embeddings
+from backlog_mcp import embeddings, guidance
 from backlog_mcp import server as operations
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
@@ -146,7 +146,7 @@ async def test_documented_literal_examples(backlog: Backlog) -> None:
         '"say ""hello"" now"': {"say hello now"},
     }
     for query, expected in cases.items():
-        assert f"`{query}`" in (operations.search.__doc__ or "")
+        assert f"`{query}`" in guidance.read("search")
         found = await embeddings.search(
             embeddings.Search(query=query, kinds=["tasks"]),
             backlog,

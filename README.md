@@ -557,7 +557,7 @@ the query to select content types; the All projects checkbox controls the scope.
 semantic similarity. Status applies only to tasks. Computer scope applies when
 **All projects** is selected. The browser remembers search filters in localStorage.
 Quoted expressions search text; unquoted words enable vector search. Mixed queries use both.
-The **query syntax** link shows examples from the MCP `search` tool description.
+The **query syntax** link reads the same packaged Markdown as `guide("search")`.
 Statistics tags open a
 filtered task list in the same scope.
 Task drafts also survive
@@ -678,10 +678,10 @@ Nothing stands in for that answer: a client without elicitation is refused. `bac
 delete <slug>` does the same and asks first unless `--yes` is given. Archive with
 `project_save` when the history should stay.
 
-The MCP initialize response includes the tracker and memory workflow in `instructions`: check
-project registration, search context, track work in tasks, save lasting agreements, and report
-outages. It uses `memory_*` tools and `task_comment_add` for progress history. The client decides
-whether to include these instructions in the model context.
+The MCP initialize response points to `project_board(project)` as the entry point.
+Call `guide()` for an index or `guide(topic)` for workflow, tasks, memory, search or projects.
+The same packaged Markdown is available at `backlog://guide` and
+`backlog://guide/<topic>`. Clients choose whether to include instructions in model context.
 
 The parameterless MCP prompt `install_backlog_rules`, titled **Install Backlog rules into the
 global Agents config**, returns the complete workflow and instructions to install it in global

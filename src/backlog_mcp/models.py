@@ -464,7 +464,7 @@ class Stats(Actor):
     by_status: dict[str, int] = Field(default_factory=dict)
     by_priority: dict[str, int] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
-    memory: int = Field(default=0, description="Notes in scope, including shared notes.")
+    memory: int = Field(default=0, description="Memory entries in scope, including shared entries.")
 
 
 class Deleted(Actor):
@@ -482,8 +482,10 @@ class ProjectDeleted(Actor):
     full_name: str
     name: str
     tasks: int = Field(description="Tasks the project held, deleted ones included.")
-    memory: int = Field(description="Notes the project held, shared ones included.")
-    shared_notes: int = Field(description="Notes among them that every project could see.")
+    memory: int = Field(description="Memory entries the project held, including shared entries.")
+    shared_notes: int = Field(
+        title="Shared memory", description="Shared memory entries the project held."
+    )
     deleted: bool
     detail: str = ""
 
