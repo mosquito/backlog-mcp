@@ -5,7 +5,7 @@ export function breadcrumbs(target, project) {
   if (project) items.push({ label: project, href: projectRoute(project) });
   switch (target.kind) {
     case "board":
-      items.push({ label: target.params.get("status") === "deleted" ? "Deleted tasks" : "Tasks" });
+      if (target.params.get("status") === "deleted") items.push({ label: "Deleted tasks" });
       break;
     case "task":
     case "edit":
