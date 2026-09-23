@@ -22,7 +22,7 @@ import { commentComposer } from "./comment-composer.js";
 import { breadcrumbs } from "./breadcrumbs.js";
 import { createProject } from "./project-form.js";
 import { taskBrowser } from "./task-browser.js";
-import { scopeArgs, scopeControls, scopeLabel } from "./scope.js";
+import { scopeArgs, scopeControls } from "./scope.js";
 import { statisticsPage } from "./statistics.js";
 import { assignmentControl, assignmentsPage } from "./assignments.js";
 import { projectSettings } from "./project-settings.js";
@@ -951,6 +951,18 @@ const searchLabels = {
 const query = document.querySelector("#search-query"),
   all = document.querySelector("#search-all"),
   results = document.querySelector("#search-results");
+const searchStatus = document.querySelector("#search-status"),
+  searchTag = document.querySelector("#search-tag"),
+  searchScope = document.querySelector("#search-scope"),
+  searchComputer = document.querySelector("#search-computer"),
+  searchLimit = document.querySelector("#search-limit"),
+  searchScore = document.querySelector("#search-score");
+function syncSearchScope() {
+  searchScope.disabled = !all.checked;
+  searchComputer.disabled = !all.checked || searchScope.value !== "computer";
+  searchComputer.required = !searchComputer.disabled;
+  document.querySelector("#search-computer-field").hidden = searchComputer.disabled;
+}
 let searchAllPreference = false;
 const searchPreferenceKey = () => `backlog:search:${endpoint}:${identity.principal}`;
 function searchPlaceholder() {
@@ -964,11 +976,18 @@ function openSearch() {
   } catch {
     saved = null;
   }
+  searchStatus.value = saved?.status || "";
+  searchTag.value = saved?.tag || "";
+  searchScope.value = ["all", "current", "computer"].includes(saved?.scope) ? saved.scope : "all";
+  searchComputer.value = saved?.computer || "";
+  searchLimit.value = saved?.limit ?? 15;
+  searchScore.value = saved?.min_score ?? 0.12;
   searchAllPreference = saved?.all === true;
   for (const input of searchKinds)
     input.checked = Array.isArray(saved?.kinds) ? saved.kinds.includes(input.value) : true;
   all.checked = !project || searchAllPreference;
   all.disabled = !project;
+  syncSearchScope();
   searchPlaceholder();
   dialog.showModal();
   query.focus();
@@ -1016,12 +1035,19 @@ query.addEventListener("compositionend", scheduleSearch);
 all.onchange = () => {
   clearTimeout(searchTimer);
   if (!all.disabled) searchAllPreference = all.checked;
+  syncSearchScope();
   searchPlaceholder();
   try {
     localStorage.setItem(
       searchPreferenceKey(),
       JSON.stringify({
         all: searchAllPreference,
+        status: searchStatus.value,
+        tag: searchTag.value,
+        scope: searchScope.value,
+        computer: searchComputer.value,
+        limit: searchLimit.value,
+        min_score: searchScore.value,
         kinds: searchKinds.filter((input) => input.checked).map((input) => input.value),
       }),
     );
@@ -1030,7 +1056,9 @@ all.onchange = () => {
   }
   search();
 };
-for (const input of searchKinds) input.onchange = all.onchange;
+for (const input of [
+  ...searchKinds, searchStatus, searchTag, searchScope, searchComputer, searchLimit, searchScore,
+]) input.onchange = all.onchange;
 dialog.addEventListener("close", () => {
   searchGeneration++;
   clearTimeout(searchTimer);
@@ -1051,9 +1079,23 @@ async function search() {
   }
   searchState("Searching…", true);
   try {
-    const args = { query: query.value, kinds, limit: 15, min_score: 0.12 };
-    if (all.checked || !project) args.all_computers = true;
-    else args.project = project;
+    if (
+      ![searchLimit, searchScore, searchComputer].every((input) => input.checkValidity()) ||
+      (!searchComputer.disabled && !searchComputer.value.trim())
+    ) {
+      searchState("Check the filters: limit 1–200, similarity -1–1, and a computer name when required.");
+      return;
+    }
+    const args = {
+      query: query.value, kinds,
+      limit: Number(searchLimit.value), min_score: Number(searchScore.value),
+    };
+    if (searchStatus.value) args.status = [searchStatus.value];
+    if (searchTag.value.trim()) args.tag = searchTag.value.trim();
+    if (!all.checked && project) args.project = project;
+    else if (searchScope.value === "current") args.all_projects = true;
+    else if (searchScope.value === "computer") args.computer = searchComputer.value.trim();
+    else args.all_computers = true;
     const found = await call("search", args);
     if (current !== searchGeneration || !identity || !dialog.open) return;
     query.setAttribute("aria-busy", "false");

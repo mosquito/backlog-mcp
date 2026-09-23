@@ -22,8 +22,8 @@
   </head>
   <body>
     <header inert>
-      <a class="brand" href="/ui/">Backlog<span class="brand-dot">.</span></a
-      ><nav id="breadcrumbs" aria-label="Breadcrumb" hidden></nav>
+      <a class="brand" href="/ui/">Backlog<span class="brand-dot">.</span></a>
+      <nav id="breadcrumbs" aria-label="Breadcrumb" hidden></nav>
       <nav id="section-switch" class="view-switch" aria-label="Sections" hidden>
         <a id="tasks-open" href="/ui/" class="button quiet">Tasks</a>
         <a id="memory-open" href="/ui/?view=memory" class="button quiet">Memory</a>
@@ -72,6 +72,56 @@
           ><input type="checkbox" name="search-kind" value="projects" checked />Projects</label
         >
       </fieldset>
+      <details class="search-advanced">
+        <summary>Filters</summary>
+        <div class="search-options">
+          <label
+            >Task status<select id="search-status">
+              <option value="">Any status</option>
+              <option>todo</option>
+              <option>doing</option>
+              <option>blocked</option>
+              <option>done</option>
+              <option>cancelled</option>
+              <option>deleted</option>
+            </select></label
+          >
+          <label>Tag<input id="search-tag" placeholder="Any tag" /></label>
+          <label
+            >Computer scope<select id="search-scope">
+              <option value="all">All computers</option>
+              <option value="current">This computer</option>
+              <option value="computer">By name</option>
+            </select></label
+          >
+          <label id="search-computer-field" hidden
+            >Computer<input id="search-computer" placeholder="Computer name"
+          /></label>
+          <label
+            >Results per type<input
+              id="search-limit"
+              type="number"
+              min="1"
+              max="200"
+              step="1"
+              value="15"
+              required
+          /></label>
+          <label
+            >Minimum similarity<input
+              id="search-score"
+              type="number"
+              min="-1"
+              max="1"
+              step="any"
+              value="0.12"
+              required
+          /></label>
+        </div>
+        <p class="muted">
+          Status applies only to tasks. Computer scope applies when All projects is selected.
+        </p>
+      </details>
       <div id="search-results"></div>
     </dialog>
   </body>

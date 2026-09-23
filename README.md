@@ -503,7 +503,7 @@ Open `/` or `/ui/` on the HTTP server. The root redirects to the tracker.
 The diagnostic MCP console is at `/console`; `--http-no-console` disables it.
 The MCP URL remains `/mcp`, including its existing query parameters.
 
-Use **Connect agent** in the header to open the public setup page at
+Use **Connect agent** in the header (or footer on phones) to open the public setup page at
 `/ui/static/connect.html`. It derives the MCP URL from the current origin and
 accepts Basic credentials or a Bearer token. Configuration generation runs in
 the browser without sending or saving credentials. Copy commands or configuration
@@ -522,8 +522,19 @@ Both views use the same filters and loaded tasks. The table shows task ID/title,
 status, priority, assignment, update time, and tags. On narrow screens, scroll
 inside the table to reach its other columns. Drag a task between
 columns to change its status. Filters are saved in the page URL. The board loads
-up to 500 open tasks and the 50 most recently changed completed tasks. Use Refresh
-to reload it; changes from other clients do not appear automatically.
+tasks in pages as you scroll. Use Refresh to reload it; changes from other clients
+do not appear automatically. **Deleted** opens the deleted-task filter. Expand
+**Ready** or **My active tasks** for board summaries.
+
+Use **New project** on the project list to create a project. In project **Settings**,
+edit its name, description, language, or add a directory binding for the current
+principal and computer. Editors can archive or restore a project; only owners can
+delete it. Deletion requires confirmation from the server.
+
+Use **All tasks**, **My assignments**, and **Statistics** from the project list.
+Task, note, and statistics views support a project, the current computer, a named
+computer, or all computers. Task details let you claim an unassigned task or release
+your own assignment. The assignments page supports a principal or marker prefix.
 
 Markdown supports fenced code blocks with language names such as `python`, `js`,
 `json`, or `sql`. A `mermaid` fence renders a diagram. Unknown languages remain
@@ -535,12 +546,17 @@ Use **Memory** in the header to browse notes for the current project or all
 accessible projects. Filter by tag or shared status, scroll to load more notes, and
 open a note to read its Markdown content, source project, tags, and author dates.
 Use **Add note** to create memory or **Edit note** on a note you can edit.
+**Append** adds text without replacing the existing note. **Delete note** requires
+confirmation; failed requests keep the displayed note and entered text.
 The form saves drafts in this browser, supports Markdown preview, and limits content
 to 1024 characters. Add note refuses duplicate titles. Links use `#note123`; `#123` still
 identifies a task.
 Cmd+K searches tasks, comments, memory, and projects. Use the checkboxes below
 the query to select content types; the All projects checkbox controls the scope.
-The browser remembers these checkboxes in localStorage. Task drafts also survive
+**Filters** adds task status, tag, computer scope, results per type, and minimum
+semantic similarity. Status applies only to tasks. Computer scope applies when
+**All projects** is selected. The browser remembers search filters in localStorage.
+Task drafts also survive
 refresh and are removed after a successful save or explicit discard.
 
 Sign in with Basic credentials or a Bearer token supported by the server.
