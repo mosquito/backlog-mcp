@@ -664,7 +664,8 @@ a:focus-visible {
 .filters > * {
   width: 100%;
 }
-.board-page > .muted {
+.board-page > .muted,
+.board-results > .muted {
   font-size: 12px;
   margin: 12px 0 0;
 }
@@ -1646,4 +1647,8 @@ button,
   padding: 16px 8px;
   font-size: 12px;
   text-align: center;
+}
+
+.board-page > [role="status"]:empty {
+  display: none;
 }

@@ -17,9 +17,14 @@ export async function run(page, url) {
     updated_at: 1,
   }));
   const requests = [];
+  let searchStarted;
+  const slowStarted = new Promise((resolve) => {
+    searchStarted = resolve;
+  });
   let fail = false,
     hold = false,
-    release;
+    release,
+    releaseSearch;
   await page.route("**/mcp", async (route) => {
     const body = route.request().postDataJSON();
     if (body.method !== "tools/call") return route.continue();
@@ -50,6 +55,18 @@ export async function run(page, url) {
       result = {
         items: selected.slice(offset, offset + args.limit),
         count: selected.length,
+      };
+    } else if (name === "search") {
+      assert.equal(args.project, "test/pagination");
+      assert.deepEqual(args.kinds, ["tasks"]);
+      assert.equal(args.limit, 100);
+      if (args.query === "slow")
+        await new Promise((resolve) => {
+          releaseSearch = resolve;
+          searchStarted();
+        });
+      result = {
+        tasks: args.query === "empty" ? [] : tasks.slice(0, args.query === "slow" ? 9 : 6),
       };
     } else return route.continue();
     await route.fulfill({
@@ -113,16 +130,30 @@ export async function run(page, url) {
   hold = true;
   await bottom(".task-table-region");
   await page.waitForFunction(() => document.querySelector('.task-table-region[aria-busy="true"]'));
-  await page.getByRole("textbox", { name: "Tag filter" }).fill("small");
-  await page.getByRole("button", { name: "Apply filters" }).click();
+  await page.getByRole("searchbox", { name: "Search tasks" }).fill("small");
   await count(".task-table tbody tr", 6);
   release();
   await page.waitForTimeout(150);
   assert.equal(await page.locator(".task-table tbody tr").count(), 6);
-  await page.getByRole("textbox", { name: "Tag filter" }).fill("empty");
-  await page.getByRole("button", { name: "Apply filters" }).click();
+  await page.getByRole("searchbox", { name: "Search tasks" }).fill("empty");
   await page.getByText("No tasks", { exact: true }).waitFor();
   assert.equal(await page.locator(".task-table tbody tr").count(), 0);
+  const quick = page.getByRole("searchbox", { name: "Search tasks" });
+  await quick.fill("slow");
+  await slowStarted;
+  await quick.fill("small");
+  await count(".task-table tbody tr", 6);
+  assert.equal(await quick.evaluate((node) => node === document.activeElement), true);
+  assert.equal(new URL(page.url()).searchParams.get("q"), "small");
+  releaseSearch();
+  await page.waitForTimeout(150);
+  assert.equal(await page.locator(".task-table tbody tr").count(), 6);
+  await page.getByRole("button", { name: "Kanban", exact: true }).click();
+  await count(".card", 6);
+  assert.equal(await quick.inputValue(), "small");
+  await quick.fill("");
+  await count('.column[data-status="todo"] .card', 50);
+  assert.equal(new URL(page.url()).searchParams.has("q"), false);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(board("table"));
   await count(".task-table tbody tr", 50);

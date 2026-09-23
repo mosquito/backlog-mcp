@@ -288,40 +288,53 @@ async function board(target) {
     preferredView = null;
   }
   const tableView = (params.get("view") || preferredView) === "table";
-  const filters = { project: target.project };
-  if (params.get("tag")) filters.tag = params.get("tag");
-  if (params.get("priority")) filters.priority = params.get("priority");
+  const queryText = params.get("q") || "";
   const groups = tableView
     ? [["todo", "doing", "blocked"], ["done"]]
     : statuses.slice(0, 4).map((status) => [status]);
-  const requests = groups.map((status) => ({
-    ...filters,
-    status,
-    order: status[0] === "done" ? "recent" : "backlog",
-    limit: 50,
-  }));
-  const [pages, summary] = await Promise.all([
-    Promise.all(requests.map((args) => call("task_list", args))),
+  async function loadSources(text, priorityValue) {
+    if (text) {
+      const found = await call("search", {
+        project: target.project,
+        query: text,
+        kinds: ["tasks"],
+        status: statuses.slice(0, 4),
+        limit: 100,
+      });
+      const tasks = found.tasks.filter((task) => !priorityValue || task.priority === priorityValue);
+      const matches = tableView
+        ? [tasks]
+        : groups.map((group) => tasks.filter((task) => group.includes(task.status)));
+      return matches.map((items) => ({ args: {}, page: { items, count: items.length } }));
+    }
+    const requests = groups.map((status) => ({
+      project: target.project,
+      ...(priorityValue ? { priority: priorityValue } : {}),
+      status,
+      order: status[0] === "done" ? "recent" : "backlog",
+      limit: 50,
+    }));
+    return Promise.all(
+      requests.map(async (args) => ({ args, page: await call("task_list", args) })),
+    );
+  }
+  const [sources, summary] = await Promise.all([
+    loadSources(queryText, params.get("priority")),
     call("project_board", { project: target.project }),
   ]);
-  const sources = requests.map((args, index) => ({ args, page: pages[index] }));
-  const tag = el("input", {
-    placeholder: "Filter by tag",
-    value: filters.tag || "",
-    "aria-label": "Tag filter",
+  const counts = el("span", { class: "muted" });
+  const quick = el("input", {
+    type: "search",
+    placeholder: "Search tasks",
+    value: queryText,
+    "aria-label": "Search tasks",
+    autocomplete: "off",
   });
-  const priority = select(["", ...priorities], filters.priority || "", {
+  const priority = select(["", ...priorities], params.get("priority") || "", {
     "aria-label": "Priority filter",
   });
   priority.options[0].text = "All priorities";
-  const apply = () => {
-    const p = new URLSearchParams(params);
-    p.delete("tag");
-    p.delete("priority");
-    if (tag.value.trim()) p.set("tag", tag.value.trim());
-    if (priority.value) p.set("priority", priority.value);
-    navigate(projectRoute(target.project, p));
-  };
+  const apply = () => schedule(0);
   const heading = el(
     "div",
     {},
@@ -355,32 +368,18 @@ async function board(target) {
           apply();
         },
       },
-      tag,
+      quick,
       priority,
-      el("button", { type: "submit" }, "Apply filters"),
+      el("button", { type: "submit" }, "Search"),
     ),
   );
-  const tasks = [];
-  const counts = el("span", { class: "muted" });
-  const pagers = [];
-  const loaded = new Map();
-  function count(key, shown, total) {
-    loaded.set(key, { shown, total });
-    counts.textContent = `${[...loaded.values()].reduce((n, item) => n + item.shown, 0)} of ${[...loaded.values()].reduce((n, item) => n + item.total, 0)} tasks shown`;
-  }
-  function finish(...children) {
-    const page = el("section", { class: "board-page" }, heading, ...children, note);
-    page.mount = () => pagers.forEach((pager) => pager.mount());
-    page.dispose = () => pagers.forEach((pager) => pager.dispose());
-    return page;
-  }
   const switchView = (view) => {
     try {
       localStorage.setItem(viewKey, view);
     } catch {
       notify(new Error("The browser could not save the view preference."));
     }
-    const p = new URLSearchParams(params);
+    const p = new URLSearchParams(location.search);
     p.set("view", view);
     navigate(projectRoute(target.project, p));
   };
@@ -403,8 +402,86 @@ async function board(target) {
       ? el("span", { class: "muted table-scroll-hint" }, "Scroll the table to see all columns")
       : null,
   );
-  const note = el("p", { class: "muted" }, "Tasks load as you scroll. Refresh to load updates.");
   heading.querySelector(".filters").append(toolbar);
+  const message = el("p", { class: "muted", role: "status", "aria-live": "polite" });
+  let results = taskResults(sources, tableView, counts, Boolean(queryText));
+  const panel = el("section", { class: "board-page" }, heading, message, results);
+  let revision = 0,
+    timer,
+    disposed = false;
+  function schedule(delay = 250) {
+    const current = ++revision;
+    clearTimeout(timer);
+    results.dispose();
+    const p = new URLSearchParams(location.search);
+    p.delete("tag");
+    p.delete("q");
+    p.delete("priority");
+    if (quick.value.trim()) p.set("q", quick.value.trim());
+    if (priority.value) p.set("priority", priority.value);
+    history.replaceState(null, "", projectRoute(target.project, p));
+    timer = setTimeout(() => refresh(current), delay);
+  }
+  async function refresh(current) {
+    message.textContent = "Searching…";
+    results.setAttribute("aria-busy", "true");
+    try {
+      const next = await loadSources(quick.value.trim(), priority.value);
+      if (disposed || current !== revision) return;
+      const replacement = taskResults(next, tableView, counts, Boolean(quick.value.trim()));
+      results.replaceWith(replacement);
+      results = replacement;
+      results.mount();
+      message.textContent = "";
+    } catch (error) {
+      if (!disposed && current === revision) {
+        message.replaceChildren(
+          el("span", { class: "error" }, error.message),
+          button("Retry", () => schedule(0)),
+        );
+        results.removeAttribute("aria-busy");
+      }
+    }
+  }
+  quick.oninput = (event) => {
+    if (!event.isComposing) schedule();
+  };
+  quick.addEventListener("compositionstart", () => {
+    revision++;
+    clearTimeout(timer);
+  });
+  quick.addEventListener("compositionend", () => schedule());
+  priority.onchange = () => schedule(0);
+  panel.mount = () => results.mount();
+  panel.dispose = () => {
+    disposed = true;
+    revision++;
+    clearTimeout(timer);
+    results.dispose();
+  };
+  return panel;
+}
+function taskResults(sources, tableView, counts, searching) {
+  const tasks = [];
+  const pagers = [];
+  const loaded = new Map();
+  function count(key, shown, total) {
+    loaded.set(key, { shown, total });
+    counts.textContent = `${[...loaded.values()].reduce((n, item) => n + item.shown, 0)} of ${[...loaded.values()].reduce((n, item) => n + item.total, 0)} tasks shown`;
+  }
+  function finish(...children) {
+    const page = el("section", { class: "board-results" }, ...children, note);
+    page.mount = () => pagers.forEach((pager) => pager.mount());
+    page.dispose = () => pagers.forEach((pager) => pager.dispose());
+    return page;
+  }
+  const note = el(
+    "p",
+    { class: "muted" },
+    searching
+      ? "Up to 100 search matches. Refine your query to narrow the results."
+      : "Tasks load as you scroll. Refresh to load updates.",
+  );
   if (tableView) {
     const table = taskTable([]);
     const pager = taskPagination({
