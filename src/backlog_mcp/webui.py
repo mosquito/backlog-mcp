@@ -20,6 +20,7 @@ MODULES = (
     "breadcrumbs.js",
     "project-settings.js",
     "project-form.js",
+    "assignments.js",
     "diagrams.js",
     "vendor/marked.esm.js",
     "vendor/purify.es.mjs",

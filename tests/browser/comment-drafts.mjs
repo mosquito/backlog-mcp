@@ -36,6 +36,7 @@ try {
         created_by: "test",
         updated_by: "test",
       };
+    else if (name === "project_board") result = { project: { role: "editor" } };
     else if (name === "task_comment_add") {
       if (fail) {
         fail = false;

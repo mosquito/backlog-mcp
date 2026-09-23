@@ -82,6 +82,7 @@ export function route(href = location.href) {
       params,
     };
   }
+  if (params.get("view") === "assigned") return { kind: "assigned", params };
   if (params.get("view") === "new") return { kind: "new", params };
   if (params.get("view") === "settings" && params.get("project"))
     return { kind: "settings", project: params.get("project"), params };

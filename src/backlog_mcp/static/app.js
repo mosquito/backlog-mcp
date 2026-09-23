@@ -21,6 +21,7 @@ import { memoryPage } from "./memory.js";
 import { commentComposer } from "./comment-composer.js";
 import { breadcrumbs } from "./breadcrumbs.js";
 import { createProject } from "./project-form.js";
+import { assignmentControl, assignmentsPage } from "./assignments.js";
 import { projectSettings } from "./project-settings.js";
 
 const content = document.querySelector("#content");
@@ -47,6 +48,7 @@ let client,
 let selectedResult = 0;
 const actions = {
   call,
+  refresh: render,
   notify,
   navigate,
   markdown,
@@ -227,6 +229,8 @@ async function render() {
     } else if (target.kind === "board") {
       selectedProject = target.project;
       page = await board(target);
+    } else if (target.kind === "assigned") {
+      page = await assignmentsPage(target, actions);
     } else if (target.kind === "settings") {
       selectedProject = target.project;
       page = await projectSettings(target.project, actions);
@@ -298,6 +302,7 @@ async function projects(target) {
       "div",
       { class: "row spread" },
       el("p", { class: "subtitle" }, `${data.count} projects · Pick up where you left off.`),
+      link("My assignments", "/ui/?view=assigned", "button"),
       el("label", { class: "inline" }, toggle, "Include archived"),
     ),
     el("div", { class: "projects" }, ...data.items.map((p) => linkNode(p))),
@@ -466,6 +471,7 @@ async function board(target) {
       ),
     ),
     counts,
+    link("My assignments", "/ui/?view=assigned"),
     tableView
       ? el("span", { class: "muted table-scroll-hint" }, "Scroll the table to see all columns")
       : null,
@@ -695,6 +701,7 @@ async function detail(task) {
       { class: "task-actions" },
       field("Status", status),
       field("Priority", priority),
+      await assignmentControl(task, actions),
       link("Edit task", taskRoute(task.id, true), "button"),
       button(
         "Move",
