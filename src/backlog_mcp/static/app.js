@@ -14,6 +14,7 @@ import {
 } from "./dom.js";
 import { editor } from "./editor.js";
 import { taskPicker } from "./task-picker.js";
+import { taskTable } from "./task-table.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
@@ -257,6 +258,7 @@ function linkNode(p) {
 }
 async function board(target) {
   const params = target.params;
+  const tableView = params.get("view") === "table";
   const filters = { project: target.project };
   if (params.get("tag")) filters.tag = params.get("tag");
   if (params.get("priority")) filters.priority = params.get("priority");
@@ -275,7 +277,9 @@ async function board(target) {
   });
   priority.options[0].text = "All priorities";
   const apply = () => {
-    const p = new URLSearchParams();
+    const p = new URLSearchParams(params);
+    p.delete("tag");
+    p.delete("priority");
     if (tag.value.trim()) p.set("tag", tag.value.trim());
     if (priority.value) p.set("priority", priority.value);
     navigate(projectRoute(target.project, p));
@@ -318,8 +322,39 @@ async function board(target) {
       el("button", { type: "submit" }, "Apply filters"),
     ),
   );
-  const columns = el("div", { class: "board" });
   const tasks = [...open.items, ...done.items];
+  const switchView = (view) => {
+    const p = new URLSearchParams(params);
+    p.set("view", view);
+    navigate(projectRoute(target.project, p));
+  };
+  const viewButton = (title, view, selected) => {
+    const control = button(title, () => switchView(view));
+    control.setAttribute("aria-pressed", String(selected));
+    return control;
+  };
+  const toolbar = el(
+    "div",
+    { class: "board-toolbar" },
+    el(
+      "div",
+      { class: "view-switch", role: "group", "aria-label": "Task view" },
+      viewButton("Kanban", "kanban", !tableView),
+      viewButton("Table", "table", tableView),
+    ),
+    el("span", { class: "muted" }, `${tasks.length} tasks shown`),
+    tableView && tasks.length
+      ? el("span", { class: "muted table-scroll-hint" }, "Scroll the table to see all columns")
+      : null,
+  );
+  const note = el(
+    "p",
+    { class: "muted" },
+    "Showing up to 500 open tasks and the 50 most recently changed completed tasks. Refresh to load updates.",
+  );
+  if (tableView)
+    return el("section", { class: "board-page" }, heading, toolbar, taskTable(tasks), note);
+  const columns = el("div", { class: "board" });
   for (const status of statuses.slice(0, 4)) {
     const items = tasks.filter((t) => t.status === status);
     const column = el(
@@ -379,17 +414,7 @@ async function board(target) {
     };
     columns.append(column);
   }
-  return el(
-    "section",
-    { class: "board-page" },
-    heading,
-    columns,
-    el(
-      "p",
-      { class: "muted" },
-      `Showing up to 500 open tasks and the 50 most recently changed completed tasks. Refresh to load updates.`,
-    ),
-  );
+  return el("section", { class: "board-page" }, heading, toolbar, columns, note);
 }
 async function detail(task) {
   const panel = el("section", { class: "detail" });

@@ -511,7 +511,11 @@ Task links use `/ui/#123`. Other state uses query parameters, such as
 Existing hash routes redirect to this format.
 
 The tracker supports projects, a kanban board, task details, Markdown editing,
-comments, task relations, and search with Cmd+K or Ctrl+K. Drag a task between
+comments, task relations, and search with Cmd+K or Ctrl+K. Switch between Kanban
+and Table on a project page; `view=table` in the query string preserves the choice.
+Both views use the same filters and loaded tasks. The table shows task ID/title,
+status, priority, assignment, update time, and tags. On narrow screens, scroll
+inside the table to reach its other columns. Drag a task between
 columns to change its status. Filters are saved in the page URL. The board loads
 up to 500 open tasks and the 50 most recently changed completed tasks. Use Refresh
 to reload it; changes from other clients do not appear automatically.
