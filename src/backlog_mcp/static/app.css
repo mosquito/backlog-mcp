@@ -1636,3 +1636,14 @@ button,
     margin-top: 10px;
   }
 }
+
+.task-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 8px;
+  font-size: 12px;
+  text-align: center;
+}

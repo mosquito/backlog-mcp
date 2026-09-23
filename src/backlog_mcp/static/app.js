@@ -16,6 +16,7 @@ import {
 import { editor } from "./editor.js";
 import { taskPicker } from "./task-picker.js";
 import { taskTable } from "./task-table.js";
+import { taskPagination } from "./task-pagination.js";
 import { memoryPage } from "./memory.js";
 
 const content = document.querySelector("#content");
@@ -290,11 +291,20 @@ async function board(target) {
   const filters = { project: target.project };
   if (params.get("tag")) filters.tag = params.get("tag");
   if (params.get("priority")) filters.priority = params.get("priority");
-  const [open, done, summary] = await Promise.all([
-    call("task_list", { ...filters, status: ["todo", "doing", "blocked"], limit: 500 }),
-    call("task_list", { ...filters, status: ["done"], order: "recent", limit: 50 }),
+  const groups = tableView
+    ? [["todo", "doing", "blocked"], ["done"]]
+    : statuses.slice(0, 4).map((status) => [status]);
+  const requests = groups.map((status) => ({
+    ...filters,
+    status,
+    order: status[0] === "done" ? "recent" : "backlog",
+    limit: 50,
+  }));
+  const [pages, summary] = await Promise.all([
+    Promise.all(requests.map((args) => call("task_list", args))),
     call("project_board", { project: target.project }),
   ]);
+  const sources = requests.map((args, index) => ({ args, page: pages[index] }));
   const tag = el("input", {
     placeholder: "Filter by tag",
     value: filters.tag || "",
@@ -350,7 +360,20 @@ async function board(target) {
       el("button", { type: "submit" }, "Apply filters"),
     ),
   );
-  const tasks = [...open.items, ...done.items];
+  const tasks = [];
+  const counts = el("span", { class: "muted" });
+  const pagers = [];
+  const loaded = new Map();
+  function count(key, shown, total) {
+    loaded.set(key, { shown, total });
+    counts.textContent = `${[...loaded.values()].reduce((n, item) => n + item.shown, 0)} of ${[...loaded.values()].reduce((n, item) => n + item.total, 0)} tasks shown`;
+  }
+  function finish(...children) {
+    const page = el("section", { class: "board-page" }, heading, ...children, note);
+    page.mount = () => pagers.forEach((pager) => pager.mount());
+    page.dispose = () => pagers.forEach((pager) => pager.dispose());
+    return page;
+  }
   const switchView = (view) => {
     try {
       localStorage.setItem(viewKey, view);
@@ -375,52 +398,75 @@ async function board(target) {
       viewButton("Kanban", "kanban", !tableView),
       viewButton("Table", "table", tableView),
     ),
-    el("span", { class: "muted" }, `${tasks.length} tasks shown`),
-    tableView && tasks.length
+    counts,
+    tableView
       ? el("span", { class: "muted table-scroll-hint" }, "Scroll the table to see all columns")
       : null,
   );
-  const note = el(
-    "p",
-    { class: "muted" },
-    "Showing up to 500 open tasks and the 50 most recently changed completed tasks. Refresh to load updates.",
-  );
+  const note = el("p", { class: "muted" }, "Tasks load as you scroll. Refresh to load updates.");
   heading.querySelector(".filters").append(toolbar);
-  if (tableView) return el("section", { class: "board-page" }, heading, taskTable(tasks), note);
+  if (tableView) {
+    const table = taskTable([]);
+    const pager = taskPagination({
+      sources,
+      root: table,
+      call,
+      append: (items) => table.appendTasks(items),
+      changed: (shown, total) => count("table", shown, total),
+    });
+    table.append(pager.sentinel);
+    pagers.push(pager);
+    return finish(table);
+  }
   const columns = el("div", { class: "board" });
-  for (const status of statuses.slice(0, 4)) {
-    const items = tasks.filter((t) => t.status === status);
+  for (const [index, status] of statuses.slice(0, 4).entries()) {
+    const counter = el("span", { class: "count" });
     const column = el(
       "section",
       { class: "column", "data-status": status },
-      el("h2", {}, status, el("span", { class: "count" }, String(items.length))),
+      el("h2", {}, status, counter),
     );
     const stack = el("div", { class: "stack" });
     column.append(stack);
-    for (const task of items) {
-      const card = el(
-        "article",
-        { class: "card", draggable: true, "data-task": task.id },
-        el(
-          "div",
-          { class: "card-meta" },
-          `#${task.id}`,
-          el("span", { class: `priority ${task.priority}` }, task.priority),
-        ),
-        link(task.title, taskRoute(task.id)),
-        el("div", {}, ...(task.tags || []).map((t) => el("span", { class: "tag" }, t))),
-        el(
-          "small",
-          { class: "muted", title: task.assigned || "Unassigned" },
-          task.assigned || "Unassigned",
-        ),
-      );
-      card.ondragstart = (event) => {
-        event.dataTransfer.setData("text/plain", String(task.id));
-        event.dataTransfer.effectAllowed = "move";
-      };
-      stack.append(card);
+    function append(items) {
+      tasks.push(...items);
+      for (const task of items) {
+        const card = el(
+          "article",
+          { class: "card", draggable: true, "data-task": task.id },
+          el(
+            "div",
+            { class: "card-meta" },
+            `#${task.id}`,
+            el("span", { class: `priority ${task.priority}` }, task.priority),
+          ),
+          link(task.title, taskRoute(task.id)),
+          el("div", {}, ...(task.tags || []).map((t) => el("span", { class: "tag" }, t))),
+          el(
+            "small",
+            { class: "muted", title: task.assigned || "Unassigned" },
+            task.assigned || "Unassigned",
+          ),
+        );
+        card.ondragstart = (event) => {
+          event.dataTransfer.setData("text/plain", String(task.id));
+          event.dataTransfer.effectAllowed = "move";
+        };
+        stack.insertBefore(card, stack.querySelector(".task-pagination"));
+      }
     }
+    const pager = taskPagination({
+      sources: [sources[index]],
+      root: stack,
+      call,
+      append,
+      changed: (shown, total) => {
+        counter.textContent = `${shown} / ${total}`;
+        count(status, shown, total);
+      },
+    });
+    stack.append(pager.sentinel);
+    pagers.push(pager);
     column.ondragover = (event) => {
       event.preventDefault();
       event.dataTransfer.dropEffect = "move";
@@ -447,7 +493,7 @@ async function board(target) {
     };
     columns.append(column);
   }
-  return el("section", { class: "board-page" }, heading, columns, note);
+  return finish(columns);
 }
 async function detail(task) {
   const panel = el("section", { class: "detail" });

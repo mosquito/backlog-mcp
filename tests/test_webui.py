@@ -25,6 +25,7 @@ async def test_ui_is_public_and_mcp_is_protected(backlog: Backlog, console: bool
             "editor.js",
             "task-picker.js",
             "task-table.js",
+            "task-pagination.js",
             "memory.js",
             "vendor/purify.es.mjs",
             "connect.html",

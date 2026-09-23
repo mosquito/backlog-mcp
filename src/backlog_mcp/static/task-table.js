@@ -1,17 +1,6 @@
 import { el, link, date, taskRoute } from "./dom.js";
 
 export function taskTable(tasks) {
-  if (!tasks.length)
-    return el(
-      "div",
-      { class: "panel table-empty" },
-      el("strong", {}, "No tasks to show"),
-      el(
-        "p",
-        { class: "muted" },
-        "This project has no matching open or completed tasks. Try changing the filters.",
-      ),
-    );
   const table = el(
     "table",
     { class: "task-table" },
@@ -27,49 +16,9 @@ export function taskTable(tasks) {
         ),
       ),
     ),
-    el(
-      "tbody",
-      {},
-      ...tasks.map((task) =>
-        el(
-          "tr",
-          { "data-task": task.id },
-          el(
-            "th",
-            { scope: "row", class: "task-table-title" },
-            el("span", { class: "task-table-id" }, `#${task.id}`),
-            link(task.title, taskRoute(task.id)),
-          ),
-          el("td", {}, el("span", { class: `task-status status-${task.status}` }, task.status)),
-          el("td", {}, el("span", { class: `priority ${task.priority}` }, task.priority)),
-          el(
-            "td",
-            { class: "task-table-assigned" },
-            el("span", { title: task.assigned || "Unassigned" }, task.assigned || "Unassigned"),
-          ),
-          el(
-            "td",
-            { class: "task-table-updated" },
-            task.updated_at
-              ? el(
-                  "time",
-                  { dateTime: new Date(task.updated_at * 1000).toISOString() },
-                  date(task.updated_at),
-                )
-              : "—",
-          ),
-          el(
-            "td",
-            { class: "task-table-tags" },
-            ...(task.tags?.length
-              ? task.tags.map((tag) => el("span", { class: "tag" }, tag))
-              : [el("span", { class: "muted" }, "—")]),
-          ),
-        ),
-      ),
-    ),
+    el("tbody", {}, ...tasks.map(taskRow)),
   );
-  return el(
+  const region = el(
     "div",
     {
       class: "task-table-region",
@@ -78,5 +27,47 @@ export function taskTable(tasks) {
       tabIndex: 0,
     },
     table,
+  );
+  region.appendTasks = (items) => {
+    table.querySelector("tbody").append(...items.map(taskRow));
+  };
+  return region;
+}
+
+function taskRow(task) {
+  return el(
+    "tr",
+    { "data-task": task.id },
+    el(
+      "th",
+      { scope: "row", class: "task-table-title" },
+      el("span", { class: "task-table-id" }, `#${task.id}`),
+      link(task.title, taskRoute(task.id)),
+    ),
+    el("td", {}, el("span", { class: `task-status status-${task.status}` }, task.status)),
+    el("td", {}, el("span", { class: `priority ${task.priority}` }, task.priority)),
+    el(
+      "td",
+      { class: "task-table-assigned" },
+      el("span", { title: task.assigned || "Unassigned" }, task.assigned || "Unassigned"),
+    ),
+    el(
+      "td",
+      { class: "task-table-updated" },
+      task.updated_at
+        ? el(
+            "time",
+            { dateTime: new Date(task.updated_at * 1000).toISOString() },
+            date(task.updated_at),
+          )
+        : "—",
+    ),
+    el(
+      "td",
+      { class: "task-table-tags" },
+      ...(task.tags?.length
+        ? task.tags.map((tag) => el("span", { class: "tag" }, tag))
+        : [el("span", { class: "muted" }, "—")]),
+    ),
   );
 }
