@@ -198,6 +198,11 @@ Tasks. A task has a title, a Markdown description in `body`, a status, a priorit
 Always track work: set `doing` when starting and `done`, `cancelled`, or `deleted` when appropriate.
 Listings show open statuses, most important first, unless filters ask for others.
 
+Task references. This is an internal agent tracker. Readers outside the agent session cannot
+access its tasks. Never cite backlog task IDs in source code, including comments and docstrings.
+Describe the behavior or reason directly instead. When mentioning a task ID to the user,
+always put its title in quotation marks next to the ID. Never show a bare task ID.
+
 Assignment. Before starting work, claim the task with task_claim(task, expected, assigned).
 Both nullable fields are required. Use expected=null for a free task and assigned=null to
 release. Non-null assigned must be your principal from whoami plus :marker, with a distinct
