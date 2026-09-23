@@ -32,10 +32,11 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
   });
   const body = el("textarea", {
     name: "body",
+    id: "task-description",
     value: values.body || "",
     "aria-label": "Description",
   });
-  const preview = el("div", { class: "panel markdown", hidden: true });
+  const preview = el("div", { class: "editor-preview markdown", hidden: true });
   const conflict = el("section", { class: "panel conflict", hidden: true });
   const submit = el(
     "button",
@@ -76,30 +77,34 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
     "form",
     { class: "editor" },
     link("← " + project, projectRoute(project)),
-    el(
-      "div",
-      { class: "eyebrow", style: "margin-top:24px" },
-      task ? `Edit task #${task.id}` : "New task",
-    ),
-    el("h1", {}, task ? "Edit task" : "Make the next step clear"),
+    el("div", { class: "eyebrow", style: "margin-top:24px" }, task ? `Task #${task.id}` : "Create"),
+    el("h1", {}, task ? "Edit task" : "New task"),
     saved ? el("p", { class: "muted" }, "Your saved draft has been restored.") : null,
     el(
       "div",
       { class: "panel" },
       field("Title", title),
-      el("div", { class: "row" }, field("Priority", priority), field("Status", status)),
-      field("Tags", tags),
       el(
         "div",
-        { class: "row" },
+        { class: "form-grid" },
+        field("Priority", priority),
+        field("Status", status),
+        field("Tags", tags),
+      ),
+      el("label", { htmlFor: "task-description" }, "Description"),
+      el(
+        "div",
+        { class: "editor-tabs", "aria-label": "Description view" },
         button("Text", () => {
           body.hidden = false;
           preview.hidden = true;
+          updateTabs();
         }),
         button("Preview", () => {
           preview.replaceChildren(markdown(body.value));
           preview.hidden = false;
           body.hidden = true;
+          updateTabs();
         }),
       ),
       body,
@@ -108,7 +113,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
     conflict,
     el(
       "div",
-      { class: "row" },
+      { class: "form-actions" },
       submit,
       link("Cancel", task ? `#/t/${task.id}` : projectRoute(project), "button"),
       button(
@@ -123,6 +128,12 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
       ),
     ),
   );
+  function updateTabs() {
+    const tabs = form.querySelectorAll(".editor-tabs button");
+    tabs[0].setAttribute("aria-pressed", String(!body.hidden));
+    tabs[1].setAttribute("aria-pressed", String(body.hidden));
+  }
+  updateTabs();
   form.addEventListener("input", persist);
   async function save() {
     values = read();
@@ -200,6 +211,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
         );
         body.hidden = false;
         preview.hidden = true;
+        updateTabs();
         body.focus();
       }),
     );

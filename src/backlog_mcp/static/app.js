@@ -83,7 +83,7 @@ async function connect(authorization = credentials()) {
   document.querySelector("#logout").hidden = false;
   await render();
 }
-function showLogin(error) {
+function showLogin(error, reportError = true) {
   document.querySelector("#principal").textContent = "";
   document.querySelector("#logout").hidden = true;
   document.querySelector("#project-name").textContent = "";
@@ -100,7 +100,11 @@ function showLogin(error) {
   const userField = field("Username", username),
     secretField = field("Password", secret);
   const remember = el("input", { type: "checkbox", name: "remember" });
-  const message = el("p", { class: "error", role: "alert" }, error ? error.message : "");
+  const message = el(
+    "p",
+    { class: "error", role: "alert" },
+    error && reportError ? error.message : "",
+  );
   const submit = el("button", { type: "submit", class: "primary" }, "Sign in");
   const form = el(
     "form",
@@ -320,7 +324,11 @@ async function board(target) {
         ),
         link(task.title, `#/t/${task.id}`),
         el("div", {}, ...(task.tags || []).map((t) => el("span", { class: "tag" }, t))),
-        el("small", { class: "muted" }, task.assigned || "Unassigned"),
+        el(
+          "small",
+          { class: "muted", title: task.assigned || "Unassigned" },
+          task.assigned || "Unassigned",
+        ),
       );
       card.ondragstart = (event) => {
         event.dataTransfer.setData("text/plain", String(task.id));
@@ -356,7 +364,7 @@ async function board(target) {
   }
   return el(
     "section",
-    {},
+    { class: "board-page" },
     heading,
     columns,
     el(
@@ -396,9 +404,9 @@ async function detail(task) {
     el("h1", {}, task.title),
     el(
       "div",
-      { class: "row" },
-      status,
-      priority,
+      { class: "task-actions" },
+      field("Status", status),
+      field("Priority", priority),
       link("Edit task", `#/t/${task.id}/edit`, "button"),
       button(
         "Move",
@@ -482,7 +490,7 @@ async function detail(task) {
       ),
     ),
   );
-  const relation = select(relations, "related_to");
+  const relation = select(relations, "related_to", { "aria-label": "Relation type" });
   const target = el("input", {
     type: "number",
     min: 1,
@@ -492,7 +500,7 @@ async function detail(task) {
   });
   const reason = el("input", { placeholder: "Reason (optional)", "aria-label": "Relation reason" });
   const find = el("input", { placeholder: "Find a task", "aria-label": "Find related task" }),
-    matches = el("div");
+    matches = el("div", { class: "relation-matches" });
   let timer,
     sequence = 0;
   find.oninput = () => {
@@ -532,10 +540,10 @@ async function detail(task) {
   };
   const linkForm = el(
     "form",
-    { class: "row" },
-    relation,
-    target,
-    reason,
+    { class: "relation-form" },
+    field("Relation", relation),
+    field("Task ID", target),
+    field("Reason", reason),
     el("button", { type: "submit" }, "Add relation"),
   );
   linkForm.onsubmit = async (e) => {
@@ -557,7 +565,15 @@ async function detail(task) {
     }
   };
   panel.append(
-    el("section", { class: "panel" }, el("h2", {}, "Relations"), links, linkForm, find, matches),
+    el(
+      "section",
+      { class: "panel" },
+      el("h2", {}, "Relations"),
+      links,
+      linkForm,
+      field("Find a task", find),
+      matches,
+    ),
   );
   const commentBody = el("textarea", {
     required: true,
@@ -567,14 +583,18 @@ async function detail(task) {
   const preview = el("div", { class: "markdown", hidden: true });
   const commentForm = el(
     "form",
-    {},
-    commentBody,
-    button("Preview", () => {
-      preview.replaceChildren(markdown(commentBody.value));
-      preview.hidden = !preview.hidden;
-    }),
+    { class: "comment-form" },
+    field("Add a comment", commentBody),
     preview,
-    el("button", { type: "submit", class: "primary" }, "Add comment"),
+    el(
+      "div",
+      { class: "form-actions" },
+      el("button", { type: "submit", class: "primary" }, "Add comment"),
+      button("Preview", () => {
+        preview.replaceChildren(markdown(commentBody.value));
+        preview.hidden = !preview.hidden;
+      }),
+    ),
   );
   commentForm.onsubmit = async (e) => {
     e.preventDefault();
@@ -704,7 +724,7 @@ query.onkeydown = (e) => {
 };
 window.addEventListener("hashchange", render);
 connect().catch((error) => {
-  if (error instanceof HttpError && error.status === 401) showLogin(error);
+  if (error instanceof HttpError && error.status === 401) showLogin(error, Boolean(credentials()));
   else {
     showLogin();
     notify(error);
