@@ -294,7 +294,7 @@ class TaskOut(Attributed):
     tags: list[str] = Field(default_factory=list)
     created_at: Seconds
     updated_at: Seconds
-    closed_at: float | None = None
+    closed_at: Seconds | None = None
     snippet: str | None = Field(default=None, description="Matched text, search results only.")
 
 
@@ -331,7 +331,7 @@ class TaskListItem(Attributed):
     tags: list[str] = Field(default_factory=list)
     created_at: Seconds
     updated_at: Seconds
-    closed_at: float | None = None
+    closed_at: Seconds | None = None
     snippet: str = Field(
         description="First meaningful body paragraph, shortened to 150 characters."
     )

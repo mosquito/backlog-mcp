@@ -14,6 +14,7 @@ from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from backlog_mcp.client import stop
 from backlog_mcp.httpd import application
 from backlog_mcp.server import registry
+from backlog_mcp.version import VERSION
 
 
 def check_catalogue(result):
@@ -32,7 +33,12 @@ async def test_http_catalogue_is_complete(backlog, version):
         TestServer(application(backlog, console=False)) as server,
         Client(str(server.make_url("/mcp")), adapter) as client,
     ):
-        await client.initialize()
+        initialized = await client.initialize()
+        info = (
+            initialized.get("serverInfo")
+            or initialized["_meta"]["io.modelcontextprotocol/serverInfo"]
+        )
+        assert info == {"name": "backlog", "version": VERSION}
         check_catalogue(await client.request(Operation.LIST_TOOLS, ListParams()))
 
 
@@ -51,7 +57,12 @@ async def test_stdio_catalogue_is_complete(version):
     assert process.stdout is not None and process.stdin is not None
     try:
         client = StdioClient(process.stdout, process.stdin, adapter)
-        await client.initialize()
+        initialized = await client.initialize()
+        info = (
+            initialized.get("serverInfo")
+            or initialized["_meta"]["io.modelcontextprotocol/serverInfo"]
+        )
+        assert info == {"name": "backlog", "version": VERSION}
         check_catalogue(await client.request(Operation.LIST_TOOLS, ListParams()))
     finally:
         await stop(process)

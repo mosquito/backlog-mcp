@@ -1,3 +1,5 @@
+import tomllib
+from importlib.metadata import version
 from pathlib import Path
 
 from backlog_mcp.version import COMMIT, VERSION, commit_of
@@ -61,3 +63,11 @@ def test_no_checkout_and_broken_refs_give_none(tmp_path: Path) -> None:
 def test_the_package_knows_its_own_checkout() -> None:
     assert VERSION
     assert COMMIT is not None and len(COMMIT) == 7
+
+
+def test_package_metadata_matches_runtime_version() -> None:
+    project = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    metadata = tomllib.loads(project.read_text())
+    assert metadata["project"]["version"] == VERSION
+    assert version("backlog-mcp") == VERSION
+    assert "+" not in VERSION

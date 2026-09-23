@@ -183,14 +183,14 @@ async def test_project_language_create_update_omit_and_clear(client: BaseClient)
     assert kept["preferred_language"] is None
 
 
-@pytest.mark.parametrize("closed_status", ["done", "cancelled"])
+@pytest.mark.parametrize("closed_status", ["done", "cancelled", "deleted"])
 async def test_task_close_and_reopen(client: BaseClient, closed_status: str) -> None:
     task = await call(client, "task_add", title="Implement feature", body="Details", tags=["api"])
     assert task["status"] == "todo"
     assert task["priority"] == "normal"
     assert task["closed_at"] is None
     closed = await call(client, "task_update", id=task["id"], status=closed_status)
-    assert closed["closed_at"] is not None
+    assert type(closed["closed_at"]) is int
     assert closed["body"] == "Details"
     history = await call(client, "task_comment_list", task_id=task["id"])
     assert history["items"][0]["body"] == f"Status changed: todo → {closed_status}"
@@ -878,3 +878,41 @@ def test_attribution_strings_round_trip_and_schema() -> None:
     schema = Attributed.model_json_schema(mode="serialization")
     for field in ("created_by", "updated_by"):
         assert schema["properties"][field]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+
+
+async def test_closed_timestamps_round_only_in_public_output(
+    client: BaseClient, backlog: Backlog
+) -> None:
+    tasks = [
+        await call(client, "task_add", title=f"Fractional closure {index}", status="done")
+        for index in range(2)
+    ]
+    stamps = [1700000000.6, 1700000000.8]
+    connection = await backlog.open()
+    for task, stamp in zip(tasks, stamps, strict=True):
+        await connection.execute(
+            "UPDATE tasks SET closed_at = ?, updated_at = ? WHERE id = ?",
+            (stamp, stamp, task["id"]),
+        )
+    await connection.commit()
+    for full in (False, True):
+        listed = await call(client, "task_list", status=["done"], order="recent", full=full)
+        assert [item["id"] for item in listed["items"]] == [t["id"] for t in reversed(tasks)]
+        for item in listed["items"]:
+            assert type(item["closed_at"]) is int and item["closed_at"] == 1700000001
+    found = await call(
+        client, "search", query="Fractional closure", status=["done"], kinds=["tasks"]
+    )
+    assert len(found["tasks"]) == 2
+    for item in found["tasks"]:
+        assert type(item["closed_at"]) is int and item["closed_at"] == 1700000001
+    for task, stamp in zip(tasks, stamps, strict=True):
+        shown = await call(client, "task_get", id=task["id"])
+        assert type(shown["closed_at"]) is int and shown["closed_at"] == round(stamp)
+        assert (await resource(client, f"backlog://tasks/{task['id']}"))["closed_at"] == round(
+            stamp
+        )
+        stored = await operations.read_task(connection, backlog.actor, task["id"])
+        assert stored is not None and stored.closed_at == stamp and stored.updated_at == stamp
+        reopened = await call(client, "task_update", id=task["id"], status="todo")
+        assert reopened["closed_at"] is None
