@@ -70,13 +70,37 @@ header {
 .brand-dot {
   color: var(--brand);
 }
-#project-name {
+#breadcrumbs {
   color: var(--muted);
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 13px;
+}
+#breadcrumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+#breadcrumbs li {
+  display: inline;
+  overflow-wrap: anywhere;
+}
+#breadcrumbs li + li::before {
+  content: "›";
+  margin-right: 8px;
+  color: var(--muted);
+}
+#breadcrumbs a {
+  color: var(--muted);
+  text-underline-offset: 3px;
+}
+#breadcrumbs a:hover,
+#breadcrumbs [aria-current="page"] {
+  color: var(--text);
 }
 #principal {
   font-size: 12px;
@@ -742,12 +766,12 @@ dialog > button + button {
     font-size: 22px;
     margin-right: auto;
   }
-  #project-name {
+  #breadcrumbs {
     order: 4;
     flex-basis: 100%;
     font-size: 12px;
   }
-  #project-name:empty {
+  #breadcrumbs:empty {
     display: none;
   }
   header button {

@@ -19,6 +19,7 @@ import { taskTable } from "./task-table.js";
 import { taskPagination } from "./task-pagination.js";
 import { memoryPage } from "./memory.js";
 import { commentComposer } from "./comment-composer.js";
+import { breadcrumbs } from "./breadcrumbs.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
@@ -107,7 +108,8 @@ function showLogin(error, reportError = true) {
   document.querySelector("#principal").textContent = "";
   document.querySelector("#logout").hidden = true;
   document.querySelector("#section-switch").hidden = true;
-  document.querySelector("#project-name").textContent = "";
+  document.querySelector("#breadcrumbs").replaceChildren();
+  document.querySelector("#breadcrumbs").hidden = true;
   document.querySelector("#search-dialog").close();
   const methods = error?.schemes?.length ? [...new Set(error.schemes)] : ["basic", "bearer"];
   const method = select(methods, methods[0], { name: "method" });
@@ -188,6 +190,7 @@ async function render() {
   }
   if (!identity) return;
   const current = ++generation;
+  document.querySelector("#breadcrumbs").hidden = true;
   let selectedProject = "";
   content.firstElementChild?.dispose?.();
   content.replaceChildren(el("p", { class: "muted" }, "Loading…"));
@@ -218,7 +221,8 @@ async function render() {
     project = selectedProject;
     content.replaceChildren(page);
     page.mount?.();
-    document.querySelector("#project-name").textContent = project;
+    document.querySelector("#breadcrumbs").replaceChildren(breadcrumbs(target, project));
+    document.querySelector("#breadcrumbs").hidden = false;
     document.querySelector("#memory-open").href = memoryRoute(project);
     document.querySelector("#tasks-open").href = project ? projectRoute(project) : "/ui/";
     for (const section of ["tasks", "memory"]) {

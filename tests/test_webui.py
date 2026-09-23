@@ -20,6 +20,7 @@ async def test_ui_is_public_and_mcp_is_protected(backlog: Backlog, console: bool
             assert "/ui/static/app.js" in text
         for path in [
             "app.js",
+            "breadcrumbs.js",
             "app.css",
             "mcp.js",
             "editor.js",
