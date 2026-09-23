@@ -356,13 +356,7 @@ def skill_panel(skill: Skill | RemoteSkill) -> Panel:
     )
 
 
-def stats_view(stats: Stats) -> Table:
-    if stats.project:
-        where = stats.project
-    elif stats.computer:
-        where = f"every project on {stats.computer}"
-    else:
-        where = "every project on every computer"
+def stats_view(stats: Stats, *, where: str) -> Table:
     table = titled(f"backlog of {where}")
     table.add_column("bucket", style="bold")
     table.add_column("count", justify="right")

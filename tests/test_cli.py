@@ -624,6 +624,9 @@ def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:
     assert "laptop-work" in output
     code, output = run("--computer", "desk", "stats", "--computer", "laptop")
     assert "every project on laptop" in output
+    code, output = run("--computer", "desk", "stats", "--all-computers")
+    assert code == 0
+    assert "every project on every computer" in output
     code, output = run("--computer", "desk", "task", "list", "--computer", "nowhere")
     assert code == 2
     assert "known computers" in output

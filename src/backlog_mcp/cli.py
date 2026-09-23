@@ -358,12 +358,13 @@ class Command(argclass.Parser):
             raise ToolError(f"no task #{task_id}")
         return task
 
-    def label(self, result: FullTasks | FullNotes | embeddings.Matches) -> str:
+    def label(self, result: FullTasks | FullNotes | embeddings.Matches | StatsOut) -> str:
         if result.project:
             return result.project
-        if result.computer:
-            return f"every project on {result.computer}"
-        return "every project on every computer"
+        if getattr(self, "all_computers", False):
+            return "every project on every computer"
+        computer = getattr(self, "at", None) or result.computer
+        return f"every project on {computer}"
 
     def show_help(self) -> int:
         """Print the help of this command, the way `--help` after it does.
@@ -1183,7 +1184,8 @@ class Stats(Command):
     at, all_computers = computer_options()
 
     async def __call__(self) -> int:
-        console.print(stats_view(await self.connection.call(StatsOut, "stats", **self.listing())))
+        result = await self.connection.call(StatsOut, "stats", **self.listing())
+        console.print(stats_view(result, where=self.label(result)))
         return 0
 
 

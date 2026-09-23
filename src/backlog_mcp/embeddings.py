@@ -163,10 +163,6 @@ class Matches(Actor):
     comments: list[CommentHit]
     count: int
     project: str | None
-    computer: str | None = Field(
-        default=None,
-        description="Computer of the project or computer covered, absent when every computer.",
-    )
 
 
 async def encode(texts: list[str]) -> NDArray[np.float32]:
@@ -706,7 +702,7 @@ async def search(
         memory=note_hits,
         count=len(task_hits) + len(note_hits) + len(comment_hits) + len(project_hits),
         project=reach.slug,
-        computer=reach.scope_computer,
+        computer=backlog.computer,
         principal=backlog.principal,
     )
 

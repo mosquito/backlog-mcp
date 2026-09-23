@@ -10,6 +10,8 @@ from aiohttp_tiny_mcp import Client
 from aiohttp_tiny_mcp.protocol.models import CallToolResult, TextContent, TextResourceContents
 from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
+from conftest import Credentials
+from test_server import call
 
 from backlog_mcp import server as operations
 from backlog_mcp.auth import credentials, user_identity
@@ -238,3 +240,67 @@ async def test_without_accounts_the_server_asks_for_nothing(backlog: Backlog) ->
             result = await mcp.call_tool("task_add", {"title": "No password needed"})
             assert isinstance(result, CallToolResult)
             assert payload(result)["title"] == "No password needed"
+
+
+@pytest.mark.parametrize("computer", ["desk", "laptop"])
+async def test_response_principal_uses_connection_computer(
+    backlog: Backlog, credentials: Credentials, computer: str
+) -> None:
+    async with (
+        TestServer(application(backlog, **credentials.options)) as server,
+        ClientSession(headers=credentials.headers) as session,
+        Client(
+            str(server.make_url(f"/mcp?computer={computer}")),
+            pick("2026-07-28"),
+            session=session,
+        ) as client,
+    ):
+        await client.initialize()
+        identity = await call(client, "whoami")
+        assert identity["principal"] == f"user@{computer}"
+        saved = await call(client, "project_save", root="/srv/work", name="Work")
+        project = saved["full_name"]
+        task = await call(client, "task_add", project=project, title="Principal regression")
+        await call(
+            client, "memory_save", project=project, title="Principal regression", body="Note"
+        )
+        # Historical attribution can legitimately lack a computer.
+        connection = await backlog.open()
+        await connection.execute(
+            "UPDATE tasks SET created_computer = 'unknown', updated_computer = 'unknown' "
+            "WHERE id = ?",
+            (task["id"],),
+        )
+        await connection.commit()
+        other = backlog.view(computer="other", principal="user")
+        await other.save(connection, backlog.transaction, reference=project, root="/srv/work")
+        for scope in (
+            {"project": project},
+            {"all_projects": True},
+            {"computer": "other"},
+            {"project": project, "computer": "other"},
+            {"all_computers": True},
+        ):
+            for tool, arguments in (
+                ("task_list", {}),
+                ("task_list", {"full": True}),
+                ("memory_list", {}),
+                ("memory_list", {"full": True}),
+                ("search", {"query": "Principal regression"}),
+                ("stats", {}),
+            ):
+                result = await call(client, tool, **scope, **arguments)
+                assert result["principal"] == identity["principal"], (tool, scope, result)
+                if tool == "task_list":
+                    assert [item["id"] for item in result["items"]] == [task["id"]]
+                    assert result["items"][0]["created_by"] == "user@unknown"
+                    assert result["items"][0]["updated_by"] == "user@unknown"
+        for tool, arguments in (
+            ("project_board", {"project": project}),
+            ("project_members", {"project": project}),
+            ("project_list", {"all_computers": True}),
+            ("task_assigned", {}),
+            ("task_comment_list", {"task_id": task["id"]}),
+        ):
+            result = await call(client, tool, **arguments)
+            assert result["principal"] == identity["principal"]

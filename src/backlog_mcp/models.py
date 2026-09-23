@@ -377,17 +377,12 @@ class Projects(Actor):
     count: int
 
 
-#: The `computer` of a listing: the project's, or the one named, or nothing for all of them.
-COVERED = "Computer of the project or computer covered, absent when every computer."
-
-
 class Tasks(Actor):
     items: list[TaskListItem]
     count: int
     project: str | None = Field(
         default=None, description="Owner-qualified project searched, absent when global."
     )
-    computer: str | None = Field(default=None, description=COVERED)
 
 
 class Notes(Actor):
@@ -396,7 +391,6 @@ class Notes(Actor):
     project: str | None = Field(
         default=None, description="Owner-qualified project searched, absent when global."
     )
-    computer: str | None = Field(default=None, description=COVERED)
 
 
 class FullTasks(Actor):
@@ -407,7 +401,6 @@ class FullTasks(Actor):
     project: str | None = Field(
         default=None, description="Owner-qualified project searched, absent when global."
     )
-    computer: str | None = Field(default=None, description=COVERED)
 
 
 class FullNotes(Actor):
@@ -418,7 +411,6 @@ class FullNotes(Actor):
     project: str | None = Field(
         default=None, description="Owner-qualified project searched, absent when global."
     )
-    computer: str | None = Field(default=None, description=COVERED)
 
 
 class BoardProject(BaseModel):
@@ -465,7 +457,6 @@ class ProjectBoard(Actor):
 
 class Stats(Actor):
     project: str | None = None
-    computer: str | None = Field(default=None, description=COVERED)
     this_computer: str = Field(description="Computer this session works from.")
     total: int = 0
     open: int = Field(default=0, description="Tasks with status todo, doing, or blocked.")

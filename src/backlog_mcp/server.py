@@ -518,7 +518,7 @@ async def stats_of(backlog: Backlog, reach: Reach) -> Stats:
     )
     return Stats(
         project=reach.slug,
-        computer=reach.scope_computer,
+        computer=backlog.computer,
         principal=backlog.principal,
         this_computer=backlog.computer,
         total=sum(by_status.values()),
@@ -1237,14 +1237,14 @@ async def task_list(
             items=[task_out(item) for item in found],
             count=total,
             project=reach.slug,
-            computer=reach.scope_computer,
+            computer=backlog.computer,
             principal=backlog.principal,
         )
     return Tasks(
         items=[task_list_item(item) for item in found],
         count=total,
         project=reach.slug,
-        computer=reach.scope_computer,
+        computer=backlog.computer,
         principal=backlog.principal,
     )
 
@@ -1635,14 +1635,14 @@ async def memory_list(
             items=[note_out(item) for item in found],
             count=total,
             project=reach.slug,
-            computer=reach.scope_computer,
+            computer=backlog.computer,
             principal=backlog.principal,
         )
     return Notes(
         items=[note_list_item(item) for item in found],
         count=total,
         project=reach.slug,
-        computer=reach.scope_computer,
+        computer=backlog.computer,
         principal=backlog.principal,
     )
 
