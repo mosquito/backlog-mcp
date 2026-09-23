@@ -1,10 +1,11 @@
-"""Offline Model2Vec embeddings and combined FTS/semantic search."""
+"""Offline Model2Vec embeddings and text, vector, or mixed search."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import re
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
@@ -37,7 +38,6 @@ MODEL_NAME = "static-similarity-mrl-multilingual-v1-512-int8"
 MODEL_PATH = Path(__file__).with_name("model")
 DIMENSIONS = 512
 DEFAULT_MIN_SCORE = 0.15
-FTS_MIN_SCORE = 0.25
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=16384)]
 
 
@@ -106,7 +106,8 @@ class Search(BaseModel):
     query: Text = Field(
         description=(
             "Words or meaning to find in project names, descriptions, titles, bodies and tags. "
-            "Start with a double quote or fts: for FTS5 syntax without semantic matches. "
+            "Quoted expressions search text; unquoted text searches vectors. "
+            "Mixed queries use both. "
             "ALWAYS search when starting work, facing uncertainty, or checking past agreements."
         )
     )
@@ -125,9 +126,8 @@ class Search(BaseModel):
         le=1,
         allow_inf_nan=False,
         description=(
-            "Minimum cosine similarity for semantic matches; FTS matches are retained. "
-            "When omitted, use 0.15, or 0.25 when an FTS result exists. "
-            "An explicit value overrides both automatic thresholds."
+            "Minimum cosine similarity for vector search, default 0.15. "
+            "Does not filter full-text matches."
         ),
     )
 
@@ -454,10 +454,57 @@ def match_ids(
     )
 
 
+def split_query(query: str) -> tuple[str | None, str | None]:
+    """Select text, vector, or mixed search without passing prose to the text parser."""
+    if '"' not in query:
+        return None, query
+    phrases = list(re.finditer(r'"(?:[^"]|"")*"\*?', query))
+    remainder = re.sub(r'"(?:[^"]|"")*"\*?', " ", query)
+    if '"' in remainder:
+        raise ValueError("Invalid FTS5 expression: unterminated quote")
+    # Operators and column filters belong to a text expression, not semantic prose.
+    syntax = re.sub(r"-?(?:[\w]+|\{[\w\s]+\})\s*:", " ", remainder)
+    syntax = re.sub(r",\s*\d+\s*(?=\))", "", syntax)
+    syntax = re.sub(r"\b(?:AND|OR|NOT|NEAR)\b|[()^+*\s]", "", syntax)
+    if not syntax:
+        return query, None
+    return " ".join(match.group() for match in phrases), query.replace('"', "")
+
+
 async def search(
     args: Search, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> Matches:
-    """Merge FTS and semantic IDs, then fetch current records from SQLite."""
+    """Combine mixed results with text matches first and no duplicate IDs."""
+    text_query, vector_query = split_query(args.query)
+    if text_query is None or vector_query is None:
+        return await search_mode(args, backlog, connection, transaction)
+    exact = await search_mode(
+        args.model_copy(update={"query": text_query}), backlog, connection, transaction
+    )
+    semantic = await search_mode(
+        args.model_copy(update={"query": vector_query}), backlog, connection, transaction
+    )
+
+    def merge[T: (TaskHit, NoteHit, CommentHit, ProjectHit)](
+        first: list[T], second: list[T]
+    ) -> list[T]:
+        seen = {item.id for item in first}
+        return (first + [item for item in second if item.id not in seen])[: args.limit]
+
+    exact.tasks = merge(exact.tasks, semantic.tasks)
+    exact.memory = merge(exact.memory, semantic.memory)
+    exact.comments = merge(exact.comments, semantic.comments)
+    exact.projects = merge(exact.projects, semantic.projects)
+    exact.count = sum(
+        len(items) for items in (exact.tasks, exact.memory, exact.comments, exact.projects)
+    )
+    return exact
+
+
+async def search_mode(
+    args: Search, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
+) -> Matches:
+    """Choose text or vector search, then fetch accessible records."""
     from . import server
 
     reach = await backlog.reach(
@@ -476,75 +523,69 @@ async def search(
             return True
         return True
 
-    literal = args.query.startswith(('"', "fts:"))
-    lexical_query = args.query.removeprefix("fts:").strip() if literal else args.query
-    if not lexical_query:
-        raise ValueError("An FTS5 expression is required after fts:")
-    try:
-        lexical_tasks = (
-            await server.search_tasks(
-                connection,
-                backlog.actor,
-                lexical_query,
-                project_id=project_id,
-                computer=computer,
-                status=args.status,
-                tag=args.tag,
-                limit=args.limit,
-                raw=literal,
+    if '"' in args.query:
+        try:
+            lexical_tasks = (
+                await server.search_tasks(
+                    connection,
+                    backlog.actor,
+                    args.query,
+                    project_id=project_id,
+                    computer=computer,
+                    status=args.status,
+                    tag=args.tag,
+                    limit=args.limit,
+                    raw=True,
+                )
+                if "tasks" in args.kinds
+                else []
             )
-            if "tasks" in args.kinds
-            else []
-        )
-        lexical_notes = (
-            await server.search_notes(
-                connection,
-                backlog.actor,
-                lexical_query,
-                project_id=project_id,
-                computer=computer,
-                tag=args.tag,
-                limit=args.limit,
-                raw=literal,
+            lexical_notes = (
+                await server.search_notes(
+                    connection,
+                    backlog.actor,
+                    args.query,
+                    project_id=project_id,
+                    computer=computer,
+                    tag=args.tag,
+                    limit=args.limit,
+                    raw=True,
+                )
+                if "memory" in args.kinds
+                else []
             )
-            if "memory" in args.kinds
-            else []
-        )
-        lexical_comments = (
-            await server.read_comments(
-                connection,
-                backlog.actor,
-                query=lexical_query,
-                project_id=project_id,
-                computer=computer,
-                status=args.status,
-                tag=args.tag,
-                limit=args.limit,
-                raw=literal,
+            lexical_comments = (
+                await server.read_comments(
+                    connection,
+                    backlog.actor,
+                    query=args.query,
+                    project_id=project_id,
+                    computer=computer,
+                    status=args.status,
+                    tag=args.tag,
+                    limit=args.limit,
+                    raw=True,
+                )
+                if "comments" in args.kinds
+                else []
             )
-            if "comments" in args.kinds
-            else []
-        )
-        lexical_projects = (
-            await server.search_projects(
-                connection,
-                backlog.actor,
-                lexical_query,
-                project_id=project_id,
-                computer=computer,
-                limit=args.limit,
-                raw=literal,
+            lexical_projects = (
+                await server.search_projects(
+                    connection,
+                    backlog.actor,
+                    args.query,
+                    project_id=project_id,
+                    computer=computer,
+                    limit=args.limit,
+                    raw=True,
+                )
+                if "projects" in args.kinds
+                else []
             )
-            if "projects" in args.kinds
-            else []
-        )
-    except aiosqlite.OperationalError as error:
-        if literal and any(
-            token in str(error) for token in ("fts5:", "unterminated", "no such column")
-        ):
-            raise ValueError(f"Invalid FTS5 expression: {error}") from error
-        raise
-    if literal:
+        except aiosqlite.OperationalError as error:
+            if any(token in str(error) for token in ("fts5:", "unterminated", "no such column")):
+                raise ValueError(f"Invalid FTS5 expression: {error}") from error
+            raise
         exact_tasks = [TaskHit(**asdict(item), match="fts") for item in lexical_tasks]
         exact_notes = [NoteHit(**asdict(item), match="fts") for item in lexical_notes]
         exact_comments = [CommentHit(**asdict(item), match="fts") for item in lexical_comments]
@@ -567,17 +608,7 @@ async def search(
             computer=backlog.computer,
             principal=backlog.principal,
         )
-    project_fts = {item.id for item in lexical_projects}
-    comment_snippets = {item.id: item.snippet for item in lexical_comments}
-    task_snippets = {item.id: item.snippet for item in lexical_tasks}
-    note_snippets = {item.id: item.snippet for item in lexical_notes}
-    del lexical_tasks, lexical_notes
-    min_score = (
-        max(args.min_score, FTS_MIN_SCORE)
-        if "min_score" not in args.model_fields_set
-        and (task_snippets or note_snippets or comment_snippets or project_fts)
-        else args.min_score
-    )
+    min_score = args.min_score
     vectors = await indexes(backlog, connection, transaction)
     tasks = await server.read_tasks(
         connection,
@@ -643,8 +674,8 @@ async def search(
     tag = args.tag.strip().lower() if args.tag else None
     task_scores = dict(task_ids)
     note_scores = dict(note_ids)
-    ranked_tasks = list(dict.fromkeys([*task_snippets, *task_scores]))[: args.limit]
-    ranked_notes = list(dict.fromkeys([*note_snippets, *note_scores]))[: args.limit]
+    ranked_tasks = list(task_scores)[: args.limit]
+    ranked_notes = list(note_scores)[: args.limit]
     for record_id in ranked_tasks:
         task = await server.read_task(connection, backlog.actor, record_id)
         if (
@@ -659,11 +690,11 @@ async def search(
         ):
             continue
         data = asdict(task)
-        data["snippet"] = task_snippets.get(record_id)
+        data["snippet"] = None
         task_hits.append(
             TaskHit(
                 **data,
-                match="fts" if record_id in task_snippets else "semantic",
+                match="semantic",
                 score=task_scores.get(record_id),
             )
         )
@@ -674,17 +705,17 @@ async def search(
         if tag and tag not in note.tags:
             continue
         data = asdict(note)
-        data["snippet"] = note_snippets.get(record_id)
+        data["snippet"] = None
         note_hits.append(
             NoteHit(
                 **data,
-                match="fts" if record_id in note_snippets else "semantic",
+                match="semantic",
                 score=note_scores.get(record_id),
             )
         )
     comment_hits: list[CommentHit] = []
     comment_scores = dict(comment_ids)
-    ranked_comments = list(dict.fromkeys([*comment_snippets, *comment_scores]))[: args.limit]
+    ranked_comments = list(comment_scores)[: args.limit]
     current_comments = (
         {
             item.id: item
@@ -706,11 +737,11 @@ async def search(
         if comment is None:
             continue
         data = asdict(comment)
-        data["snippet"] = comment_snippets.get(record_id) or comment.body[:200]
+        data["snippet"] = comment.body[:200]
         comment_hits.append(
             CommentHit(
                 **data,
-                match="fts" if record_id in comment_snippets else "semantic",
+                match="semantic",
                 score=comment_scores.get(record_id),
             )
         )
@@ -718,9 +749,7 @@ async def search(
 
     project_hits: list[ProjectHit] = []
     project_scores = dict(project_ids)
-    ranked_projects = list(
-        dict.fromkeys([*(item.id for item in lexical_projects), *project_scores])
-    )[: args.limit]
+    ranked_projects = list(project_scores)[: args.limit]
     for record_id in ranked_projects:
         project = await scope.read_project(connection, backlog.actor, record_id)
         if (
@@ -736,7 +765,7 @@ async def search(
                 **project_out(
                     project, computer=backlog.computer, principal=backlog.principal
                 ).model_dump(),
-                match="fts" if record_id in project_fts else "semantic",
+                match="semantic",
                 score=project_scores.get(record_id),
             )
         )

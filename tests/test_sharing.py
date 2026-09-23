@@ -429,7 +429,7 @@ async def test_project_search_filters_acl_scope_and_archived_before_limit(backlo
         for p in await operations.search_projects(await bob.open(), bob.actor, "needle", limit=1)
     ] == [visible.id]
     scoped = backlog.view(principal=bob.principal)
-    query = embeddings.Search(query="needle", kinds=["projects"], all_computers=True, limit=1)
+    query = embeddings.Search(query='"needle"', kinds=["projects"], all_computers=True, limit=1)
     found = await embeddings.search(
         query, scoped, connection=await scoped.open(), transaction=scoped.transaction
     )

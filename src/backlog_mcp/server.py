@@ -262,10 +262,12 @@ facts that may have changed. Avoid full listings and reading every task or note.
 `task_list` and `memory_list` for an explicitly requested inventory or a complete review; \
 use filters and pagination then. Use `stats` when only counts are needed.
 
-`search` combines full-text prefix matching and multilingual semantic search. Use `kinds`
+`search` uses text matching for queries with double quotes, or vector search without quotes.
+Use `kinds`
 to select projects, tasks, comments, memory, or several kinds. Task descriptions and comments
-are indexed separately; comment matches include the comment id and task_id. FTS matches come first,
-then semantic matches, without duplicate IDs within each kind. Embeddings run locally.
+are indexed separately; comment matches include the comment id and task_id.
+Mixed queries search quoted expressions as text and the whole query without quotes as vectors.
+Text matches come first, without duplicate IDs. Embeddings run locally.
 Project results include full_name and exclude archived projects. Membership and scope filter
 FTS and semantic candidates before ranking and limits. Use all_computers=true to discover
 accessible projects when no current project is selected.
@@ -1759,39 +1761,42 @@ async def search(
     """Primary discovery tool. ALWAYS search first before investigating or deciding.
 
     Use frequently: at session start, before choosing an approach, before asking questions, and
-    whenever you are uncertain what to do or what conventions apply. Combines full-text prefix
-    matching and multilingual semantic search (FTS matches first).
+    whenever you are uncertain what to do or what conventions apply. Double quotes select
+    full-text search; unquoted words enable multilingual vector search. Mixed queries use both.
     Prefer targeted search over full listings. Read individual matches with `memory_get` or
     `task_get` only when detail is needed.
 
     ## Query syntax
 
-    Plain text searches prefixes and related meanings. Start with a double quote or `fts:`
-    to disable semantic matches.
+    Without double quotes, search uses vectors to find related meanings only.
+    Quoted expressions alone search text only. Add unquoted words to search both:
+    text search receives only the quoted expressions; vector search receives the whole query
+    with double quotes removed. Mixed results show text matches first, then vector matches,
+    without duplicates. Quoted expressions in a mixed query are combined with AND.
 
     | Query | Finds |
     | --- | --- |
-    | `token` | Word prefixes such as token, tokens, tokenizer, plus related meanings. |
+    | `token` | Related meanings, using vector similarity. |
+    | `"token" reset "production"` | Text: token AND production; vector: token reset production |
     | `"token"` | Only the word token, without prefixes or related meanings. |
     | `"token*"` | Only the word token. A star inside quotes does not enable prefixes. |
     | `"token"*` | Words starting with token, including tokens and tokenizer. |
     | `"refresh token"` | The adjacent words refresh token, in this order. |
     | `"refresh token"*` | The word refresh followed by a word starting with token. |
-    | `fts: token*` | Words starting with token, without related meanings. |
-    | `fts: token refresh` | Both words, anywhere in the same field set. |
-    | `fts: token AND refresh` | Both words, like the previous example. |
-    | `fts: token OR password` | Either word, or both. |
-    | `fts: token NOT legacy` | The word token, excluding records with legacy. |
-    | `fts: (token OR password) AND reset` | Either token or password, and also reset. |
-    | `fts: refresh + token` | The phrase refresh token, like quoted adjacent words. |
-    | `fts: NEAR(refresh token, 5)` | Both words, either order; at most five words between them. |
-    | `fts: NEAR(refresh token)` | The same proximity search with a default distance of ten words. |
-    | `fts: ^token` | A field starting with the word token. |
-    | `fts: title:token` | The word token in the title field. |
-    | `fts: title:(token OR password)` | Either word in the title field. |
-    | `fts: {title body}:token` | The word token in title or body. |
-    | `fts: -tags:token` | The word token in fields other than tags. |
-    | `fts: tags:"web-ui"` | The adjacent words web ui in tags; punctuation is a separator. |
+    | `"token" "refresh"` | Both words, anywhere in the same field set. |
+    | `"token" AND "refresh"` | Both words, like the previous example. |
+    | `"token" OR "password"` | Either word, or both. |
+    | `"token" NOT "legacy"` | The word token, excluding records with legacy. |
+    | `("token" OR "password") AND "reset"` | Either token or password, and also reset. |
+    | `"refresh" + "token"` | The phrase refresh token, like quoted adjacent words. |
+    | `NEAR("refresh" "token", 5)` | Both words, either order; at most five words between them. |
+    | `NEAR("refresh" "token")` | The same proximity search with a default distance of ten words. |
+    | `^"token"` | A field starting with the word token. |
+    | `title:"token"` | The word token in the title field. |
+    | `title:("token" OR "password")` | Either word in the title field. |
+    | `{title body}:"token"` | The word token in title or body. |
+    | `-tags:"token"` | The word token in fields other than tags. |
+    | `tags:"web-ui"` | The adjacent words web ui in tags; punctuation is a separator. |
     | `"say ""hello"" now"` | The phrase say hello now. Double an inner quote to escape it. |
 
     **Fields:** Tasks and Memory support `title`, `body`, `tags`; Comments support `body`;
@@ -1807,7 +1812,7 @@ async def search(
     **Filters:** Use the Tag filter (`tag` in MCP) for an exact tag, such as `web-ui`.
     Choose content types with `kinds`, task statuses with `status`, and scope with `project`,
     `all_projects`, `computer`, or `all_computers`. `limit` is 1–200 results per content type.
-    `min_score` is -1–1 and filters semantic matches only; quoted and `fts:` queries ignore it.
+    `min_score` is -1–1 and filters semantic matches only; it never filters text matches.
     """
     return await embeddings.search(args, backlog, connection, transaction)
 

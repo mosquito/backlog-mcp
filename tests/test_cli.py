@@ -135,7 +135,7 @@ def test_add_list_search_and_close_one_task(run: Runner) -> None:
     assert "1 task(s) of stdio-user/workspace" in output
     assert "Ship the release" in output
 
-    code, output = run("search", "rele")
+    code, output = run("search", '"rele"*')
     assert "1 task match(es)" in output
     assert "note match(es)" not in output
     #: The title column stays the title; a body excerpt would be the `match` column.
@@ -681,10 +681,10 @@ def test_notes_add_replace_append_search_and_show(run: Runner) -> None:
     assert "dev vm" in output
 
     run("task", "add", "Move the vm, see note #1")
-    code, output = run("search", "vm")
+    code, output = run("search", '"vm"')
     assert code == 0
-    assert "1 task match(es) for 'vm' in stdio-user/workspace" in output
-    assert "1 note match(es) for 'vm' in stdio-user/workspace" in output
+    assert "1 task match(es) for '\"vm\"' in stdio-user/workspace" in output
+    assert "1 note match(es) for '\"vm\"' in stdio-user/workspace" in output
     #: The title column keeps the title; the excerpt with the hit is the `match` column.
     assert "dev vm" in output
     assert "[vm]" in output

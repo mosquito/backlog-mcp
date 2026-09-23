@@ -335,10 +335,12 @@ async def test_comment_search_and_complete_history_over_http(remote: RemoteRunne
     await remote("task", "add", "Task", "-b", "Definition")
     await remote("task", "comment", "1", "uniquemarker first")
     await remote("task", "comment", "1", "Second comment")
-    code, output = await remote("search", "uniquemarker", "--kind", "comments", "--min-score", "1")
+    code, output = await remote(
+        "search", '"uniquemarker"', "--kind", "comments", "--min-score", "1"
+    )
     assert code == 0 and "1 comment match(es)" in output
     assert "uniquemarker" in output
-    code, output = await remote("search", "uniquemarker", "--kind", "tasks", "--min-score", "1")
+    code, output = await remote("search", '"uniquemarker"', "--kind", "tasks", "--min-score", "1")
     assert code == 0 and "0 task match(es)" in output and "comment match(es)" not in output
     code, output = await remote("task", "comments", "1")
     assert code == 0 and "2 comments and history entries" in output

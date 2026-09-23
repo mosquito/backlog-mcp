@@ -823,7 +823,7 @@ class Search(Command):
     limit: int = argclass.Argument(default=20, help="Most matches to print, of each kind")
     min_score: float | None = argclass.Argument(
         default=None,
-        help="Minimum semantic similarity (-1 to 1); default: 0.15, or 0.25 with FTS matches",
+        help="Minimum vector similarity (-1 to 1), default 0.15; does not filter text matches",
     )
 
     async def __call__(self) -> int:
@@ -1815,8 +1815,8 @@ class CLI(argclass.Parser):
         aliases=["se"],
         help="FTS and semantic search over projects, tasks, comments, and memory",
         description=(
-            "Search titles, bodies and tags with FTS prefixes and local multilingual embeddings. "
-            "FTS matches come first, followed by semantic matches without duplicate IDs. "
+            "Quoted expressions search text; unquoted words search vectors. "
+            "Mixed queries use both. "
             "--min-score filters semantic matches only. --all-projects searches every board."
         ),
     )

@@ -213,10 +213,12 @@ Avoid full listings and reading every task or note to answer a question. Refine 
 filters when results are weak. Reserve listing tools for requested inventories or complete
 reviews, with filters and pagination; use `stats` for counts.
 
-`backlog search` and the MCP `search` tool combine SQLite FTS5 prefix matching with
-multilingual semantic search over titles, bodies and tags. FTS matches come first in
-BM25 order. Additional semantic matches follow in cosine similarity order. Each ID
-appears once per record kind. The limit applies separately to each selected content kind after merging.
+`backlog search` and the MCP `search` tool select text, vector, or mixed search from the query.
+Quoted expressions alone use full-text matching only: `"token"`, `"token"*`,
+or `"token" OR "password"`. Queries without double quotes use multilingual vector
+search only. Mixed queries search quoted expressions as text and the whole query without
+quotes as vectors. Text matches come first, without duplicates. The limit applies separately
+to each selected content kind.
 
 Project membership and scope filter candidates before ranking and limits in both searches.
 Project results include their owner-qualified `full_name`; archived projects are excluded.
@@ -224,12 +226,10 @@ Status filters apply to tasks and their comments. Tags apply to tasks, comments,
 Shared memory remains visible across projects only when the caller can access its source project.
 Use `backlog search orchestration --kind projects --all-computers` to find accessible projects
 without selecting a current project. `min_score` (`--min-score` in the terminal) defaults to `0.15`
-and filters semantic matches only; it never removes FTS matches. When FTS finds anything,
-the automatic cutoff rises to `0.25`. An explicit `min_score` overrides both automatic
-cutoffs. Web UI searches use `0.12`. MCP results include `match`
-(`fts` or `semantic`) and a cosine `score` for semantic candidates (`null` for FTS-only
-matches). FTS excerpts remain in `snippet`. Semantic matches can use different words or
-languages from the query.
+and applies only to vector search. Web UI searches use `0.12`. Text matches ignore
+this threshold. MCP results include `match` (`fts` or `semantic`) and a cosine `score`
+for semantic matches (`null` for text matches). Text excerpts remain in `snippet`.
+Vector matches can use different words or languages from the query.
 
 The bundled Model2Vec model is
 [`sentence-transformers/static-similarity-mrl-multilingual-v1`](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1),
@@ -556,9 +556,9 @@ the query to select content types; the All projects checkbox controls the scope.
 **Filters** adds task status, tag, computer scope, results per type, and minimum
 semantic similarity. Status applies only to tasks. Computer scope applies when
 **All projects** is selected. The browser remembers search filters in localStorage.
-Start a query with a double quote to search a phrase through FTS only. Prefix a query
-with `fts:` to use FTS5 operators, such as `fts: (auth OR login) AND token*`, without
-semantic matches. The **query syntax** link shows examples from the MCP `search` tool description. Statistics tags open a
+Quoted expressions search text; unquoted words enable vector search. Mixed queries use both.
+The **query syntax** link shows examples from the MCP `search` tool description.
+Statistics tags open a
 filtered task list in the same scope.
 Task drafts also survive
 refresh and are removed after a successful save or explicit discard.

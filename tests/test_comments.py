@@ -47,7 +47,7 @@ async def test_comment_search_has_separate_content_and_follows_task_scope(backlo
         ),
         backlog.transaction,
     )
-    query = embeddings.Search(query="Specialcommentneedle", min_score=1)
+    query = embeddings.Search(query='"Specialcommentneedle"', min_score=1)
     found = await embeddings.search(
         query, backlog, connection=await backlog.open(), transaction=backlog.transaction
     )
@@ -140,7 +140,7 @@ async def test_comments_have_independent_semantic_vectors(backlog: Backlog) -> N
         backlog.transaction,
     )
     refreshed = await embeddings.search(
-        embeddings.Search(query="uniquenewcomment", kinds=["comments"], min_score=1),
+        embeddings.Search(query='"uniquenewcomment"', kinds=["comments"], min_score=1),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,

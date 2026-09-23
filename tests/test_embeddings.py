@@ -203,7 +203,7 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
 
 
 @pytest.mark.parametrize("min_score", [None, 0.12, 0.15, 0.5])
-async def test_search_marks_sources_and_honors_semantic_floor_after_fts(
+async def test_vector_search_honors_floor_without_lexical_promotion(
     backlog: Backlog, monkeypatch: pytest.MonkeyPatch, min_score: float | None
 ) -> None:
     project, _ = await backlog.current()
@@ -219,6 +219,12 @@ async def test_search_marks_sources_and_honors_semantic_floor_after_fts(
         ),
         backlog.transaction,
     )
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("Unquoted vector search must not run lexical queries")
+
+    for name in ["search_tasks", "search_notes", "search_projects"]:
+        monkeypatch.setattr(operations, name, forbidden)
     scores: list[float] = []
 
     def matches(
@@ -237,9 +243,9 @@ async def test_search_marks_sources_and_honors_semantic_floor_after_fts(
         transaction=backlog.transaction,
     )
 
-    assert scores == [embeddings.FTS_MIN_SCORE if min_score is None else min_score]
+    assert scores == [embeddings.DEFAULT_MIN_SCORE if min_score is None else min_score]
     assert [(item.id, item.match) for item in result.tasks] == [
-        (lexical.id, "fts"),
+        (lexical.id, "semantic"),
         (semantic.id, "semantic"),
     ]
 

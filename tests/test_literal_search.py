@@ -52,16 +52,16 @@ async def test_literal_search_skips_model_and_applies_filters(
     exact = await find('"login token"')
     assert [item.id for item in exact.tasks] == [created[0].id]
     assert all(item.match == "fts" and item.score is None for item in exact.tasks)
-    assert (await find("fts: login NOT legacy")).count == 1
-    assert (await find("fts: login OR authentication")).count == 3
-    assert (await find("fts: (login OR authentication) AND tok*")).count == 2
-    assert (await find("fts: NEAR(login token, 0)")).count == 1
-    assert (await find("fts: tags:ui", status=[Status.DONE])).count == 1
+    assert (await find('"login" NOT "legacy"')).count == 1
+    assert (await find('"login" OR "authentication"')).count == 3
+    assert (await find('("login" OR "authentication") AND "tok"*')).count == 2
+    assert (await find('NEAR("login" "token", 0)')).count == 1
+    assert (await find('tags:"ui"', status=[Status.DONE])).count == 1
     assert (await find('"login token"', status=[Status.DELETED])).count == 1
-    assert (await find("fts: login", tag="api")).count == 0
-    assert (await find("fts: login", limit=1)).count == 1
-    assert (await find("fts: nothing")).count == 0
-    for query in ['"unterminated', "fts: (login OR)", "fts:", "fts: unknown:login"]:
+    assert (await find('"login"', tag="api")).count == 0
+    assert (await find('"login"', limit=1)).count == 1
+    assert (await find('"nothing"')).count == 0
+    for query in ['"unterminated', '("login" OR)', '"', 'unknown:"login"']:
         with pytest.raises(ValueError, match="FTS5"):
             await find(query)
 
@@ -126,24 +126,23 @@ async def test_documented_literal_examples(backlog: Backlog) -> None:
     cases = {
         '"token"': exact,
         '"token*"': exact,
-        '"token"*': prefix,
         '"refresh token"': {"refresh token"},
         '"refresh token"*': {"refresh token", "refresh tokens"},
-        "fts: token*": prefix,
-        "fts: token refresh": {"refresh token"},
-        "fts: token AND refresh": {"refresh token"},
-        "fts: token OR password": exact | {"password reset"},
-        "fts: token NOT legacy": exact - {"legacy token"},
-        "fts: (token OR password) AND reset": {"token reset", "password reset"},
-        "fts: refresh + token": {"refresh token"},
-        "fts: NEAR(refresh token, 5)": {"refresh token"},
-        "fts: NEAR(refresh token)": {"refresh token"},
-        "fts: ^token": {"token", "token reset", "payload"},
-        "fts: title:token": exact - {"payload"},
-        "fts: title:(token OR password)": (exact - {"payload"}) | {"password reset"},
-        "fts: {title body}:token": exact,
-        "fts: -tags:token": exact,
-        'fts: tags:"web-ui"': {"payload"},
+        '"token"*': prefix,
+        '"token" "refresh"': {"refresh token"},
+        '"token" AND "refresh"': {"refresh token"},
+        '"token" OR "password"': exact | {"password reset"},
+        '"token" NOT "legacy"': exact - {"legacy token"},
+        '("token" OR "password") AND "reset"': {"token reset", "password reset"},
+        '"refresh" + "token"': {"refresh token"},
+        'NEAR("refresh" "token", 5)': {"refresh token"},
+        'NEAR("refresh" "token")': {"refresh token"},
+        '^"token"': {"token", "token reset", "payload"},
+        'title:"token"': exact - {"payload"},
+        'title:("token" OR "password")': (exact - {"payload"}) | {"password reset"},
+        '{title body}:"token"': exact,
+        '-tags:"token"': exact,
+        'tags:"web-ui"': {"payload"},
         '"say ""hello"" now"': {"say hello now"},
     }
     for query, expected in cases.items():
@@ -155,3 +154,73 @@ async def test_documented_literal_examples(backlog: Backlog) -> None:
             backlog.transaction,
         )
         assert {task.title for task in found.tasks} == expected, query
+
+
+@pytest.mark.parametrize(
+    ("query", "text", "vector"),
+    [
+        ("token", None, "token"),
+        ('"token"', '"token"', None),
+        ('"token" "production"', '"token" "production"', None),
+        (
+            '"token" восстановить "production"',
+            '"token" "production"',
+            "token восстановить production",
+        ),
+        ('restore "refresh token"', '"refresh token"', "restore refresh token"),
+        ('"token" 2026', '"token"', "token 2026"),
+        ('"token"* restore', '"token"*', "token* restore"),
+        ('"token" OR "production"', '"token" OR "production"', None),
+        ('NEAR("token" "production", 5)', 'NEAR("token" "production", 5)', None),
+        ('title:"token"', 'title:"token"', None),
+    ],
+)
+def test_query_modes(query: str, text: str | None, vector: str | None) -> None:
+    assert embeddings.split_query(query) == (text, vector)
+
+
+async def test_mixed_search_routes_queries_and_merges_without_duplicates(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, _ = await backlog.current()
+    connection = await backlog.open()
+    tasks = []
+    for title in ["token production", "recover credentials", "token staging"]:
+        tasks.append(
+            await mutate(
+                operations.add_task(
+                    connection, backlog.actor, project_id=project.id, title=title, tags=["ui"]
+                ),
+                backlog.transaction,
+            )
+        )
+    encoded = []
+    original = embeddings.encoder.encode
+
+    def capture(texts: list[str]) -> Any:
+        encoded.extend(texts)
+        return original(texts)
+
+    monkeypatch.setattr(embeddings.encoder, "encode", capture)
+    args = embeddings.Search(
+        query='"token" восстановить "production"', kinds=["tasks"], min_score=-1, tag="ui"
+    )
+    result = await embeddings.search(args, backlog, connection, backlog.transaction)
+    assert encoded[-1] == "token восстановить production"
+    assert result.count == 3
+    assert result.tasks[0].id == tasks[0].id
+    assert result.tasks[0].match == "fts"
+    assert all(item.match == "semantic" for item in result.tasks[1:])
+    assert len({item.id for item in result.tasks}) == 3
+    limited = await embeddings.search(
+        args.model_copy(update={"limit": 1}), backlog, connection, backlog.transaction
+    )
+    assert limited.count == 1 and limited.tasks[0].id == tasks[0].id
+    strict = await embeddings.search(
+        args.model_copy(update={"min_score": 1}), backlog, connection, backlog.transaction
+    )
+    assert strict.count == 1 and strict.tasks[0].match == "fts"
+    excluded = await embeddings.search(
+        args.model_copy(update={"tag": "other"}), backlog, connection, backlog.transaction
+    )
+    assert excluded.count == 0
