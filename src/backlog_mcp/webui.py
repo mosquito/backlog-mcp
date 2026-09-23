@@ -19,6 +19,7 @@ MODULES = (
     "comment-composer.js",
     "breadcrumbs.js",
     "project-settings.js",
+    "project-form.js",
     "diagrams.js",
     "vendor/marked.esm.js",
     "vendor/purify.es.mjs",

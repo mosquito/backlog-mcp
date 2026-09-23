@@ -20,6 +20,7 @@ import { taskPagination } from "./task-pagination.js";
 import { memoryPage } from "./memory.js";
 import { commentComposer } from "./comment-composer.js";
 import { breadcrumbs } from "./breadcrumbs.js";
+import { createProject } from "./project-form.js";
 import { projectSettings } from "./project-settings.js";
 
 const content = document.querySelector("#content");
@@ -283,7 +284,8 @@ async function projects(target) {
     "section",
     {},
     el("div", { class: "eyebrow" }, "Workspace"),
-    el("h1", {}, "Your projects"),
+    el("div", { class: "row spread" }, el("h1", {}, "Your projects"),
+      button("New project", () => createProject(actions), "primary")),
     el(
       "div",
       { class: "row spread" },
