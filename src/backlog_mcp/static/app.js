@@ -18,6 +18,7 @@ import { taskPicker } from "./task-picker.js";
 import { taskTable } from "./task-table.js";
 import { taskPagination } from "./task-pagination.js";
 import { memoryPage } from "./memory.js";
+import { commentComposer } from "./comment-composer.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
@@ -791,64 +792,20 @@ async function detail(task) {
       "section",
       { class: "panel relations" },
       el("div", { class: "section-heading" }, el("h2", {}, "Relations"), addRelation),
-      task.links?.length ? links : el("p", { class: "empty-state" }, "No relations yet."),
+      task.links?.length ? links : null,
     ),
   );
-  const commentBody = el("textarea", {
-    placeholder: "Write a comment in Markdown…",
-    "aria-label": "Comment",
-  });
-  const preview = el("div", { class: "comment-preview markdown", hidden: true });
-  const commentError = el("p", { class: "error", role: "alert", hidden: true });
-  const textTab = button("Write", () => changeCommentView(false));
-  const previewTab = button("Preview", () => changeCommentView(true));
-  function changeCommentView(showPreview) {
-    if (showPreview) preview.replaceChildren(markdown(commentBody.value));
-    commentBody.hidden = showPreview;
-    preview.hidden = !showPreview;
-    textTab.setAttribute("aria-pressed", String(!showPreview));
-    previewTab.setAttribute("aria-pressed", String(showPreview));
-  }
-  const commentForm = el(
-    "form",
-    { class: "comment-form" },
-    el("label", { htmlFor: "comment-body" }, "Add a comment"),
-    el("div", { class: "editor-tabs" }, textTab, previewTab),
-    commentBody,
-    preview,
-    commentError,
-    el(
-      "div",
-      { class: "form-actions" },
-      el("small", { class: "muted" }, "Markdown supported"),
-      el("button", { type: "submit", class: "primary" }, "Add comment"),
-    ),
-  );
-  commentBody.id = "comment-body";
-  changeCommentView(false);
-  commentForm.onsubmit = async (e) => {
-    e.preventDefault();
-    if (!commentBody.value.trim()) {
-      changeCommentView(false);
-      commentError.textContent = "Write a comment before sending.";
-      commentError.hidden = false;
-      commentBody.focus();
-      return;
-    }
-    const submit = commentForm.querySelector('[type="submit"]');
-    submit.disabled = true;
-    commentError.hidden = true;
-    try {
-      const added = await call("task_comment_add", { task_id: task.id, body: commentBody.value });
+  const composer = commentComposer({
+    taskId: task.id,
+    draftKey: `backlog:comment-draft:${JSON.stringify([endpoint, identity.principal, task.id])}`,
+    call,
+    markdown,
+    onAdded: async (added) => {
+      if (!panel.isConnected) return;
       await render();
       document.getElementById(`comment-${added.id}`)?.scrollIntoView({ block: "center" });
-    } catch (error) {
-      commentError.textContent = error.message;
-      commentError.hidden = false;
-    } finally {
-      submit.disabled = false;
-    }
-  };
+    },
+  });
   const comments = (task.comments || []).map((comment) => {
     const system = comment.kind !== "comment";
     return el(
@@ -889,7 +846,7 @@ async function detail(task) {
         el("h2", {}, "Discussion & activity"),
         el("span", { class: "count" }, String(comments.length)),
       ),
-      commentForm,
+      composer,
       el("div", { class: "timeline" }, ...comments),
       comments.length
         ? null

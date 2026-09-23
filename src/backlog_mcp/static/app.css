@@ -1660,3 +1660,26 @@ button,
   background: var(--column);
   color: var(--muted);
 }
+
+.relations .section-heading:last-child {
+  margin-bottom: 0;
+}
+.comment-composer {
+  margin-top: 16px;
+}
+.comment-composer > summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+  padding: 10px 0;
+}
+.comment-composer > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+.comment-composer .form-actions small {
+  display: block;
+}
+.comment-composer [role="status"]:empty {
+  display: none;
+}
