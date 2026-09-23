@@ -1062,9 +1062,6 @@ button.destructive {
 .search-kinds .inline {
   margin: 0;
 }
-#search-dialog > .inline {
-  margin-top: 16px;
-}
 #search-results h3 {
   font-size: 11px;
   text-transform: uppercase;

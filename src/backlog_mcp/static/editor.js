@@ -79,7 +79,13 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
     link("← " + project, projectRoute(project)),
     el("div", { class: "eyebrow", style: "margin-top:24px" }, task ? `Task #${task.id}` : "Create"),
     el("h1", {}, task ? "Edit task" : "New task"),
-    saved ? el("p", { class: "muted" }, "Your saved draft has been restored.") : null,
+    el(
+      "p",
+      { class: "muted" },
+      saved
+        ? "Your saved draft has been restored. Changes are saved automatically in this browser."
+        : "Your draft is saved automatically in this browser.",
+    ),
     el(
       "div",
       { class: "panel" },
@@ -142,6 +148,7 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
   }
   updateTabs();
   form.addEventListener("input", persist);
+  form.addEventListener("change", persist);
   async function save() {
     values = read();
     persist();

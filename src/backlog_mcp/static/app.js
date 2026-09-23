@@ -716,10 +716,25 @@ const searchLabels = {
 const query = document.querySelector("#search-query"),
   all = document.querySelector("#search-all"),
   results = document.querySelector("#search-results");
+let searchAllPreference = false;
+const searchPreferenceKey = () => `backlog:search:${endpoint}:${identity.principal}`;
+function searchPlaceholder() {
+  query.placeholder = all.checked ? "Search across all projects" : `Search in ${project}`;
+}
 function openSearch() {
   if (!identity) return;
-  all.checked = !project;
+  let saved;
+  try {
+    saved = JSON.parse(localStorage.getItem(searchPreferenceKey()));
+  } catch {
+    saved = null;
+  }
+  searchAllPreference = saved?.all === true;
+  for (const input of searchKinds)
+    input.checked = Array.isArray(saved?.kinds) ? saved.kinds.includes(input.value) : true;
+  all.checked = !project || searchAllPreference;
   all.disabled = !project;
+  searchPlaceholder();
   dialog.showModal();
   query.focus();
   search();
@@ -765,6 +780,19 @@ query.oninput = (event) => {
 query.addEventListener("compositionend", scheduleSearch);
 all.onchange = () => {
   clearTimeout(searchTimer);
+  if (!all.disabled) searchAllPreference = all.checked;
+  searchPlaceholder();
+  try {
+    localStorage.setItem(
+      searchPreferenceKey(),
+      JSON.stringify({
+        all: searchAllPreference,
+        kinds: searchKinds.filter((input) => input.checked).map((input) => input.value),
+      }),
+    );
+  } catch {
+    notify(new Error("The browser could not save search preferences."));
+  }
   search();
 };
 for (const input of searchKinds) input.onchange = all.onchange;
@@ -789,8 +817,8 @@ async function search() {
   searchState("Searching…", true);
   try {
     const args = { query: query.value, kinds, limit: 15, min_score: 0.12 };
-    if (project) args.project = project;
     if (all.checked || !project) args.all_computers = true;
+    else args.project = project;
     const found = await call("search", args);
     if (current !== searchGeneration || !identity || !dialog.open) return;
     query.setAttribute("aria-busy", "false");

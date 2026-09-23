@@ -528,6 +528,8 @@ The Memory view is read-only. Links use `#note123`; `#123` still
 identifies a task.
 Cmd+K searches tasks, comments, memory, and projects. Use the checkboxes below
 the query to select content types; the All projects checkbox controls the scope.
+The browser remembers these checkboxes in localStorage. Task drafts also survive
+refresh and are removed after a successful save or explicit discard.
 
 Sign in with Basic credentials or a Bearer token supported by the server.
 Credentials stay in `sessionStorage` unless you select Remember me, which uses
