@@ -77,16 +77,6 @@ export async function memoryPage(target, actions) {
   };
   function noteItem(note) {
     const item = link("", change({ note: note.id }), "memory-item");
-    item.onclick = (event) => {
-      if (
-        event.button === 0 &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.shiftKey &&
-        !event.altKey
-      )
-        window.scrollTo(0, 0);
-    };
     if (note.id === target.id) item.setAttribute("aria-current", "page");
     item.append(
       el(

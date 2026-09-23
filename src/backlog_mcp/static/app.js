@@ -23,6 +23,8 @@ import { breadcrumbs } from "./breadcrumbs.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
+const pageLoading = document.querySelector("#page-loading");
+let displayedUrl = "";
 const credentialKey = `backlog:auth:${endpoint}`;
 const statuses = ["todo", "doing", "blocked", "done", "cancelled"];
 const priorities = ["urgent", "high", "normal", "low"];
@@ -104,6 +106,10 @@ async function connect(authorization = credentials()) {
   await render();
 }
 function showLogin(error, reportError = true) {
+  content.inert = false;
+  content.removeAttribute("aria-busy");
+  pageLoading.hidden = true;
+  displayedUrl = "";
   content.firstElementChild?.dispose?.();
   document.querySelector("#principal").textContent = "";
   document.querySelector("#logout").hidden = true;
@@ -190,10 +196,12 @@ async function render() {
   }
   if (!identity) return;
   const current = ++generation;
-  document.querySelector("#breadcrumbs").hidden = true;
+  const targetUrl = location.href;
+  content.inert = true;
+  content.setAttribute("aria-busy", "true");
+  pageLoading.hidden = false;
   let selectedProject = "";
   content.firstElementChild?.dispose?.();
-  content.replaceChildren(el("p", { class: "muted" }, "Loading…"));
   try {
     let page;
     if (target.kind === "projects") {
@@ -220,6 +228,8 @@ async function render() {
     }
     project = selectedProject;
     content.replaceChildren(page);
+    if (displayedUrl !== targetUrl) window.scrollTo(0, 0);
+    displayedUrl = targetUrl;
     page.mount?.();
     document.querySelector("#breadcrumbs").replaceChildren(breadcrumbs(target, project));
     document.querySelector("#breadcrumbs").hidden = false;
@@ -243,6 +253,12 @@ async function render() {
         link("Projects", "/ui/"),
       ),
     );
+  } finally {
+    if (current === generation) {
+      content.inert = false;
+      content.removeAttribute("aria-busy");
+      pageLoading.hidden = true;
+    }
   }
 }
 async function projects(target) {

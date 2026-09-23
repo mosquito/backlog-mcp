@@ -1,4 +1,5 @@
 :root {
+  scrollbar-gutter: stable;
   scroll-padding-top: 110px;
   font-family:
     Inter,
@@ -1721,4 +1722,18 @@ button,
 }
 .comment-composer [role="status"]:empty {
   display: none;
+}
+
+#page-loading {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 30;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  box-shadow: 0 2px 8px var(--card-shadow);
+  pointer-events: none;
 }
