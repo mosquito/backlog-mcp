@@ -306,27 +306,29 @@ async function projects(target) {
       if (toggle.checked) p.set("archived", "true"); else p.delete("archived");
       navigate(`/ui/?${p}`); },
   });
-  return el(
-    "section",
-    {},
-    el("div", { class: "eyebrow" }, "Workspace"),
-    el("div", { class: "row spread" }, el("h1", {}, "Your projects"),
+  const apply = el("button", { type: "submit" }, "Apply scope");
+  const filters = el("form", { class: "project-scope-form", onsubmit: event => {
+    event.preventDefault(); navigate(`/ui/?${scope.apply(new URLSearchParams(target.params))}`);
+  } }, scope.element, apply, el("label", { class: "inline" }, toggle, "Include archived"));
+  const mode = scope.element.querySelector("select");
+  mode.parentElement.firstChild.replaceWith(el("span", { class: "sr-only" }, "Scope"));
+  apply.hidden = mode.value !== "computer";
+  mode.addEventListener("change", () => {
+    apply.hidden = mode.value !== "computer";
+    if (mode.value !== "computer") filters.requestSubmit();
+  });
+  return el("section", { class: "projects-page" },
+    el("div", { class: "projects-heading" },
+      el("div", {}, el("h1", {}, "Your projects"), el("p", { class: "muted" }, `${data.count} projects`)),
       button("New project", () => createProject(actions), "primary")),
-    el(
-      "div",
-      { class: "row spread" },
-      el("p", { class: "subtitle" }, `${data.count} projects · Pick up where you left off.`),
-      link("All tasks", "/ui/?view=tasks", "button"),
-      link("My assignments", "/ui/?view=assigned", "button"),
-      link("Statistics", "/ui/?view=stats", "button"),
-      el("label", { class: "inline" }, toggle, "Include archived"),
-    ),
-    el("form", { class: "row", onsubmit: event => {
-      event.preventDefault(); navigate(`/ui/?${scope.apply(new URLSearchParams(target.params))}`);
-    } }, scope.element, el("button", { type: "submit" }, "Apply scope")),
-    el("p", { class: "muted" }, scopeLabel(target.params, identity.principal)),
-    el("div", { class: "projects" }, ...data.items.map((p) => linkNode(p))),
-  );
+    el("div", { class: "projects-toolbar" },
+      el("nav", { class: "workspace-nav", "aria-label": "Workspace" },
+        el("span", { "aria-current": "page" }, "Projects"),
+        link("All tasks", "/ui/?view=tasks"),
+        link("My assignments", "/ui/?view=assigned"),
+        link("Statistics", "/ui/?view=stats")),
+      filters),
+    el("div", { class: "projects" }, ...data.items.map(p => linkNode(p))));
 }
 function linkNode(p) {
   return el(

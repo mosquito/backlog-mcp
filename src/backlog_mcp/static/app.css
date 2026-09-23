@@ -1898,3 +1898,22 @@ main {
 .task-browser-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
 .task-browser-filters label { margin-bottom: 0; }
 .task-browser .task-table-title small { display: block; margin-top: 6px; overflow-wrap: anywhere; }
+
+.projects-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.projects-heading h1 { margin-bottom: 4px; }
+.projects-heading p { margin: 0; }
+.projects-toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; margin: 22px 0; }
+.workspace-nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.workspace-nav > * { display: flex; align-items: center; min-height: 40px; padding: 8px 12px; border-radius: 5px; color: var(--text); text-decoration: none; font-weight: 550; }
+.workspace-nav [aria-current] { background: var(--primary); color: var(--on-primary); }
+.workspace-nav a:hover { background: var(--hover); }
+.project-scope-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.project-scope-form label { margin: 0; }
+.project-scope-form .inline { min-height: 40px; }
+.project-scope-form .scope-controls > label:first-child select { margin: 0; }
+@media (max-width: 600px) {
+  .projects-toolbar, .project-scope-form { gap: 12px; }
+  .workspace-nav { width: 100%; }
+  .workspace-nav > * { flex: 1; justify-content: center; padding: 8px; font-size: 13px; }
+  .projects-heading .primary { flex-shrink: 0; }
+}
