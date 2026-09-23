@@ -128,6 +128,11 @@ SELECT project_id, computer, root FROM project_roots
 WHERE project_id IN (SELECT value FROM json_each(:ids)) AND principal = :principal
 ORDER BY computer, root;
 
+-- name: member_roots(project_id)
+SELECT r.principal, r.computer, r.root FROM project_roots r
+JOIN project_members m ON m.project_id = r.project_id AND m.principal = r.principal
+WHERE r.project_id = :project_id ORDER BY r.principal, r.computer, r.root;
+
 -- name: project(project_id, principal)^
 SELECT p.*, (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS total_tasks,
 (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.status IN ('todo', 'doing',

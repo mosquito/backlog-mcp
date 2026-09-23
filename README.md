@@ -474,7 +474,10 @@ or JWT authorizer; the `$USER` fallback is resolved only when no authorizer appl
 Use `project_share(project="example", principal="bob", role="reader")` to give a configured
 Basic user read access. Use `role="editor"` for task, comment, note and project edits.
 Only the owner can share or delete a project. `project_members(project="example")`
-lists its members. JWT principals register on first authenticated use; pass their exact
+lists its members and their computer/path bindings, visible only to project members.
+In the Web UI, open **Settings** beside **Kanban | Table** to view project details and
+bindings. Owners can use **Share project** to grant access and **Change role** to update it.
+JWT principals register on first authenticated use; pass their exact
 identity from `whoami` when sharing. Basic users register at server startup.
 
 Project roots belong to a principal and computer. Use `project_list(all_computers=true)`

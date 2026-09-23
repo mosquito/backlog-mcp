@@ -747,6 +747,7 @@ class ShareProject(ProjectRef):
 
 class Members(Actor):
     items: list[dict[str, str]]
+    roots: list[ProjectRootOut] = Field(default_factory=list)
 
     @field_serializer("items", when_used="json")
     def principal_labels(self, values: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -757,10 +758,20 @@ class Members(Actor):
 async def project_members(
     args: ProjectRef, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Members:
-    """List principals with access to a project and their roles."""
+    """List project members, roles and their computer/path bindings. Members only."""
     project = await backlog.resolve(args.project)
+    return await member_details(backlog, connection, project.id)
+
+
+async def member_details(
+    backlog: Backlog, connection: aiosqlite.Connection, project_id: int
+) -> Members:
     return Members(
-        items=await members(connection, backlog.actor, project.id),
+        items=await members(connection, backlog.actor, project_id),
+        roots=[
+            ProjectRootOut(**dict(row))
+            async for row in QUERIES.member_roots(connection, project_id=project_id)
+        ],
         principal=backlog.principal,
         computer=backlog.computer,
     )
@@ -779,11 +790,7 @@ async def project_share(
         await share(connection, backlog.actor, project.id, principal, args.role)
     embeddings.invalidate(backlog)
     await changed(project_event(project, Action.UPDATED, computer=backlog.computer))
-    return Members(
-        items=await members(connection, backlog.actor, project.id),
-        principal=backlog.principal,
-        computer=backlog.computer,
-    )
+    return await member_details(backlog, connection, project.id)
 
 
 class ListProjects(BaseModel):

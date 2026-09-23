@@ -526,3 +526,33 @@ async def test_background_index_follows_access_and_project_deletion(backlog: Bac
     await indexer.refresh()
     assert task.id not in indexer.states[backlog.principal].indexes[0].ids
     assert project.id not in indexer.states[backlog.principal].indexes[3].ids
+
+
+async def test_members_include_only_accessible_project_bindings(
+    backlog: Backlog, tmp_path: Path
+) -> None:
+    for directory in ("alice/work", "alice/private", "bob/work"):
+        (tmp_path / directory).mkdir(parents=True)
+    app = httpd.application(backlog, basic=["alice:password", "bob:password", "eve:password"])
+    async with TestServer(app) as server, account(server, "alice") as alice:
+        shared = await call(alice, "project_save", root=str(tmp_path / "alice/work"), name="Shared")
+        name = shared["full_name"]
+        await call(alice, "project_save", root=str(tmp_path / "alice/private"), name="Private")
+        granted = await call(alice, "project_share", project=name, principal="bob", role="reader")
+        assert any(root.endswith("/alice/work") for root in granted["roots"])
+        async with account(server, "bob") as bob:
+            await call(bob, "project_save", project=name, root=str(tmp_path / "bob/work"))
+            shown = await call(bob, "project_members", project=name)
+            assert any(
+                root.startswith("alice@") and root.endswith("/alice/work")
+                for root in shown["roots"]
+            )
+            assert any(
+                root.startswith("bob@") and root.endswith("/bob/work") for root in shown["roots"]
+            )
+            assert not any(root.endswith("/alice/private") for root in shown["roots"])
+            refused = await bob.call_tool("project_share", {"project": name, "principal": "eve"})
+            assert refused.is_error
+        async with account(server, "eve") as eve:
+            refused = await eve.call_tool("project_members", {"project": name})
+            assert refused.is_error

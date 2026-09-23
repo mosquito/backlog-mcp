@@ -20,6 +20,7 @@ import { taskPagination } from "./task-pagination.js";
 import { memoryPage } from "./memory.js";
 import { commentComposer } from "./comment-composer.js";
 import { breadcrumbs } from "./breadcrumbs.js";
+import { projectSettings } from "./project-settings.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
@@ -217,6 +218,9 @@ async function render() {
     } else if (target.kind === "board") {
       selectedProject = target.project;
       page = await board(target);
+    } else if (target.kind === "settings") {
+      selectedProject = target.project;
+      page = await projectSettings(target.project, actions);
     } else if (target.kind === "task") {
       const task = await call("task_get", { id: target.id });
       selectedProject = task.project;
@@ -447,6 +451,9 @@ async function board(target) {
       { class: "view-switch", role: "group", "aria-label": "Task view" },
       viewButton("Kanban", "kanban", !tableView),
       viewButton("Table", "table", tableView),
+      button("Settings", () =>
+        navigate(projectRoute(target.project, new URLSearchParams({ view: "settings" }))),
+      ),
     ),
     counts,
     tableView

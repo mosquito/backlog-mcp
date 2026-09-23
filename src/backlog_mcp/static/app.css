@@ -1827,3 +1827,53 @@ main {
   border-radius: 4px;
   background: var(--column);
 }
+
+.project-settings > .view-switch {
+  display: inline-flex;
+  margin-top: 12px;
+}
+.member-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.member-row strong {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.member-row button {
+  margin-left: auto;
+}
+.binding-row {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(100px, 1fr) minmax(0, 3fr);
+  gap: 20px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.binding-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.binding-row .muted {
+  font-size: 12px;
+}
+.member-row:last-child,
+.binding-row:last-child {
+  border-bottom: 0;
+}
+@media (max-width: 600px) {
+  .binding-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .binding-row > div:last-child {
+    grid-column: 1 / -1;
+  }
+}

@@ -83,6 +83,8 @@ export function route(href = location.href) {
     };
   }
   if (params.get("view") === "new") return { kind: "new", params };
+  if (params.get("view") === "settings" && params.get("project"))
+    return { kind: "settings", project: params.get("project"), params };
   if (params.get("project")) return { kind: "board", project: params.get("project"), params };
   return { kind: "projects", params };
 }

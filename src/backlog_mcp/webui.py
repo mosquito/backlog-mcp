@@ -18,6 +18,7 @@ MODULES = (
     "memory-editor.js",
     "comment-composer.js",
     "breadcrumbs.js",
+    "project-settings.js",
     "diagrams.js",
     "vendor/marked.esm.js",
     "vendor/purify.es.mjs",
