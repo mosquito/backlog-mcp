@@ -1737,3 +1737,65 @@ button,
   box-shadow: 0 2px 8px var(--card-shadow);
   pointer-events: none;
 }
+
+/* Keep the first paint the same size as the authenticated page shell. */
+main {
+  min-height: calc(100dvh - 69px);
+}
+[data-starting] #section-switch {
+  display: flex !important;
+  opacity: 0.5;
+}
+[data-starting] #logout {
+  display: inline-block !important;
+  visibility: hidden;
+}
+[data-starting] #breadcrumbs {
+  display: block !important;
+  min-height: 1.5em;
+  visibility: hidden;
+}
+[data-starting] #principal {
+  visibility: hidden;
+}
+[data-starting] #page-loading {
+  display: none !important;
+}
+.initial-loading > p {
+  color: var(--muted);
+  margin: 0 0 20px;
+}
+.initial-placeholder > div {
+  background: var(--column);
+  border-radius: 8px;
+}
+.placeholder-title {
+  height: 36px;
+  width: min(380px, 70%);
+  margin-bottom: 20px;
+}
+.placeholder-line {
+  height: 40px;
+  width: min(680px, 100%);
+  margin-bottom: 24px;
+}
+.placeholder-panel {
+  height: 52dvh;
+  min-height: 240px;
+}
+@media (max-width: 600px) {
+  main {
+    min-height: calc(100dvh - 220px);
+  }
+}
+
+[data-starting] #breadcrumbs::before {
+  content: "";
+  display: block;
+  visibility: visible;
+  width: min(220px, 75%);
+  height: 12px;
+  margin: 3px 0;
+  border-radius: 4px;
+  background: var(--column);
+}

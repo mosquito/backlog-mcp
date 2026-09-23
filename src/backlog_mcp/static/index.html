@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-endpoint="/mcp">
+<html lang="en" data-endpoint="/mcp" data-starting>
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -21,7 +21,7 @@
     <script type="module" src="/ui/static/app.js"></script>
   </head>
   <body>
-    <header>
+    <header inert>
       <a class="brand" href="/ui/">Backlog<span class="brand-dot">.</span></a
       ><nav id="breadcrumbs" aria-label="Breadcrumb" hidden></nav>
       <nav id="section-switch" class="view-switch" aria-label="Sections" hidden>
@@ -32,7 +32,16 @@
       ><a href="/ui/static/connect.html" class="button primary connect-agent">Connect agent</a
       ><span id="principal"></span><button id="logout" class="quiet" hidden>Sign out</button>
     </header>
-    <main id="content" aria-live="polite"><p>Connecting…</p></main>
+    <main id="content" aria-live="polite" aria-busy="true">
+      <section class="initial-loading" aria-label="Loading page">
+        <p role="status">Loading Backlog…</p>
+        <div class="initial-placeholder" aria-hidden="true">
+          <div class="placeholder-title"></div>
+          <div class="placeholder-line"></div>
+          <div class="placeholder-panel"></div>
+        </div>
+      </section>
+    </main>
     <footer class="mobile-footer">
       <a href="/ui/static/connect.html">Connect agent</a>
     </footer>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-VERSION = "0.15.4"
+VERSION = "0.15.5"
 
 SHORT = 7
 

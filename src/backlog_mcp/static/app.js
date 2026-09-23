@@ -105,7 +105,12 @@ async function connect(authorization = credentials()) {
   document.querySelector("#section-switch").hidden = false;
   await render();
 }
+function finishStartup() {
+  document.documentElement.removeAttribute("data-starting");
+  document.querySelector("header").inert = false;
+}
 function showLogin(error, reportError = true) {
+  finishStartup();
   content.inert = false;
   content.removeAttribute("aria-busy");
   pageLoading.hidden = true;
@@ -255,6 +260,7 @@ async function render() {
     );
   } finally {
     if (current === generation) {
+      finishStartup();
       content.inert = false;
       content.removeAttribute("aria-busy");
       pageLoading.hidden = true;

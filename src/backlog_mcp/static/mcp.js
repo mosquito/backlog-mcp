@@ -113,7 +113,7 @@ export class MCP {
         const result = await this.send("initialize", {
           protocolVersion: this.version,
           capabilities: {},
-          clientInfo: { name: "backlog-web", version: "0.15.4" },
+          clientInfo: { name: "backlog-web", version: "0.15.5" },
         });
         if (!["2025-11-25", "2025-06-18", "2025-03-26"].includes(result.protocolVersion))
           throw new Error("Unsupported MCP protocol version.");
