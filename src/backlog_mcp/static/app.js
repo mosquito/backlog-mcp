@@ -878,7 +878,12 @@ async function detail(task) {
     el(
       "section",
       { class: "panel relations" },
-      el("div", { class: "section-heading" }, el("h2", {}, "Relations"), addRelation),
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h2", {}, "Relations ", el("span", { class: "count" }, String(task.links?.length ?? 0))),
+        addRelation,
+      ),
       task.links?.length ? links : null,
     ),
   );
