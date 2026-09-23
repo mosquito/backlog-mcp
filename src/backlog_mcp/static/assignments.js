@@ -26,6 +26,7 @@ export async function assignmentControl(task, { call, principal, notify, refresh
         task: task.id,
         expected: task.assigned || null,
         assigned: task.assigned ? null : `${principal}:${browserMarker()}`,
+        ...(task.assigned?.startsWith(`${principal}:ui-edit-`) ? { restore: true } : {}),
       });
       await refresh();
     } catch (error) {

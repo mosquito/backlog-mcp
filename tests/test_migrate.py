@@ -117,7 +117,7 @@ async def test_memory_database_uses_same_connection() -> None:
     store = Backlog(Path(":memory:"))
     try:
         await store.open()
-        assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 2
+        assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 3
         assert await rows(await store.open(), "SELECT * FROM task_links") == []
     finally:
         await store.close()
@@ -128,7 +128,7 @@ async def test_concurrent_startups(tmp_path: Path) -> None:
     try:
         await asyncio.gather(*(store.open() for store in stores))
         for store in stores:
-            assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 2
+            assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 3
     finally:
         await asyncio.gather(*(store.close() for store in stores))
 
@@ -153,6 +153,7 @@ async def test_candidates_are_collected_on_a_worker_thread(
     assert set(seen[0]) == {
         MIGRATIONS / "0001-initial.sql",
         MIGRATIONS / "0002-task-assignment.sql",
+        MIGRATIONS / "0003-task-edit-claims.sql",
     }
 
 
@@ -160,7 +161,7 @@ async def test_migration_logs_include_commit_and_no_work(caplog: pytest.LogCaptu
     caplog.set_level(logging.INFO, logger="backlog_mcp.migrate")
     async with aiosqlite.connect(":memory:") as connection:
         await migrate(connection)
-        assert "2 migrations needed" in caplog.messages
+        assert "3 migrations needed" in caplog.messages
         assert "Applying migration 0001-initial.sql" in caplog.messages
         assert any(
             message.startswith("Applied migration 0001-initial.sql (sha256=")

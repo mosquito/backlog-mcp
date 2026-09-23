@@ -11,6 +11,7 @@ MODULES = (
     "markdown.js",
     "dom.js",
     "editor.js",
+    "editor-claim.js",
     "task-picker.js",
     "task-table.js",
     "task-browser.js",

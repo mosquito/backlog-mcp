@@ -291,7 +291,9 @@ async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient
     assert (await call(client, "search", query="token secur"))["count"] == 1
     assert (await call(client, "search", query="auth", status=["todo"]))["count"] == 0
     assert (await call(client, "search", query="auth", all_projects=True))["count"] == 2
-    assert (await call(client, "search", query='" OR *'))["count"] == 0
+    malformed = await client.call_tool("search", {"query": '" OR *'})
+    assert malformed.is_error
+    assert "Invalid FTS5 expression" in str(malformed.content)
 
     await call(client, "task_update", id=task["id"], title="Login", body="", tags=[])
     assert (await call(client, "search", query="auth", min_score=1))["count"] == 0

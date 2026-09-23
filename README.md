@@ -569,12 +569,20 @@ Credentials stay in `sessionStorage` unless you select Remember me, which uses
 the configured MCP endpoint. Public UI assets live at `/ui/static/`; the MCP
 subapplication applies authentication independently.
 
-Drafts persist in `localStorage`, scoped by user and task. Before saving edits,
-the browser reads the task again and compares its timestamp and editable fields.
-If the task changed, the editor displays the base, current, and draft values.
-You can keep your changes or merge them manually. This check is not atomic:
-another client can write between the comparison and the update. The current API
-does not offer server-side compare-and-swap.
+Task drafts persist in `localStorage`, scoped by user and task. The task editor takes
+a temporary assignment with `task_claim(temporary=true)`. The server stores the previous
+assignment. Saving compares `expected_assigned` and restores that assignment with
+`release_edit=true` in one transaction. Other task writes must wait for the edit claim
+to be released. Cancel or navigation within the UI restores the assignment without saving.
+
+Reloading the same tab checks its saved edit marker before resuming. A second tab cannot
+reuse that marker. If a tab is closed before release, reopen the task and use **Release task**
+to restore your previous assignment. Browser edit claims require HTTPS or localhost.
+
+If the claim or content changed, the editor keeps the draft and displays the current server
+Markdown beside it. Compare text or previews, edit the merged result, and continue before
+saving. A further conflict requires another review; it never silently replaces your draft.
+Note editing still uses a client-side content check and does not have atomic CAS.
 
 The UI uses native JavaScript modules without a build step or npm installation.
 Marked and DOMPurify are vendored with their licenses; Markdown is sanitized

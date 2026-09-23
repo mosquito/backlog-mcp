@@ -50,6 +50,7 @@ let client,
   searchGeneration = 0;
 let selectedResult = 0;
 const actions = {
+  endpoint,
   call,
   refresh: render,
   notify,
@@ -221,7 +222,8 @@ async function render() {
   content.setAttribute("aria-busy", "true");
   pageLoading.hidden = false;
   let selectedProject = "";
-  content.firstElementChild?.dispose?.();
+  await content.firstElementChild?.dispose?.();
+  if (current !== generation || !identity) return;
   try {
     let page;
     if (target.kind === "projects") {

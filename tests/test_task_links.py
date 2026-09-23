@@ -344,13 +344,14 @@ async def test_existing_schema_is_registered_without_changing_links(backlog: Bac
     await backlog.close()
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE migrations")
+        connection.execute("DROP TABLE task_edit_claims")
         connection.execute("DROP INDEX tasks_by_assigned")
         connection.execute("ALTER TABLE tasks DROP COLUMN assigned")
     assert (await operations.read_task(await backlog.open(), backlog.actor, a)).title == "Task 0"
     assert (await operations.task_links(await backlog.open(), backlog.actor, b))[
         0
     ].reason == "Keep this"
-    assert len(await rows(await backlog.open(), "SELECT * FROM migrations")) == 2
+    assert len(await rows(await backlog.open(), "SELECT * FROM migrations")) == 3
     await backlog.close()
     assert (await operations.task_links(await backlog.open(), backlog.actor, b))[
         0

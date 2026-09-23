@@ -502,3 +502,12 @@ SELECT id, title FROM tasks
 WHERE project_id = :project_id AND status IN ('todo', 'doing', 'blocked')
 AND substr(assigned, 1, length(:prefix)) = :prefix
 ORDER BY priority, created_at, id LIMIT 10;
+
+-- name: edit_claim(task_id)^
+SELECT assigned, previous FROM task_edit_claims WHERE task_id = :task_id;
+
+-- name: save_edit_claim(task_id, assigned, previous)!
+INSERT INTO task_edit_claims(task_id, assigned, previous) VALUES (:task_id, :assigned, :previous);
+
+-- name: remove_edit_claim(task_id)!
+DELETE FROM task_edit_claims WHERE task_id = :task_id;

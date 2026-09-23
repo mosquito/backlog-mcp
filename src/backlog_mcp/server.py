@@ -885,6 +885,14 @@ class ClaimTask(BaseModel):
     assigned: NullableAssignment = Field(
         description="New username@computer:marker of the current principal; null releases."
     )
+    temporary: bool = Field(
+        default=False,
+        description="Begin an exclusive edit claim; remember the previous assignment.",
+    )
+    restore: bool = Field(
+        default=False,
+        description="Restore the assignment saved by an edit claim. assigned must be null.",
+    )
 
 
 class AssignedTasks(BaseModel):
@@ -932,6 +940,14 @@ class UpdateTask(BaseModel):
     )
     priority: Priority | None = Field(default=None, description="Updated priority ranking.")
     tags: list[str] | None = Field(default=None, description="Replaces the whole tag list.")
+    expected_assigned: NullableAssignment = Field(
+        default=None,
+        description="Compare assignment atomically before writing. Required for an edit claim.",
+    )
+    release_edit: bool = Field(
+        default=False,
+        description="Restore the previous assignment atomically after saving an edit claim.",
+    )
 
 
 class MoveTask(BaseModel):
@@ -1325,10 +1341,19 @@ async def task_claim(
     must use the current principal and a URL-safe marker chosen by the agent. Keep the marker
     across reconnects. Claim before starting work; on conflict do not start the task.
     Use assigned=null to release. Status is independent; closing does not release ownership.
+    temporary=true saves the previous assignment for exclusive UI editing. restore=true with
+    assigned=null restores it; only that claimant may restore. Other writes require the edit
+    marker as expected_assigned. Ordinary CAS reassignment invalidates a temporary claim.
     """
     async with transaction:
         task, updated = await claim_task(
-            connection, backlog.actor, args.task, expected=args.expected, assigned=args.assigned
+            connection,
+            backlog.actor,
+            args.task,
+            expected=args.expected,
+            assigned=args.assigned,
+            temporary=args.temporary,
+            restore=args.restore,
         )
         comments = (
             await read_comments(
@@ -1430,7 +1455,9 @@ async def task_update(
 
     Use task_comment_add for progress, findings, and verification. Status transitions create
     separate history entries. Mark active work doing and completed work done or cancelled.
-    Closing stamps the closing time; reopening clears it.
+    Closing stamps the closing time; reopening clears it. expected_assigned, when supplied,
+    is compared under the writer lock. An active temporary edit claim requires that marker.
+    release_edit=true restores its previous assignment in the same transaction.
     """
     async with transaction:
         task = await update_task(
@@ -1442,7 +1469,21 @@ async def task_update(
             status=args.status,
             priority=args.priority,
             tags=args.tags,
+            expected_assigned=args.expected_assigned
+            if "expected_assigned" in args.model_fields_set
+            else Unset.VALUE,
         )
+        if args.release_edit:
+            if "expected_assigned" not in args.model_fields_set:
+                raise ValueError("release_edit requires expected_assigned")
+            task, _ = await claim_task(
+                connection,
+                backlog.actor,
+                args.id,
+                expected=args.expected_assigned,
+                assigned=None,
+                restore=True,
+            )
         comments = await read_comments(
             connection, backlog.actor, task_id=args.id, status=list(Status), limit=-1
         )
@@ -2106,8 +2147,16 @@ async def claim_task(
     *,
     expected: str | None,
     assigned: str | None,
+    temporary: bool = False,
+    restore: bool = False,
 ) -> tuple[Task, bool]:
     """Compare and replace an assignment under a database writer lock."""
+    if temporary and restore:
+        raise ValueError("temporary and restore are mutually exclusive")
+    if temporary and (assigned is None or assigned == expected):
+        raise ValueError("An edit claim requires a new assignment marker")
+    if restore and (assigned is not None or expected is None):
+        raise ValueError("Restore requires expected and assigned=null")
     if expected is not None:
         check_assignment(expected)
     if assigned is not None:
@@ -2122,8 +2171,24 @@ async def claim_task(
     await require(connection, actor, task.project_id, role="editor")
     if task.assigned != expected:
         raise AssignmentConflict(task_id, expected, task.assigned)
+    lease = await QUERIES.edit_claim(connection, task_id=task_id)
+    if restore:
+        principal = principal_label(actor.principal, actor.computer or hostname())
+        if expected is None or expected.rsplit(":", 1)[0] != principal:
+            raise PermissionError("Only the edit claimant can restore its previous assignment")
+        if lease is None or lease["assigned"] != expected:
+            raise ValueError("No matching edit claim to restore")
+        assigned = lease["previous"]
+    elif temporary and lease is not None:
+        raise ValueError(f"Task is being edited by {task.assigned}")
     if expected == assigned:
         return task, False
+    if temporary:
+        await QUERIES.save_edit_claim(
+            connection, task_id=task_id, assigned=assigned, previous=expected
+        )
+    else:
+        await QUERIES.remove_edit_claim(connection, task_id=task_id)
     now = time.time()
     await QUERIES.claim_task(
         connection,
@@ -2317,12 +2382,24 @@ async def update_task(
     priority: Priority | None = None,
     tags: Iterable[str] | None = None,
     project_id: int | None = None,
+    expected_assigned: str | None | Unset = Unset.VALUE,
 ) -> Task | None:
 
     existing = await read_task(connection, actor, task_id)
     if existing is None:
         return None
     await require(connection, actor, existing.project_id, role="editor")
+    if expected_assigned is not Unset.VALUE and existing.assigned != expected_assigned:
+        raise AssignmentConflict(task_id, expected_assigned, existing.assigned)
+    lease = await QUERIES.edit_claim(connection, task_id=task_id)
+    if lease is not None:
+        principal = principal_label(actor.principal, actor.computer or hostname())
+        if expected_assigned != lease["assigned"]:
+            raise ValueError(
+                f"Task is being edited by {lease['assigned']}; expected_assigned is required"
+            )
+        if lease["assigned"].rsplit(":", 1)[0] != principal:
+            raise PermissionError("Only the edit claimant can save this task")
     changes: dict[str, Any] = {}
     now = time.time()
     if title is not None:

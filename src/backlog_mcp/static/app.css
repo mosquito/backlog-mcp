@@ -1928,3 +1928,11 @@ main {
 .search-help { margin-top: 10px; font-size: 13px; }
 .search-help summary { cursor: pointer; width: 28px; text-align: center; border: 1px solid var(--line); border-radius: 50%; }
 .search-help p { color: var(--muted); line-height: 1.5; }
+
+.conflict-markdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.conflict-markdown textarea { width: 100%; min-height: 260px; }
+.conflict-markdown section { min-width: 0; }
+.conflict-markdown .markdown { max-height: 420px; overflow: auto; }
+@media (max-width: 640px) { .conflict-markdown { grid-template-columns: 1fr; } }
+
+.editor:has(.conflict:not([hidden])) .form-actions { position: static; margin-top: 16px; }
