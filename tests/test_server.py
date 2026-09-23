@@ -87,7 +87,11 @@ async def test_catalogue(client: BaseClient) -> None:
     assert "title" in tools["task_add"].input_schema["required"]
     assert "backlog" not in tools["task_add"].input_schema["properties"]
     assert tools["project_board"].input_schema["required"] == ["project"]
-    assert {prompt.name for prompt in await client.list_prompts()} == {"standup", "groom"}
+    assert {prompt.name for prompt in await client.list_prompts()} == {
+        "standup",
+        "groom",
+        "install_backlog_rules",
+    }
     assert {item.uri for item in await client.list_resources()} >= {
         "backlog://project",
         "backlog://projects",
@@ -359,6 +363,29 @@ async def test_resources(client: BaseClient) -> None:
     assert (await resource(client, "backlog://projects"))[0]["total_tasks"] == 2
     assert "invalid task id" in (await resource(client, "backlog://tasks/invalid"))["error"]
     assert "no task #999" in (await resource(client, "backlog://tasks/999"))["error"]
+
+
+async def test_install_rules_prompt_needs_no_arguments_or_project(
+    client: BaseClient, backlog: Backlog
+) -> None:
+    prompts = {prompt.name: prompt for prompt in await client.list_prompts()}
+    prompt = prompts["install_backlog_rules"]
+    assert not prompt.arguments
+    result = await client.get_prompt("install_backlog_rules", {})
+    assert len(result.messages) == 1
+    assert result.messages[0].role == "user"
+    content = result.messages[0].content
+    assert isinstance(content, TextContent)
+    assert "~/.codex/AGENTS.md" in content.text
+    assert "~/.claude/CLAUDE.md" in content.text
+    assert "CODEX_HOME" in content.text
+    assert "Preserve unrelated instructions" in content.text
+    block = content.text.split("Install this exact block:\n\n", 1)[1]
+    assert block.count("<!-- BACKLOG_START -->") == 1
+    assert block.count("<!-- BACKLOG_END -->") == 1
+    for text in ("project_board", "task_claim", "memory_save", "mermaid", "#note{ID}"):
+        assert text in block
+    assert await scope.read_projects(await backlog.open(), backlog.actor) == []
 
 
 async def test_prompts_use_current_project(client: BaseClient) -> None:

@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import Iterable, Sequence
 from contextvars import ContextVar
+from importlib.resources import files
 from typing import Any, Literal
 
 import aiosqlite
@@ -297,7 +298,8 @@ Skills are instructions only: read them, then use the tools above to do the work
 Also available: the resources `backlog://project`, `backlog://projects`, `backlog://tasks`, \
 `backlog://tasks/{id}`, `backlog://memory` and `backlog://memory/{id}` for reading without a tool \
 call, and the prompts `standup`, which drafts an update from recent work, and `groom`, which \
-reviews the open backlog.
+reviews the open backlog. The parameterless prompt `install_backlog_rules` provides the
+Backlog rules and instructions to install them in global AGENTS.md and CLAUDE.md files.
 """.strip()
 
 #: The backlog the handlers work on. A context variable, so tests can run several at once.
@@ -1855,6 +1857,31 @@ async def skill_reference(args: SkillFile) -> TextResourceContents | dict[str, A
 
 
 registry.extension(skills.extension)
+
+
+@registry.prompt(title="Install Backlog rules into the global Agents config")
+async def install_backlog_rules(args: Nothing) -> str:
+    """Install the Backlog workflow in global AGENTS.md and CLAUDE.md files."""
+    rules = files("backlog_mcp").joinpath("global_rules.md").read_text(encoding="utf-8")
+    return (
+        "Install the following Backlog rules in the user's global agent configuration.\n\n"
+        "Work on the user's local computer, not on the MCP server. For Codex, use "
+        "AGENTS.md under CODEX_HOME when configured, otherwise ~/.codex/AGENTS.md. "
+        "For Claude Code, use ~/.claude/CLAUDE.md. Respect an explicitly configured "
+        "alternative global location. Do not put these rules in repository-local files.\n\n"
+        "Read both existing files first. Create missing parent directories and files. "
+        "Replace the complete section between <!-- BACKLOG_START --> and "
+        "<!-- BACKLOG_END -->, including the markers, with the block below. "
+        "If no marked section exists, append the block with a blank line before it. "
+        "Preserve unrelated instructions. If markers are incomplete or duplicated, "
+        "resolve the ambiguity before replacing any content. Do not duplicate the rules "
+        "when this prompt is run again.\n\n"
+        "Verify that both files contain exactly one identical Backlog block and that "
+        "unrelated content is unchanged. Report the actual paths and any conflicting "
+        "existing instructions. If local file access is unavailable, return the block "
+        "and installation instructions without claiming that files were changed.\n\n"
+        "Install this exact block:\n\n" + rules
+    )
 
 
 class Standup(BaseModel):

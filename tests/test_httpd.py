@@ -64,6 +64,11 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
         Client(str(server.make_url("/mcp")), pick(adapter), session=session) as client,
     ):
         await client.initialize()
+        prompts = {prompt.name: prompt for prompt in await client.list_prompts()}
+        assert not prompts["install_backlog_rules"].arguments
+        installed = await client.get_prompt("install_backlog_rules", {})
+        assert isinstance(installed.messages[0].content, TextContent)
+        assert "<!-- BACKLOG_START -->" in installed.messages[0].content.text
         result = await client.call_tool("task_add", {"title": "Over HTTP"})
         assert isinstance(result, CallToolResult)
         assert not result.is_error

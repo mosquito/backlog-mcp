@@ -652,6 +652,13 @@ project registration, search context, track work in tasks, save lasting agreemen
 outages. It uses `memory_*` tools and `task_comment_add` for progress history. The client decides
 whether to include these instructions in the model context.
 
+The parameterless MCP prompt `install_backlog_rules`, titled **Install Backlog rules into the
+global Agents config**, returns the complete workflow and instructions to install it in global
+`AGENTS.md` and `CLAUDE.md` files. It includes Markdown, highlighted code blocks, and Mermaid
+guidance for tasks read in the Web UI. The agent applies the instructions locally, replacing
+the marked Backlog section while preserving unrelated rules. Retrieving the prompt does not
+modify files.
+
 ### Skills
 
 Two written skills ship with the server: `triage` and `planning`. A skill is text — the
