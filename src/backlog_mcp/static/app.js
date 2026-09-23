@@ -289,16 +289,22 @@ async function board(target) {
   }
   const tableView = (params.get("view") || preferredView) === "table";
   const queryText = params.get("q") || "";
-  const groups = tableView
-    ? [["todo", "doing", "blocked"], ["done"]]
-    : statuses.slice(0, 4).map((status) => [status]);
+  const selectedStatus = [...statuses, "deleted"].includes(params.get("status"))
+    ? params.get("status")
+    : "";
+  const visibleStatuses = selectedStatus ? [selectedStatus] : statuses.slice(0, 4);
+  const groups = selectedStatus
+    ? [[selectedStatus]]
+    : tableView
+      ? [["todo", "doing", "blocked"], ["done"]]
+      : visibleStatuses.map((status) => [status]);
   async function loadSources(text, priorityValue) {
     if (text) {
       const found = await call("search", {
         project: target.project,
         query: text,
         kinds: ["tasks"],
-        status: statuses.slice(0, 4),
+        status: visibleStatuses,
         limit: 100,
       });
       const tasks = found.tasks.filter((task) => !priorityValue || task.priority === priorityValue);
@@ -311,7 +317,7 @@ async function board(target) {
       project: target.project,
       ...(priorityValue ? { priority: priorityValue } : {}),
       status,
-      order: status[0] === "done" ? "recent" : "backlog",
+      order: ["done", "cancelled", "deleted"].includes(status[0]) ? "recent" : "backlog",
       limit: 50,
     }));
     return Promise.all(
@@ -334,6 +340,22 @@ async function board(target) {
     "aria-label": "Priority filter",
   });
   priority.options[0].text = "All priorities";
+  const statusFilter = select(["", ...statuses, "deleted"], selectedStatus, {
+    "aria-label": "Task status",
+  });
+  statusFilter.options[0].text = "Open and done";
+  for (const option of [...statusFilter.options].slice(1))
+    option.text = option.value[0].toUpperCase() + option.value.slice(1);
+  statusFilter.onchange = () => {
+    const p = new URLSearchParams(location.search);
+    p.delete("status");
+    if (statusFilter.value) p.set("status", statusFilter.value);
+    navigate(projectRoute(target.project, p));
+  };
+  const deletedParams = new URLSearchParams(params);
+  deletedParams.set("status", "deleted");
+  deletedParams.delete("q");
+  deletedParams.delete("priority");
   const apply = () => schedule(0);
   const heading = el(
     "div",
@@ -357,7 +379,8 @@ async function board(target) {
     el(
       "p",
       { class: "subtitle" },
-      `${summary.tasks.open} open · ${summary.tasks.done} done · ${summary.tasks.total} total`,
+      `${summary.tasks.open} open · ${summary.tasks.done} done · ${summary.tasks.total} total · `,
+      link(`Deleted (${summary.tasks.deleted || 0})`, projectRoute(target.project, deletedParams)),
     ),
     el(
       "form",
@@ -369,6 +392,7 @@ async function board(target) {
         },
       },
       quick,
+      statusFilter,
       priority,
       el("button", { type: "submit" }, "Search"),
     ),
@@ -404,7 +428,7 @@ async function board(target) {
   );
   heading.querySelector(".filters").append(toolbar);
   const message = el("p", { class: "muted", role: "status", "aria-live": "polite" });
-  let results = taskResults(sources, tableView, counts, Boolean(queryText));
+  let results = taskResults(sources, tableView, counts, Boolean(queryText), visibleStatuses);
   const panel = el("section", { class: "board-page" }, heading, message, results);
   let revision = 0,
     timer,
@@ -428,7 +452,13 @@ async function board(target) {
     try {
       const next = await loadSources(quick.value.trim(), priority.value);
       if (disposed || current !== revision) return;
-      const replacement = taskResults(next, tableView, counts, Boolean(quick.value.trim()));
+      const replacement = taskResults(
+        next,
+        tableView,
+        counts,
+        Boolean(quick.value.trim()),
+        visibleStatuses,
+      );
       results.replaceWith(replacement);
       results = replacement;
       results.mount();
@@ -461,7 +491,7 @@ async function board(target) {
   };
   return panel;
 }
-function taskResults(sources, tableView, counts, searching) {
+function taskResults(sources, tableView, counts, searching, visibleStatuses) {
   const tasks = [];
   const pagers = [];
   const loaded = new Map();
@@ -496,7 +526,8 @@ function taskResults(sources, tableView, counts, searching) {
     return finish(table);
   }
   const columns = el("div", { class: "board" });
-  for (const [index, status] of statuses.slice(0, 4).entries()) {
+  if (visibleStatuses.length === 1) columns.classList.add("single-status");
+  for (const [index, status] of visibleStatuses.entries()) {
     const counter = el("span", { class: "count" });
     const column = el(
       "section",
@@ -597,9 +628,24 @@ async function detail(task) {
       }
     };
   panel.append(
-    link("← " + task.project, projectRoute(task.project)),
+    link(
+      "← " + task.project,
+      projectRoute(
+        task.project,
+        task.status === "deleted"
+          ? new URLSearchParams({ status: "deleted" })
+          : new URLSearchParams(),
+      ),
+    ),
     el("div", { class: "eyebrow", style: "margin-top:24px" }, `Task #${task.id}`),
     el("h1", {}, task.title),
+    task.status === "deleted"
+      ? el(
+          "p",
+          { class: "muted" },
+          "This task is deleted. Its description and history are preserved.",
+        )
+      : null,
     el(
       "div",
       { class: "task-actions" },
@@ -624,23 +670,25 @@ async function detail(task) {
           if (moved) await render();
         }),
       ),
-      button(
-        "Delete",
-        operation(async () => {
-          const removed = await modal({
-            title: "Delete task?",
-            description: task.title,
-            content: [
-              el("p", {}, "The task will be marked as deleted and removed from the board."),
-            ],
-            action: "Delete task",
-            danger: true,
-            onSubmit: () => call("task_delete", { id: task.id }),
-          });
-          if (removed) navigate(projectRoute(task.project));
-        }),
-        "danger",
-      ),
+      task.status === "deleted"
+        ? null
+        : button(
+            "Delete",
+            operation(async () => {
+              const removed = await modal({
+                title: "Delete task?",
+                description: task.title,
+                content: [
+                  el("p", {}, "The task will be marked as deleted and removed from the board."),
+                ],
+                action: "Delete task",
+                danger: true,
+                onSubmit: () => call("task_delete", { id: task.id }),
+              });
+              if (removed) navigate(projectRoute(task.project));
+            }),
+            "danger",
+          ),
     ),
     el(
       "p",

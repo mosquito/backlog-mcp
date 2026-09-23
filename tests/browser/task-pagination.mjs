@@ -16,6 +16,14 @@ export async function run(page, url) {
     tags: [],
     updated_at: 1,
   }));
+  const deleted = Array.from({ length: 65 }, (_, i) => ({
+    id: 1000 + i,
+    status: "deleted",
+    title: `Deleted ${i}`,
+    priority: "normal",
+    tags: [],
+    updated_at: 1,
+  }));
   const requests = [];
   let searchStarted;
   const slowStarted = new Promise((resolve) => {
@@ -34,7 +42,7 @@ export async function run(page, url) {
     else if (name === "project_board")
       result = {
         project: { name: "Pagination" },
-        tasks: { open: 138, done: 125, total: 263 },
+        tasks: { open: 138, done: 125, deleted: 65, total: 328 },
       };
     else if (name === "task_list") {
       requests.push(args);
@@ -48,7 +56,7 @@ export async function run(page, url) {
           release = resolve;
         });
       }
-      let selected = tasks.filter((task) => args.status.includes(task.status));
+      let selected = [...tasks, ...deleted].filter((task) => args.status.includes(task.status));
       if (args.tag === "small") selected = selected.slice(0, 3);
       if (args.tag === "empty") selected = [];
       const offset = args.offset || 0;
@@ -66,7 +74,13 @@ export async function run(page, url) {
           searchStarted();
         });
       result = {
-        tasks: args.query === "empty" ? [] : tasks.slice(0, args.query === "slow" ? 9 : 6),
+        tasks:
+          args.query === "empty"
+            ? []
+            : (args.status.includes("deleted") ? deleted : tasks).slice(
+                0,
+                args.query === "slow" ? 9 : 6,
+              ),
       };
     } else return route.continue();
     await route.fulfill({
@@ -160,6 +174,22 @@ export async function run(page, url) {
   await bottom(".task-table-region");
   await count(".task-table tbody tr", 100);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.goto(board("table"));
+  await page.getByRole("link", { name: "Deleted (65)", exact: true }).click();
+  await count(".task-table tbody tr", 50);
+  assert.equal(await page.getByRole("combobox", { name: "Task status" }).inputValue(), "deleted");
+  await bottom(".task-table-region");
+  await count(".task-table tbody tr", 65);
+  assert.ok((await page.locator(".task-status").allTextContents()).every((s) => s === "deleted"));
+  await quick.fill("small");
+  await count(".task-table tbody tr", 6);
+  assert.equal(new URL(page.url()).searchParams.get("status"), "deleted");
+  await page.getByRole("button", { name: "Kanban", exact: true }).click();
+  await count('.column[data-status="deleted"] .card', 6);
+  assert.equal(await page.locator(".column").count(), 1);
+  await page.getByRole("combobox", { name: "Task status" }).selectOption("");
+  await count(".card", 6);
+  assert.equal(await page.locator('.column[data-status="deleted"]').count(), 0);
   assert.deepEqual(errors, []);
   await page.unroute("**/mcp");
   return { requests: requests.length, tasks: tasks.length, errors };

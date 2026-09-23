@@ -1652,3 +1652,11 @@ button,
 .board-page > [role="status"]:empty {
   display: none;
 }
+
+.board.single-status {
+  grid-template-columns: minmax(250px, 600px);
+}
+.task-status.status-deleted {
+  background: var(--column);
+  color: var(--muted);
+}
