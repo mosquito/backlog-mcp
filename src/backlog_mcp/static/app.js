@@ -21,6 +21,7 @@ import { memoryPage } from "./memory.js";
 import { commentComposer } from "./comment-composer.js";
 import { breadcrumbs } from "./breadcrumbs.js";
 import { createProject } from "./project-form.js";
+import { statisticsPage } from "./statistics.js";
 import { assignmentControl, assignmentsPage } from "./assignments.js";
 import { projectSettings } from "./project-settings.js";
 
@@ -229,6 +230,9 @@ async function render() {
     } else if (target.kind === "board") {
       selectedProject = target.project;
       page = await board(target);
+    } else if (target.kind === "stats") {
+      selectedProject = target.project;
+      page = await statisticsPage(target, actions);
     } else if (target.kind === "assigned") {
       page = await assignmentsPage(target, actions);
     } else if (target.kind === "settings") {
@@ -303,6 +307,7 @@ async function projects(target) {
       { class: "row spread" },
       el("p", { class: "subtitle" }, `${data.count} projects · Pick up where you left off.`),
       link("My assignments", "/ui/?view=assigned", "button"),
+      link("Statistics", "/ui/?view=stats", "button"),
       el("label", { class: "inline" }, toggle, "Include archived"),
     ),
     el("div", { class: "projects" }, ...data.items.map((p) => linkNode(p))),
@@ -484,6 +489,7 @@ async function board(target) {
     ),
     counts,
     link("My assignments", "/ui/?view=assigned"),
+    link("Statistics", projectRoute(target.project, new URLSearchParams({ view: "stats" }))),
     tableView
       ? el("span", { class: "muted table-scroll-hint" }, "Scroll the table to see all columns")
       : null,

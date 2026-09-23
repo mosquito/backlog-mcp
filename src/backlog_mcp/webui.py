@@ -22,6 +22,8 @@ MODULES = (
     "project-settings.js",
     "project-form.js",
     "assignments.js",
+    "statistics.js",
+    "scope.js",
     "diagrams.js",
     "vendor/marked.esm.js",
     "vendor/purify.es.mjs",

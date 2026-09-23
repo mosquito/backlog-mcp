@@ -4,6 +4,9 @@ export function breadcrumbs(target, project) {
   const items = [{ label: "Projects", href: "/ui/" }];
   if (project) items.push({ label: project, href: projectRoute(project) });
   switch (target.kind) {
+    case "stats":
+      items.push({ label: "Statistics" });
+      break;
     case "assigned":
       items.push({ label: "Assigned tasks" });
       break;
