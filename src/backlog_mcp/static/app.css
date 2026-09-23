@@ -1271,12 +1271,14 @@ button,
   border-radius: 8px;
   background: var(--surface);
 }
-.view-switch button {
+.view-switch button,
+.view-switch .button {
   border-color: transparent;
   min-height: 34px;
   padding: 6px 16px;
 }
-.view-switch [aria-pressed="true"] {
+.view-switch [aria-pressed="true"],
+.view-switch [aria-current="page"] {
   background: var(--primary);
   color: var(--on-primary);
 }
@@ -1585,9 +1587,17 @@ button,
   margin-bottom: 20px;
   font-size: 13px;
 }
-#memory-open[aria-current="page"] {
-  background: var(--hover);
-  color: var(--accent);
+#section-switch {
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  #section-switch {
+    order: 3;
+    width: 100%;
+  }
+  #section-switch .button {
+    flex: 1;
+  }
 }
 @media (max-width: 760px) {
   .memory-filters {

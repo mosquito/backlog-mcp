@@ -97,14 +97,14 @@ async function connect(authorization = credentials()) {
   identity = await client.call("whoami");
   document.querySelector("#principal").textContent = identity.principal;
   document.querySelector("#logout").hidden = false;
-  document.querySelector("#memory-open").hidden = false;
+  document.querySelector("#section-switch").hidden = false;
   await render();
 }
 function showLogin(error, reportError = true) {
   content.firstElementChild?.dispose?.();
   document.querySelector("#principal").textContent = "";
   document.querySelector("#logout").hidden = true;
-  document.querySelector("#memory-open").hidden = true;
+  document.querySelector("#section-switch").hidden = true;
   document.querySelector("#project-name").textContent = "";
   document.querySelector("#search-dialog").close();
   const methods = error?.schemes?.length ? [...new Set(error.schemes)] : ["basic", "bearer"];
@@ -218,9 +218,13 @@ async function render() {
     page.mount?.();
     document.querySelector("#project-name").textContent = project;
     document.querySelector("#memory-open").href = memoryRoute(project);
-    if (target.kind === "memory")
-      document.querySelector("#memory-open").setAttribute("aria-current", "page");
-    else document.querySelector("#memory-open").removeAttribute("aria-current");
+    document.querySelector("#tasks-open").href = project ? projectRoute(project) : "/ui/";
+    for (const section of ["tasks", "memory"]) {
+      const control = document.querySelector(`#${section}-open`);
+      if ((target.kind === "memory") === (section === "memory"))
+        control.setAttribute("aria-current", "page");
+      else control.removeAttribute("aria-current");
+    }
   } catch (error) {
     if (current !== generation) return;
     content.replaceChildren(
