@@ -22,11 +22,12 @@ export class RpcError extends Error {
 export class ToolError extends Error {}
 
 export class MCP {
-  constructor(endpoint, authorization = "") {
+  constructor(endpoint, authorization = "", onElicit = null) {
     this.url = new URL(endpoint, location.origin);
     if (this.url.origin !== location.origin || this.url.username || this.url.password)
       throw new Error("The MCP endpoint must use this origin.");
     this.authorization = authorization;
+    this.onElicit = onElicit;
     this.session = null;
     this.counter = 0;
     this.ready = null;
@@ -98,6 +99,25 @@ export class MCP {
             data = [];
             if (!text.trim()) continue;
             const frame = JSON.parse(text);
+            if (frame.method === "elicitation/create" && frame.id !== undefined) {
+              const result = this.onElicit
+                ? await this.onElicit(frame.params)
+                : { action: "decline" };
+              const reply = await fetch(this.url, {
+                method: "POST",
+                headers: {
+                  ...headers,
+                  ...(this.session ? { "Mcp-Session-Id": this.session } : {}),
+                },
+                credentials: "omit",
+                redirect: "error",
+                signal: this.abort.signal,
+                body: JSON.stringify({ jsonrpc: "2.0", id: frame.id, result }),
+              });
+              if (!reply.ok) throw new HttpError(reply);
+              await reply.body?.cancel();
+              continue;
+            }
             if (match(frame)) return unwrap(frame);
           }
         }
@@ -112,8 +132,8 @@ export class MCP {
       this.ready = (async () => {
         const result = await this.send("initialize", {
           protocolVersion: this.version,
-          capabilities: {},
-          clientInfo: { name: "backlog-web", version: "0.18.0" },
+          capabilities: this.onElicit ? { elicitation: { form: {} } } : {},
+          clientInfo: { name: "backlog-web", version: "0.19.0" },
         });
         if (!["2025-11-25", "2025-06-18", "2025-03-26"].includes(result.protocolVersion))
           throw new Error("Unsupported MCP protocol version.");

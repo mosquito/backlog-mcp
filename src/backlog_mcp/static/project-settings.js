@@ -100,6 +100,42 @@ export async function projectSettings(project, actions) {
   }
   const active = button("Settings", () => {});
   active.setAttribute("aria-pressed", "true");
+  const archiveState = el(
+    "p",
+    {},
+    summary.project.archived ? "Archived project" : "Active project",
+  );
+  const archive = button(
+    summary.project.archived ? "Restore project" : "Archive project",
+    async () => {
+      archive.disabled = true;
+      try {
+        const saved = await call("project_save", { project, archived: !summary.project.archived });
+        summary.project.archived = saved.archived;
+        archive.textContent = saved.archived ? "Restore project" : "Archive project";
+        archiveState.textContent = saved.archived ? "Archived project" : "Active project";
+      } catch (error) {
+        notify(error);
+      } finally {
+        archive.disabled = false;
+      }
+    },
+  );
+  const remove = button(
+    "Delete project",
+    async () => {
+      remove.disabled = true;
+      try {
+        const result = await call("project_delete", { project });
+        if (result.deleted) navigate("/ui/");
+      } catch (error) {
+        notify(error);
+      } finally {
+        remove.disabled = false;
+      }
+    },
+    "destructive",
+  );
   const page = el(
     "section",
     { class: "project-settings" },
@@ -134,7 +170,7 @@ export async function projectSettings(project, actions) {
       description,
       language,
       el("p", {}, `Your role: ${summary.project.role}`),
-      summary.project.archived ? el("p", {}, "Archived project") : null,
+      archiveState,
     ),
     el(
       "section",
@@ -167,6 +203,19 @@ export async function projectSettings(project, actions) {
       ),
       bindings,
     ),
+    summary.project.role !== "reader"
+      ? el(
+          "section",
+          { class: "panel" },
+          el("h2", {}, "Project lifecycle"),
+          el(
+            "p",
+            { class: "muted" },
+            "Archiving keeps tasks and notes. Deletion permanently removes the project and all its tasks and notes.",
+          ),
+          el("div", { class: "row" }, archive, owner ? remove : null),
+        )
+      : null,
   );
   page.dispose = () => {
     disposed = true;

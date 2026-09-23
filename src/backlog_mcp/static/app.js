@@ -100,7 +100,15 @@ function clearCredentials() {
 }
 async function connect(authorization = credentials()) {
   client?.close();
-  client = new MCP(endpoint, authorization);
+  client = new MCP(endpoint, authorization, async (request) => {
+    if (request.requestedSchema?.properties?.ok?.type !== "boolean")
+      return { action: "decline" };
+    const ok = await modal({
+      title: "Confirm deletion", description: request.message,
+      action: "Delete permanently", danger: true,
+    });
+    return { action: "accept", content: { ok } };
+  });
   identity = await client.call("whoami");
   document.querySelector("#principal").textContent = identity.principal;
   document.querySelector("#logout").hidden = false;
