@@ -195,6 +195,12 @@ work. Follow it when writing task titles, descriptions, and progress updates. Re
 Set or change it with `project_save`; omit the field to keep it, or send null to clear it.
 
 Tasks. A task has a title, a Markdown description in `body`, a status, a priority, and tags.
+Write task descriptions for the user who will read them in the Web UI. Prefer Markdown:
+use headings, lists, and tables when they make the task easier to understand. Put code in
+triple-backtick fenced blocks with a language label, such as `python`, for syntax highlighting.
+Use fenced blocks labelled `mermaid` for diagrams when they clarify a flow or relationship.
+The Web UI renders Markdown, highlights code, and displays Mermaid diagrams. Explain the
+intent in prose so the task remains understandable when read as plain text through MCP.
 Always track work: set `doing` when starting and `done`, `cancelled`, or `deleted` when appropriate.
 Listings show open statuses, most important first, unless filters ask for others.
 
