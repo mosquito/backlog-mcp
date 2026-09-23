@@ -24,7 +24,6 @@ from aiohttp import ClientError as HTTPClientError
 from aiohttp_tiny_mcp import ClientError, elicit_accept
 from rich.prompt import Confirm, Prompt
 
-from . import computer as computer_names
 from . import embeddings, httpd, paths, skills
 from .auth import user_identity
 from .backlog import Backlog, UnknownProject, slugify
@@ -564,14 +563,6 @@ def prompt_registration(computer: str, root: Path, projects: list[ProjectOut]) -
             "run `backlog init NAME` or `backlog init --existing SLUG` first"
         )
     try:
-        while True:
-            try:
-                computer = computer_names.check(
-                    Prompt.ask("Input computer name", default=computer, console=errors)
-                )
-                break
-            except ValueError as error:
-                errors.print(str(error), markup=False)
         while True:
             value = Prompt.ask("Input project directory", default=str(root), console=errors)
             directory = Path(value.strip()).expanduser()

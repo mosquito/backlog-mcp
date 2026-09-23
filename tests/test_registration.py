@@ -72,10 +72,10 @@ async def test_first_use_prompts_once_and_then_runs_the_command(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\nA shared project\ny\n"))
+    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\nA shared project\ny\n"))
     code, output = await registration("task", "add", "First task")
     assert code == 0
-    assert "Input computer name (client)" in output
+    assert "Input computer" not in output
     assert "Input project name (client-directory)" in output
     project = await scope.project_by_slug(
         await registration.backlog.open(), registration.backlog.actor, "client-directory"
@@ -98,7 +98,7 @@ async def test_custom_project_name_is_used_for_the_original_command(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\nRelease Board\nRelease coordination\ny\n"))
+    monkeypatch.setattr(sys, "stdin", TerminalInput("\nRelease Board\nRelease coordination\ny\n"))
     code, output = await registration("task", "add", "Ship it")
     assert code == 0 and "release-board" in output
     project = await scope.project_by_slug(
@@ -124,7 +124,7 @@ async def test_existing_project_on_another_computer_is_reused(
         name="client-directory",
         description="Keep this description",
     )
-    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\ny\n"))
+    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\ny\n"))
     code, output = await registration("task", "add", "Same board")
     assert code == 0 and "Bind this directory" in output, output
     projects = await scope.read_projects(
@@ -145,7 +145,7 @@ async def test_cancel_or_eof_creates_no_project_or_task(
     monkeypatch: pytest.MonkeyPatch,
     answer: str,
 ) -> None:
-    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n" + answer))
+    monkeypatch.setattr(sys, "stdin", TerminalInput("\n" + answer))
     code, output = await registration("task", "add", "Not created")
     assert code == 1 and "registration cancelled" in output
     assert (
@@ -221,7 +221,7 @@ async def test_nested_directory_uses_checkout_root_as_default(
 ) -> None:
     nested = registration.root / "src"
     nested.mkdir()
-    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\n\ny\n"))
+    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\n\ny\n"))
     code, output = await registration("--root", str(nested), "task", "list")
     assert code == 0 and "Input project name (client-directory)" in output
     project = await scope.project_by_slug(
@@ -230,16 +230,16 @@ async def test_nested_directory_uses_checkout_root_as_default(
     assert project is not None and project.roots[0].root == str(registration.root)
 
 
-async def test_edit_all_fields_and_reuse_explicit_computer(
+async def test_edit_project_fields_and_reuse_explicit_computer(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     directory = registration.root.parent / "selected-directory"
     directory.mkdir()
     monkeypatch.setattr(
-        sys, "stdin", TerminalInput(f"laptop\n{directory}\nChosen Board\nChosen description\ny\n")
+        sys, "stdin", TerminalInput(f"{directory}\nChosen Board\nChosen description\ny\n")
     )
-    code, output = await registration("task", "add", "Chosen task")
+    code, output = await registration("--computer", "laptop", "task", "add", "Chosen task")
     assert code == 0 and "chosen-board" in output
     project = await scope.project_by_slug(
         await registration.backlog.open(), registration.backlog.actor, "chosen-board"
@@ -276,8 +276,8 @@ async def test_edited_location_reuses_its_existing_binding(
             await registration.backlog.open(), registration.backlog.actor
         )
     }
-    monkeypatch.setattr(sys, "stdin", TerminalInput(f"here\n{registration.backlog.cwd}\ny\n"))
-    code, output = await registration("task", "add", "Existing scope")
+    monkeypatch.setattr(sys, "stdin", TerminalInput(f"{registration.backlog.cwd}\ny\n"))
+    code, output = await registration("--computer", "here", "task", "add", "Existing scope")
     assert code == 0 and "Use this project?" in output
     assert "Input project name" not in output
     assert {
@@ -297,33 +297,31 @@ async def test_edited_location_reuses_its_existing_binding(
     assert task is not None and task.project_id == existing.id
 
 
-async def test_cancel_does_not_register_edited_computer(
+async def test_cancel_does_not_register_configured_computer(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "stdin", TerminalInput("edited\n\n\nDescription\nn\n"))
+    monkeypatch.setattr(sys, "stdin", TerminalInput("\n\nDescription\nn\n"))
     code, output = await registration("init")
     assert code == 1 and "registration cancelled" in output
     assert (
         await scope.read_projects(
-            await registration.backlog.open(), registration.backlog.actor, computer="edited"
+            await registration.backlog.open(), registration.backlog.actor, computer="client"
         )
         == []
     )
 
 
-async def test_invalid_location_fields_can_be_corrected(
+async def test_invalid_directory_can_be_corrected(
     registration: RegistrationRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     missing = registration.root / "does-not-exist"
-    monkeypatch.setattr(
-        sys, "stdin", TerminalInput(f"invalid computer\nvalid\n{missing}\n\n\n\ny\n")
-    )
+    monkeypatch.setattr(sys, "stdin", TerminalInput(f"{missing}\n\n\n\ny\n"))
     code, output = await registration("init")
     assert code == 0
-    assert "invalid computer name" in output and "No such directory" in output
+    assert "Input computer" not in output and "No such directory" in output
     project = await scope.project_by_slug(
         await registration.backlog.open(), registration.backlog.actor, "client-directory"
     )
-    assert project is not None and project.roots[0].computer == "valid"
+    assert project is not None and project.roots[0].computer == "client"
