@@ -486,9 +486,30 @@ async def test_delete_without_elicitation(client: BaseClient, backlog: Backlog) 
 
 
 async def test_notes_save_replace_rename_and_append(client: BaseClient) -> None:
-    saved = await call(client, "memory_save", title="dev vm", body="host: vm-3", tags=["Infra"])
+    saved = await call(
+        client, "memory_save", title="dev vm", body="host: vm-3", tags=["Infra"], create_only=True
+    )
     assert saved["tags"] == ["infra"]
     assert saved["shared"] is False
+    refused = await client.call_tool(
+        "memory_save",
+        {
+            "title": "dev vm",
+            "body": "Do not overwrite",
+            "create_only": True,
+        },
+    )
+    assert refused.is_error
+    assert (await call(client, "memory_get", id=saved["id"]))["body"] == "host: vm-3"
+    refused_id = await client.call_tool(
+        "memory_save",
+        {
+            "id": saved["id"],
+            "body": "Do not overwrite",
+            "create_only": True,
+        },
+    )
+    assert refused_id.is_error
     assert (
         saved["project"]
         == (await call(client, "project_board", project=saved["project"]))["project"]["full_name"]

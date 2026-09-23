@@ -1,6 +1,6 @@
 [project]
 name = "backlog-mcp"
-version = "0.7.1"
+version = "0.8.0"
 description = "A project backlog over MCP: projects scoped to directories, tasks scoped to projects"
 readme = "README.md"
 authors = [

@@ -927,6 +927,10 @@ class MoveTask(BaseModel):
 
 
 class SaveNote(BaseModel):
+    create_only: bool = Field(
+        default=False,
+        description="Create a new note; fail if its title already exists. No id allowed.",
+    )
     title: str | None = Field(
         default=None,
         description="Title for one lasting fact, preference, or convention. Optional with `id`.",
@@ -1541,6 +1545,8 @@ async def memory_save(
     Check notes first if unsure what to do. Code changes; notes remain. Exclude temporary
     implementation details and doc summaries. Update by id or title; otherwise create a note.
     Only supplied fields change. Body replaces whole body. Use id to update shared notes."""
+    if args.create_only and args.id is not None:
+        raise ValueError("create_only cannot be used with id")
     if args.id is None:
         if not args.title:
             raise ValueError("a new note needs a title")
@@ -1560,6 +1566,8 @@ async def memory_save(
             embeddings.enqueue(backlog, saved)
             await changed(note_event(saved, Action.ADDED, computer=backlog.computer))
             return note_out(saved)
+        if args.create_only:
+            raise ValueError("a note with this title already exists; choose another title")
         args.id = existing.id
     async with transaction:
         updated = await update_note(

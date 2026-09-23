@@ -1,7 +1,17 @@
 import { el, button, link, field, select, date, projectRoute, memoryRoute } from "./dom.js";
+import { memoryEditor } from "./memory-editor.js";
 
-export async function memoryPage(target, { call, navigate, markdown }) {
+export async function memoryPage(target, actions) {
+  const { call, navigate, markdown } = actions;
   const params = target.params;
+  if (
+    (params.get("create") === "true" && !target.id) ||
+    (params.get("edit") === "true" && target.id)
+  ) {
+    const projects = await call("project_list", { all_computers: true });
+    const note = target.id ? await call("memory_get", { id: target.id }) : null;
+    return memoryEditor(note?.project || target.project, projects.items, actions, note);
+  }
   const requestedOffset = Number(params.get("offset"));
   const offset = Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
   const limit = 25;
@@ -131,7 +141,20 @@ export async function memoryPage(target, { call, navigate, markdown }) {
       detail.append(
         link("← Back to notes", change({ note: null }), "memory-back"),
         el("div", { class: "eyebrow" }, `Memory · ${note.id}`),
-        el("h2", {}, note.title),
+        el(
+          "div",
+          { class: "row spread memory-title" },
+          el("h2", {}, note.title),
+          projects.items.some(
+            (p) => p.full_name === note.project && ["owner", "editor"].includes(p.role),
+          )
+            ? link(
+                "Edit note",
+                memoryRoute(note.project, new URLSearchParams({ note: note.id, edit: "true" })),
+                "button",
+              )
+            : null,
+        ),
         el(
           "div",
           { class: "memory-detail-meta" },
@@ -178,10 +201,19 @@ export async function memoryPage(target, { call, navigate, markdown }) {
       "div",
       { class: "row spread" },
       el("h1", {}, "Memory"),
-      link(
-        target.project ? "Back to tasks" : "Projects",
-        target.project ? projectRoute(target.project) : "/ui/",
-        "button",
+      el(
+        "div",
+        { class: "row" },
+        link(
+          "Add note",
+          memoryRoute(target.project, new URLSearchParams({ create: "true" })),
+          "button primary",
+        ),
+        link(
+          target.project ? "Back to tasks" : "Projects",
+          target.project ? projectRoute(target.project) : "/ui/",
+          "button",
+        ),
       ),
     ),
     el(

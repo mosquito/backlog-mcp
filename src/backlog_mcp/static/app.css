@@ -1513,6 +1513,17 @@ button,
   line-height: 1.3;
   overflow-wrap: anywhere;
 }
+.memory-title {
+  align-items: flex-start;
+}
+.memory-title h2 {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.memory-title > .button {
+  flex-shrink: 0;
+  margin-left: auto;
+}
 .memory-detail-meta {
   display: flex;
   flex-wrap: wrap;
