@@ -1942,3 +1942,9 @@ main {
 @media (max-width: 640px) { .conflict-markdown { grid-template-columns: 1fr; } }
 
 .editor:has(.conflict:not([hidden])) .form-actions { position: static; margin-top: 16px; }
+
+
+.search-history { margin: 8px 0; font-size: 13px; }
+.search-history summary { cursor: pointer; color: var(--muted); }
+#search-history-list { display: grid; max-height: 25dvh; overflow: auto; margin-top: 8px; }
+#search-history-list button { text-align: left; white-space: normal; overflow-wrap: anywhere; }

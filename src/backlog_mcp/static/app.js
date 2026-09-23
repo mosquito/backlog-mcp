@@ -994,6 +994,55 @@ function syncSearchScope() {
   searchComputer.required = !searchComputer.disabled;
   document.querySelector("#search-computer-field").hidden = searchComputer.disabled;
 }
+const historyPanel = dialog.querySelector(".search-history");
+const historyList = document.querySelector("#search-history-list");
+const clearHistory = document.querySelector("#search-history-clear");
+const historyKey = () => `backlog:search-history:${JSON.stringify([endpoint, identity.principal])}`;
+function readSearchHistory() {
+  try {
+    const items = JSON.parse(localStorage.getItem(historyKey()));
+    return Array.isArray(items)
+      ? [...new Set(items.filter((item) => typeof item === "string" && item.trim()))].slice(0, 30)
+      : [];
+  } catch {
+    return [];
+  }
+}
+function renderSearchHistory() {
+  const items = readSearchHistory();
+  clearHistory.hidden = !items.length;
+  historyList.replaceChildren(...items.map((text) => el("button", {
+    type: "button", class: "quiet",
+    onclick: () => {
+      query.value = text;
+      historyPanel.open = false;
+      query.focus();
+      clearTimeout(searchTimer);
+      search();
+    },
+  }, text)));
+  if (!items.length) historyList.append(el("p", { class: "muted" }, "No recent searches."));
+}
+function saveSearchHistory(text) {
+  text = text.trim();
+  if (!text || !identity) return;
+  try {
+    localStorage.setItem(historyKey(), JSON.stringify(
+      [text, ...readSearchHistory().filter((item) => item !== text)].slice(0, 30),
+    ));
+    renderSearchHistory();
+  } catch {
+    notify(new Error("The browser could not save search history."));
+  }
+}
+clearHistory.onclick = () => {
+  try {
+    localStorage.removeItem(historyKey());
+    renderSearchHistory();
+  } catch {
+    notify(new Error("The browser could not clear search history."));
+  }
+};
 let searchAllPreference = false;
 const searchPreferenceKey = () => `backlog:search:${endpoint}:${identity.principal}`;
 function searchPlaceholder() {
@@ -1021,6 +1070,8 @@ function openSearch() {
   all.disabled = !project;
   syncSearchScope();
   searchPlaceholder();
+  historyPanel.open = false;
+  renderSearchHistory();
   dialog.showModal();
   query.focus();
   search();
@@ -1164,6 +1215,7 @@ async function search() {
                     ? projectRoute(item.full_name)
                     : taskRoute(item.task_id || item.id),
               onclick: (event) => {
+                if (kind === "tasks" || kind === "comments") saveSearchHistory(args.query);
                 selectedResult = [...results.querySelectorAll("a")].indexOf(event.currentTarget);
                 highlight(false);
                 dialog.close();

@@ -21,6 +21,10 @@ try {
     else if (name === "project_list") result = { items: [], count: 0 };
     else if (name === "project_board")
       result = { project: { name: "Project" }, tasks: { open: 0, done: 0, total: 0 } };
+    else if (name === "task_get") result = {
+      id: 123, project: "test/project", title: "History task", body: "",
+      status: "todo", priority: "normal", links: [], comments: [], tags: [],
+    };
     else if (name === "task_list") result = { items: [], count: 0 };
     else if (name === "search") {
       calls.push(args);
@@ -30,7 +34,7 @@ try {
           release = resolve;
         });
       result = {
-        tasks: [],
+        tasks: args.query === "history-task" ? [{id: 123, project: "test/project", title: "History task"}] : [],
         comments: [],
         memory: [],
         projects: args.query === "positions"
@@ -187,6 +191,29 @@ try {
   await page.getByRole("option").filter({ hasText: "fresh" }).waitFor();
   assert.equal(await page.locator("#search-query").getAttribute("aria-activedescendant"), "search-projects-1");
   assert.equal(await page.locator("#search-results").evaluate((node) => node.scrollTop), 0);
+  await page.locator("#search-query").fill("history-task");
+  await page.locator("#search-tasks-123").click();
+  await page.waitForURL("**/#123");
+  await page.locator("#search-open").click();
+  await page.locator("#search-close").click();
+  await page.reload();
+  await page.locator("#search-open").click();
+  await page.locator(".search-history summary").click();
+  const history = page.locator("#search-history-list");
+  assert.equal(await history.getByRole("button", {name: "positions", exact: true}).count(), 0);
+  assert.equal(await history.getByRole("button", {name: "history-task", exact: true}).count(), 1);
+  assert.equal(await history.getByRole("button", {name: "failure", exact: true}).count(), 0);
+  await history.getByRole("button", {name: "history-task", exact: true}).click();
+  await page.locator("#search-tasks-123").waitFor();
+  assert.equal(await page.locator("#search-query").inputValue(), "history-task");
+  await page.locator(".search-history summary").click();
+  await page.locator("#search-history-clear").click();
+  assert.equal(await history.getByRole("button").count(), 0);
+  await page.locator("#search-close").click();
+  await page.reload();
+  await page.locator("#search-open").click();
+  await page.locator(".search-history summary").click();
+  assert.equal(await history.getByRole("button").count(), 0);
   console.log(
     "Search filters: scopes, limits, persistence, stale replies, keyboard and responsive layout passed",
   );
