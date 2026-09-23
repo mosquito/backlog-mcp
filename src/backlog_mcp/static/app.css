@@ -1128,10 +1128,25 @@ button.destructive {
   }
 }
 
+.mobile-footer {
+  display: none;
+}
 @media (max-width: 600px) {
   header .connect-agent {
-    order: 5;
-    width: 100%;
+    display: none;
+  }
+  .mobile-footer {
+    display: block;
+    padding: 16px;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+  }
+  .mobile-footer a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    color: var(--muted);
+    text-underline-offset: 3px;
   }
 }
 
