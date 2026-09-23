@@ -21,6 +21,8 @@ import { memoryPage } from "./memory.js";
 import { commentComposer } from "./comment-composer.js";
 import { breadcrumbs } from "./breadcrumbs.js";
 import { createProject } from "./project-form.js";
+import { taskBrowser } from "./task-browser.js";
+import { scopeArgs, scopeControls, scopeLabel } from "./scope.js";
 import { statisticsPage } from "./statistics.js";
 import { assignmentControl, assignmentsPage } from "./assignments.js";
 import { projectSettings } from "./project-settings.js";
@@ -230,6 +232,9 @@ async function render() {
     } else if (target.kind === "board") {
       selectedProject = target.project;
       page = await board(target);
+    } else if (target.kind === "tasks") {
+      selectedProject = target.project;
+      page = await taskBrowser(target, actions);
     } else if (target.kind === "stats") {
       selectedProject = target.project;
       page = await statisticsPage(target, actions);
@@ -290,11 +295,16 @@ async function render() {
 }
 async function projects(target) {
   const archived = target.params.get("archived") === "true";
-  const data = await call("project_list", { all_computers: true, archived });
+  const reach = scopeArgs(target.params);
+  delete reach.all_projects;
+  const data = await call("project_list", { ...reach, archived });
+  const scope = scopeControls(target.params, [], { allowProject: false });
   const toggle = el("input", {
     type: "checkbox",
     checked: archived,
-    onchange: () => navigate(toggle.checked ? "/ui/?archived=true" : "/ui/"),
+    onchange: () => { const p = new URLSearchParams(target.params);
+      if (toggle.checked) p.set("archived", "true"); else p.delete("archived");
+      navigate(`/ui/?${p}`); },
   });
   return el(
     "section",
@@ -306,10 +316,15 @@ async function projects(target) {
       "div",
       { class: "row spread" },
       el("p", { class: "subtitle" }, `${data.count} projects · Pick up where you left off.`),
+      link("All tasks", "/ui/?view=tasks", "button"),
       link("My assignments", "/ui/?view=assigned", "button"),
       link("Statistics", "/ui/?view=stats", "button"),
       el("label", { class: "inline" }, toggle, "Include archived"),
     ),
+    el("form", { class: "row", onsubmit: event => {
+      event.preventDefault(); navigate(`/ui/?${scope.apply(new URLSearchParams(target.params))}`);
+    } }, scope.element, el("button", { type: "submit" }, "Apply scope")),
+    el("p", { class: "muted" }, scopeLabel(target.params, identity.principal)),
     el("div", { class: "projects" }, ...data.items.map((p) => linkNode(p))),
   );
 }

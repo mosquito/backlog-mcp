@@ -1,3 +1,4 @@
+import { scopeArgs, scopeControls, scopeLabel } from "./scope.js";
 import { appendNote } from "./memory-append.js";
 import { el, button, link, field, select, date, projectRoute, memoryRoute, modal } from "./dom.js";
 import { memoryEditor } from "./memory-editor.js";
@@ -15,9 +16,7 @@ export async function memoryPage(target, actions) {
   }
   const offset = 0;
   const limit = 25;
-  const args = { limit, offset };
-  if (target.project) args.project = target.project;
-  else args.all_computers = true;
+  const args = { ...scopeArgs(params), limit, offset };
   if (params.get("shared") === "true") args.shared = true;
   if (params.get("shared") === "false") args.shared = false;
   if (params.get("tag")) args.tag = params.get("tag");
@@ -25,18 +24,7 @@ export async function memoryPage(target, actions) {
     call("memory_list", args),
     call("project_list", { all_computers: true }),
   ]);
-  const scope = select(
-    [
-      "",
-      ...new Set([
-        ...projects.items.map((p) => p.full_name),
-        ...(target.project ? [target.project] : []),
-      ]),
-    ],
-    target.project || "",
-    { "aria-label": "Memory project" },
-  );
-  scope.options[0].text = "All projects";
+  const scope = scopeControls(params, projects.items);
   const visibility = select(["", "true", "false"], params.get("shared") || "", {
     "aria-label": "Memory visibility",
   });
@@ -59,22 +47,23 @@ export async function memoryPage(target, actions) {
   const filters = el(
     "form",
     { class: "memory-filters" },
-    field("Project", scope),
+    scope.element,
     field("Visibility", visibility),
     field("Tag", tag),
     el("button", { type: "submit" }, "Apply filters"),
   );
   filters.onsubmit = (event) => {
     event.preventDefault();
-    navigate(
-      change({
-        project: scope.value,
-        shared: visibility.value,
-        tag: tag.value.trim(),
-        offset: null,
-        note: null,
-      }),
-    );
+    const next = scope.apply(new URLSearchParams(params));
+    next.delete("note");
+    for (const [key, value] of Object.entries({
+      shared: visibility.value,
+      tag: tag.value.trim(),
+    })) {
+      if (value) next.set(key, value);
+      else next.delete(key);
+    }
+    navigate(memoryRoute(next.get("project") || "", next));
   };
   function noteItem(note) {
     const item = link("", change({ note: note.id }), "memory-item");
@@ -272,7 +261,7 @@ export async function memoryPage(target, actions) {
     el(
       "p",
       { class: "subtitle" },
-      `${notes.count} notes · ${target.project || "All accessible projects"}`,
+      `${notes.count} notes · ${scopeLabel(params, actions.principal)}`,
     ),
     filters,
     el("div", { class: "memory-layout" }, el("aside", { class: "memory-sidebar" }, list), detail),

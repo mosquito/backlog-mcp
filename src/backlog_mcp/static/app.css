@@ -1894,3 +1894,7 @@ main {
 .stats-breakdown { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
 .stats-breakdown dd { margin: 0; }
 @media (max-width: 600px) { .stats-groups { grid-template-columns: 1fr; } }
+
+.task-browser-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.task-browser-filters label { margin-bottom: 0; }
+.task-browser .task-table-title small { display: block; margin-top: 6px; overflow-wrap: anywhere; }

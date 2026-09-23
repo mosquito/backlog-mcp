@@ -13,6 +13,7 @@ MODULES = (
     "editor.js",
     "task-picker.js",
     "task-table.js",
+    "task-browser.js",
     "task-pagination.js",
     "memory.js",
     "memory-editor.js",

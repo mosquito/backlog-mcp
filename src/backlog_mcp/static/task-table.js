@@ -1,6 +1,6 @@
 import { el, link, date, taskRoute } from "./dom.js";
 
-export function taskTable(tasks) {
+export function taskTable(tasks, { showProject = false } = {}) {
   const table = el(
     "table",
     { class: "task-table" },
@@ -16,7 +16,7 @@ export function taskTable(tasks) {
         ),
       ),
     ),
-    el("tbody", {}, ...tasks.map(taskRow)),
+    el("tbody", {}, ...tasks.map((task) => taskRow(task, showProject))),
   );
   const region = el(
     "div",
@@ -29,12 +29,12 @@ export function taskTable(tasks) {
     table,
   );
   region.appendTasks = (items) => {
-    table.querySelector("tbody").append(...items.map(taskRow));
+    table.querySelector("tbody").append(...items.map((task) => taskRow(task, showProject)));
   };
   return region;
 }
 
-function taskRow(task) {
+function taskRow(task, showProject) {
   return el(
     "tr",
     { "data-task": task.id },
@@ -43,6 +43,7 @@ function taskRow(task) {
       { scope: "row", class: "task-table-title" },
       el("span", { class: "task-table-id" }, `#${task.id}`),
       link(task.title, taskRoute(task.id)),
+      showProject ? el("small", { class: "muted" }, task.project) : null,
     ),
     el("td", {}, el("span", { class: `task-status status-${task.status}` }, task.status)),
     el("td", {}, el("span", { class: `priority ${task.priority}` }, task.priority)),
