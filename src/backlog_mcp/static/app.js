@@ -13,6 +13,7 @@ import {
   modal,
 } from "./dom.js";
 import { editor } from "./editor.js";
+import { taskPicker } from "./task-picker.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
@@ -517,52 +518,28 @@ async function detail(task) {
     "aria-label": "Target task ID",
   });
   const reason = el("input", { placeholder: "Reason (optional)", "aria-label": "Relation reason" });
-  const find = el("input", { placeholder: "Find a task", "aria-label": "Find related task" }),
-    matches = el("div", { class: "relation-matches" });
-  let timer,
-    sequence = 0;
-  find.oninput = () => {
-    clearTimeout(timer);
-    const seq = ++sequence;
-    timer = setTimeout(async () => {
-      try {
-        if (!find.value.trim()) {
-          matches.replaceChildren();
-          return;
-        }
-        const results = await call("search", {
-          project: task.project,
-          all_computers: true,
-          query: find.value,
-          kinds: ["tasks"],
-          limit: 8,
-        });
-        if (seq !== sequence) return;
-        matches.replaceChildren(
-          ...results.tasks.map((t) =>
-            button(
-              `#${t.id} ${t.title}`,
-              () => {
-                target.value = t.id;
-                matches.replaceChildren();
-                find.value = "";
-              },
-              "quiet",
-            ),
-          ),
-        );
-      } catch (error) {
-        notify(error);
-      }
-    }, 250);
-  };
+  const picker = taskPicker({
+    search: async (query) => {
+      const found = await call("search", {
+        project: task.project,
+        all_computers: true,
+        query,
+        kinds: ["tasks"],
+        limit: 9,
+      });
+      return found.tasks.filter((item) => item.id !== task.id).slice(0, 8);
+    },
+    onSelect: (item) => {
+      target.value = item ? item.id : "";
+    },
+  });
+  target.oninput = () => picker.clearSelection();
   const addRelation = button("Add relation", async () => {
     const added = await modal({
       title: "Add relation",
       description: "Find a task or enter its ID, then choose how it relates to this task.",
       content: [
-        field("Find a task", find),
-        matches,
+        picker.element,
         field("Task ID", target),
         field("Relation", relation),
         field("Reason (optional)", reason),
@@ -576,8 +553,7 @@ async function detail(task) {
           reason: reason.value,
         }),
     });
-    clearTimeout(timer);
-    sequence++;
+    picker.close();
     if (added) await render();
   });
   panel.append(
@@ -713,36 +689,70 @@ document.addEventListener("keydown", (e) => {
   }
 });
 let searchTimer;
-query.oninput = () => {
+query.setAttribute("role", "combobox");
+query.setAttribute("aria-autocomplete", "list");
+query.setAttribute("aria-controls", "search-results");
+query.setAttribute("aria-expanded", "false");
+results.setAttribute("role", "listbox");
+results.setAttribute("aria-label", "Search results");
+function searchState(text, loading = false) {
+  results.replaceChildren(el("p", { class: "search-state", role: "status" }, text));
+  query.removeAttribute("aria-activedescendant");
+  query.setAttribute("aria-expanded", "false");
+  query.setAttribute("aria-busy", String(loading));
+}
+function scheduleSearch() {
   searchGeneration++;
   clearTimeout(searchTimer);
+  if (!query.value.trim()) {
+    searchState("Start typing to find tasks and comments.");
+    return;
+  }
+  searchState("Searching…", true);
   searchTimer = setTimeout(search, 250);
+}
+query.oninput = (event) => {
+  if (!event.isComposing) scheduleSearch();
 };
-all.onchange = search;
+query.addEventListener("compositionend", scheduleSearch);
+all.onchange = () => {
+  clearTimeout(searchTimer);
+  search();
+};
+dialog.addEventListener("close", () => {
+  searchGeneration++;
+  clearTimeout(searchTimer);
+  query.removeAttribute("aria-activedescendant");
+  query.setAttribute("aria-expanded", "false");
+  query.setAttribute("aria-busy", "false");
+});
 async function search() {
   const current = ++searchGeneration;
   if (!query.value.trim()) {
-    results.replaceChildren(
-      el("p", { class: "muted" }, "Start typing to find tasks and comments."),
-    );
+    searchState("Start typing to find tasks and comments.");
     return;
   }
+  searchState("Searching…", true);
   try {
     const args = { query: query.value, kinds: ["tasks", "comments"], limit: 15 };
     if (project) args.project = project;
     if (all.checked || !project) args.all_computers = true;
     const found = await call("search", args);
-    if (current !== searchGeneration || !identity) return;
+    if (current !== searchGeneration || !identity || !dialog.open) return;
+    query.setAttribute("aria-busy", "false");
     results.replaceChildren();
     for (const kind of ["tasks", "comments"]) {
       if (!found[kind].length) continue;
-      results.append(el("h3", {}, kind === "tasks" ? "Tasks" : "Comments"));
+      results.append(el("h3", { role: "presentation" }, kind === "tasks" ? "Tasks" : "Comments"));
       for (const item of found[kind])
         results.append(
           el(
             "a",
             {
               class: "search-result",
+              id: `search-${kind}-${item.id}`,
+              role: "option",
+              "aria-selected": "false",
               href: taskRoute(item.task_id || item.id),
               onclick: () => dialog.close(),
             },
@@ -751,25 +761,43 @@ async function search() {
               {},
               kind === "tasks" ? `#${item.id} ${item.title}` : `Comment on #${item.task_id}`,
             ),
-            el("small", {}, item.status || item.project),
+            el(
+              "small",
+              { class: "search-meta" },
+              [item.project, item.status].filter(Boolean).join(" · "),
+            ),
             el("small", {}, (item.snippet || item.body || "").slice(0, 220)),
           ),
         );
     }
-    if (!results.children.length) results.append(el("p", {}, "No results."));
+    if (!results.children.length)
+      searchState("No matches. Try another query or search all projects.");
+    query.setAttribute("aria-expanded", String(Boolean(results.querySelector("a"))));
     selectedResult = 0;
-    highlight();
+    highlight(false);
   } catch (error) {
     if (current === searchGeneration)
-      results.replaceChildren(el("p", { class: "error" }, error.message));
+      searchState(`Search failed: ${error.message}. Edit the query to retry.`);
   }
 }
-function highlight() {
+function highlight(scroll = true) {
   const links = [...results.querySelectorAll("a")];
-  links.forEach((a, i) => a.classList.toggle("selected", i === selectedResult));
-  links[selectedResult]?.scrollIntoView({ block: "nearest" });
+  links.forEach((a, i) => {
+    a.classList.toggle("selected", i === selectedResult);
+    a.setAttribute("aria-selected", String(i === selectedResult));
+  });
+  const active = links[selectedResult];
+  if (active) {
+    query.setAttribute("aria-activedescendant", active.id);
+    if (scroll) {
+      if (active.offsetTop < results.scrollTop) results.scrollTop = active.offsetTop;
+      if (active.offsetTop + active.offsetHeight > results.scrollTop + results.clientHeight)
+        results.scrollTop = active.offsetTop + active.offsetHeight - results.clientHeight;
+    }
+  }
 }
 query.onkeydown = (e) => {
+  if (e.isComposing) return;
   const links = [...results.querySelectorAll("a")];
   if (!links.length) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
