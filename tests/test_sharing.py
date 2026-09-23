@@ -19,7 +19,10 @@ from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Status
 
 
-async def test_project_access_and_search_candidates(backlog: Backlog) -> None:
+@pytest.mark.parametrize("formulations", [["needle"], ["needle", "find needle"]])
+async def test_project_access_and_search_candidates(
+    backlog: Backlog, formulations: list[str]
+) -> None:
     base = backlog
     for user in ("alice", "bob", "eve"):
         await mutate(
@@ -114,7 +117,7 @@ async def test_project_access_and_search_candidates(backlog: Backlog) -> None:
 
     scoped = backlog.view(principal=bob.principal)
     found = await embeddings.search(
-        embeddings.Search(query="needle", all_computers=True, limit=1, min_score=-1),
+        embeddings.Search(query=formulations, all_computers=True, limit=1, min_score=-1),
         scoped,
         connection=await scoped.open(),
         transaction=scoped.transaction,
@@ -429,7 +432,7 @@ async def test_project_search_filters_acl_scope_and_archived_before_limit(backlo
         for p in await operations.search_projects(await bob.open(), bob.actor, "needle", limit=1)
     ] == [visible.id]
     scoped = backlog.view(principal=bob.principal)
-    query = embeddings.Search(query='"needle"', kinds=["projects"], all_computers=True, limit=1)
+    query = embeddings.Search(query=['"needle"'], kinds=["projects"], all_computers=True, limit=1)
     found = await embeddings.search(
         query, scoped, connection=await scoped.open(), transaction=scoped.transaction
     )
@@ -440,7 +443,7 @@ async def test_project_search_filters_acl_scope_and_archived_before_limit(backlo
         p.id for p in (await embeddings.snapshot(scoped, connection=await scoped.open()))[3]
     } == {visible.id}
     semantic = await embeddings.search(
-        query.model_copy(update={"query": "sewing", "min_score": -1}),
+        query.model_copy(update={"query": ["sewing"], "min_score": -1}),
         scoped,
         connection=await scoped.open(),
         transaction=scoped.transaction,
@@ -514,7 +517,7 @@ async def test_background_index_follows_access_and_project_deletion(backlog: Bac
             (project.id, bob.principal),
         )
     result = await embeddings.search(
-        embeddings.Search(query="credentials", all_computers=True, min_score=-1),
+        embeddings.Search(query=["credentials"], all_computers=True, min_score=-1),
         bob,
         connection,
         bob.transaction,

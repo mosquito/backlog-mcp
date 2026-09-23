@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import re
 from collections import deque
@@ -11,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 from weakref import WeakKeyDictionary
 
 import aiosqlite
@@ -20,7 +21,7 @@ from aiohttp_tiny_mcp import Extension
 from aiohttp_tiny_mcp.protocol.core import Failure, FailureKind, Rejected
 from aiohttp_tiny_mcp.protocol.models import ResultModel
 from numpy.typing import NDArray
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from . import backlog as scope
 from .backlog import Backlog
@@ -103,14 +104,23 @@ class Search(BaseModel):
         min_length=1,
         description="Content to search: projects, tasks, comments, or memory.",
     )
-    query: Text = Field(
+    query: list[Annotated[str, StringConstraints(min_length=1, max_length=16384)]] = Field(
+        min_length=1,
+        max_length=5,
         description=(
-            "Words or meaning to find in project names, descriptions, titles, bodies and tags. "
+            "1–5 formulations of what to find. "
+            "2–5 short rephrasings of the same intent, e.g. in both languages; improves recall. "
             "Quoted expressions search text; unquoted text searches vectors. "
-            "Mixed queries use both. "
-            "See guide('search') for syntax and examples."
-        )
+            "Mixed queries use both. See guide('search') for syntax and examples."
+        ),
     )
+
+    @model_validator(mode="after")
+    def nonblank_formulations(self) -> Self:
+        if any(not text.strip() for text in self.query):
+            raise ValueError("Query formulations must not be blank")
+        return self
+
     project: str | None = Field(
         default=None, description="Defaults to connection project scope; required if unscoped."
     )
@@ -137,14 +147,20 @@ class Search(BaseModel):
 class TaskHit(TaskOut):
     match: Literal["fts", "semantic"] = Field(description="How this record matched the query.")
     score: float | None = Field(
-        default=None, description="Cosine similarity; null for FTS-only hits."
+        default=None,
+        description=(
+            "Cosine similarity for one formulation, RRF sum for multiple; null for FTS-only hits."
+        ),
     )
 
 
 class NoteHit(NoteOut):
     match: Literal["fts", "semantic"] = Field(description="How this record matched the query.")
     score: float | None = Field(
-        default=None, description="Cosine similarity; null for FTS-only hits."
+        default=None,
+        description=(
+            "Cosine similarity for one formulation, RRF sum for multiple; null for FTS-only hits."
+        ),
     )
 
 
@@ -160,6 +176,7 @@ class ProjectHit(ProjectOut):
 
 
 class Matches(Actor):
+    queries: list[str] = Field(default_factory=list)
     model: str = MODEL_NAME
     tasks: list[TaskHit]
     projects: list[ProjectHit]
@@ -204,12 +221,30 @@ class VectorIndex:
         vectors = self.vectors[positions]
         ids = [self.ids[index] for index in positions]
         scores = np.clip(vectors @ query, -1, 1)
-        eligible = [
-            (record_id, float(score))
-            for record_id, score, vector in zip(ids, scores, vectors, strict=True)
-            if record_id in allowed and score >= min_score and np.any(vector)
+        best: dict[int, float] = {}
+        for record_id, score, vector in zip(ids, scores, vectors, strict=True):
+            if score >= min_score and np.any(vector):
+                best[record_id] = max(best.get(record_id, -1.0), float(score))
+        return sorted(best.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+    def blocks(self) -> dict[int, NDArray[np.float32]]:
+        """Return contiguous vector blocks; IDs are sorted when a snapshot is built."""
+        if not self.ids:
+            return {}
+        starts = [
+            i for i, record_id in enumerate(self.ids) if not i or self.ids[i - 1] != record_id
         ]
-        return sorted(eligible, key=lambda item: (-item[1], item[0]))[:limit]
+        ends = starts[1:] + [len(self.ids)]
+        return {
+            self.ids[start]: self.vectors[start:end]
+            for start, end in zip(starts, ends, strict=True)
+        }
+
+
+def paragraphs(text: str) -> list[str]:
+    """Keep the full document and each distinct paragraph, including short ones."""
+    pieces = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
+    return [text] + list(dict.fromkeys(part for part in pieces if part != text.strip()))
 
 
 type Indexes = tuple[VectorIndex, VectorIndex, VectorIndex, VectorIndex]
@@ -221,6 +256,28 @@ class Change:
     id: int
     project_id: int
     text: str | None
+    passages: tuple[str, ...] = ()
+
+
+def record_passages(record: Task | Note | Comment | Project) -> tuple[str, ...]:
+    """Keep the heading separate from body paragraphs and the full document."""
+    if isinstance(record, Comment):
+        return tuple(paragraphs(record.body))
+    if isinstance(record, Project):
+        heading = "\n".join((record.full_name, record.name))
+        body = record.description
+        full = "\n".join((heading, body))
+    else:
+        heading = "\n".join((record.title, " ".join(record.tags))).strip()
+        body = record.body
+        full = document(record)
+    body_parts = paragraphs(body)
+    passages = body_parts[1:] or [body.strip()]
+    return tuple(
+        dict.fromkeys(
+            [full, *[part for part in [heading, *passages] if part and part != full.strip()]]
+        )
+    )
 
 
 def change(record: Task | Note | Comment | Project, *, deleted: bool = False) -> Change:
@@ -239,8 +296,11 @@ def change(record: Task | Note | Comment | Project, *, deleted: bool = False) ->
                 None
                 if deleted or record.archived
                 else "\n".join((record.full_name, record.name, record.description)),
+                record_passages(record),
             )
-    return Change(kind, record.id, record.project_id, None if deleted else text)
+    return Change(
+        kind, record.id, record.project_id, None if deleted else text, record_passages(record)
+    )
 
 
 def build_indexes(previous: Indexes | None, changes: list[Change], *, replace: bool) -> Indexes:
@@ -248,9 +308,9 @@ def build_indexes(previous: Indexes | None, changes: list[Change], *, replace: b
     indexes = []
     for kind in range(4):
         old = previous[kind] if previous is not None else None
-        vectors = dict(zip(old.ids, old.vectors, strict=True)) if old else {}
+        vectors = old.blocks() if old else {}
         digests = dict(old.digests) if old else {}
-        updates = {item.id: item.text for item in changes if item.kind == kind}
+        updates = {item.id: item for item in changes if item.kind == kind}
         if not replace and not updates and old is not None:
             indexes.append(old)
             continue
@@ -258,21 +318,27 @@ def build_indexes(previous: Indexes | None, changes: list[Change], *, replace: b
             vectors = {key: value for key, value in vectors.items() if key in updates}
             digests = {key: value for key, value in digests.items() if key in updates}
         texts = {}
-        for record_id, text in updates.items():
+        for record_id, item in updates.items():
+            text = item.text
             if text is None:
                 vectors.pop(record_id, None)
                 digests.pop(record_id, None)
             else:
-                digest = sha256(text.encode()).digest()
+                passages = item.passages or tuple(paragraphs(text))
+                digest = sha256(json.dumps(passages).encode()).digest()
                 if digests.get(record_id) != digest:
-                    texts[record_id] = text
+                    texts[record_id] = passages
                     digests[record_id] = digest
         if texts:
-            encoded = encoder.encode(list(texts.values()))
-            vectors.update(zip(texts, encoded, strict=True))
-        ids = sorted(vectors)
+            encoded = encoder.encode([text for chunks in texts.values() for text in chunks])
+            offset = 0
+            for record_id, chunks in texts.items():
+                vectors[record_id] = encoded[offset : offset + len(chunks)]
+                offset += len(chunks)
+        records = sorted(vectors)
+        ids = [record_id for record_id in records for _ in vectors[record_id]]
         matrix = (
-            np.stack([vectors[key] for key in ids])
+            np.concatenate([vectors[key] for key in records])
             if ids
             else np.empty((0, DIMENSIONS), dtype=np.float32)
         )
@@ -446,14 +512,31 @@ def match_ids(
     list[tuple[int, float]],
 ]:
     """Rank allowed IDs entirely in a worker thread."""
-    task_index, note_index, comment_index, project_index = indexes
-    query = encoder.encode([args.query])[0]
+    formulations = args.query
+    encoded = encoder.encode(formulations)
+
+    def rank(index: VectorIndex, allowed: set[int]) -> list[tuple[int, float]]:
+        if len(encoded) == 1:
+            return index.search(encoded[0], allowed, args.limit, min_score)
+        rankings = [index.search(vector, allowed, len(allowed), min_score) for vector in encoded]
+        return reciprocal_rank_fusion(rankings, args.limit)
+
     return (
-        task_index.search(query, task_ids, args.limit, min_score),
-        note_index.search(query, note_ids, args.limit, min_score),
-        comment_index.search(query, comment_ids, args.limit, min_score),
-        project_index.search(query, project_ids, args.limit, min_score),
+        rank(indexes[0], task_ids),
+        rank(indexes[1], note_ids),
+        rank(indexes[2], comment_ids),
+        rank(indexes[3], project_ids),
     )
+
+
+def reciprocal_rank_fusion(
+    rankings: list[list[tuple[int, float]]], limit: int
+) -> list[tuple[int, float]]:
+    scores: dict[int, float] = {}
+    for ranking in rankings:
+        for position, (record_id, _) in enumerate(ranking, 1):
+            scores[record_id] = scores.get(record_id, 0.0) + 1.0 / (60 + position)
+    return sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:limit]
 
 
 def split_query(query: str) -> tuple[str | None, str | None]:
@@ -476,31 +559,52 @@ def split_query(query: str) -> tuple[str | None, str | None]:
 async def search(
     args: Search, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> Matches:
-    """Combine mixed results with text matches first and no duplicate IDs."""
-    text_query, vector_query = split_query(args.query)
-    if text_query is None or vector_query is None:
-        return await search_mode(args, backlog, connection, transaction)
-    exact = await search_mode(
-        args.model_copy(update={"query": text_query}), backlog, connection, transaction
-    )
-    semantic = await search_mode(
-        args.model_copy(update={"query": vector_query}), backlog, connection, transaction
-    )
+    """Preserve exact text matches before fusing only semantic formulations."""
+    modes = [split_query(text.strip()) for text in args.query]
+    results: list[Matches] = []
+    for text_query, _ in modes:
+        if text_query is not None:
+            results.append(
+                await search_mode(
+                    args.model_copy(update={"query": [text_query]}),
+                    backlog,
+                    connection,
+                    transaction,
+                )
+            )
+    vector_queries = [text for _, text in modes if text is not None]
+    if vector_queries:
+        semantic = await search_mode(
+            args.model_copy(update={"query": vector_queries}), backlog, connection, transaction
+        )
+        if len(args.query) > 1 and len(vector_queries) == 1:
 
-    def merge[T: (TaskHit, NoteHit, CommentHit, ProjectHit)](
-        first: list[T], second: list[T]
-    ) -> list[T]:
-        seen = {item.id for item in first}
-        return (first + [item for item in second if item.id not in seen])[: args.limit]
+            def rank_scores[T: (TaskHit, NoteHit, CommentHit, ProjectHit)](items: list[T]) -> None:
+                for position, item in enumerate(items, 1):
+                    item.score = 1.0 / (60 + position)
 
-    exact.tasks = merge(exact.tasks, semantic.tasks)
-    exact.memory = merge(exact.memory, semantic.memory)
-    exact.comments = merge(exact.comments, semantic.comments)
-    exact.projects = merge(exact.projects, semantic.projects)
-    exact.count = sum(
-        len(items) for items in (exact.tasks, exact.memory, exact.comments, exact.projects)
+            rank_scores(semantic.tasks)
+            rank_scores(semantic.memory)
+            rank_scores(semantic.comments)
+            rank_scores(semantic.projects)
+        results.append(semantic)
+    result = merge_matches(results, args.limit)
+    result.queries = args.query
+    return result
+
+
+def merge_matches(results: list[Matches], limit: int) -> Matches:
+    result = results[0].model_copy(deep=True)
+    for name in ("tasks", "memory", "comments", "projects"):
+        items = {item.id: item for item in getattr(result, name)}
+        for other in results[1:]:
+            for item in getattr(other, name):
+                items.setdefault(item.id, item)
+        setattr(result, name, list(items.values())[:limit])
+    result.count = sum(
+        len(getattr(result, name)) for name in ("tasks", "memory", "comments", "projects")
     )
-    return exact
+    return result
 
 
 async def search_mode(
@@ -509,6 +613,7 @@ async def search_mode(
     """Choose text or vector search, then fetch accessible records."""
     from . import server
 
+    query = args.query[0]
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -525,13 +630,13 @@ async def search_mode(
             return True
         return True
 
-    if '"' in args.query:
+    if '"' in query:
         try:
             lexical_tasks = (
                 await server.search_tasks(
                     connection,
                     backlog.actor,
-                    args.query,
+                    query,
                     project_id=project_id,
                     computer=computer,
                     status=args.status,
@@ -546,7 +651,7 @@ async def search_mode(
                 await server.search_notes(
                     connection,
                     backlog.actor,
-                    args.query,
+                    query,
                     project_id=project_id,
                     computer=computer,
                     tag=args.tag,
@@ -560,7 +665,7 @@ async def search_mode(
                 await server.read_comments(
                     connection,
                     backlog.actor,
-                    query=args.query,
+                    query=query,
                     project_id=project_id,
                     computer=computer,
                     status=args.status,
@@ -575,7 +680,7 @@ async def search_mode(
                 await server.search_projects(
                     connection,
                     backlog.actor,
-                    args.query,
+                    query,
                     project_id=project_id,
                     computer=computer,
                     limit=args.limit,

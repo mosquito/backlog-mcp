@@ -68,18 +68,18 @@ export async function run(page, url) {
       assert.equal(args.project, "test/pagination");
       assert.deepEqual(args.kinds, ["tasks"]);
       assert.equal(args.limit, 100);
-      if (args.query === "slow")
+      if (args.query[0] === "slow")
         await new Promise((resolve) => {
           releaseSearch = resolve;
           searchStarted();
         });
       result = {
         tasks:
-          args.query === "empty"
+          args.query[0] === "empty"
             ? []
             : (args.status.includes("deleted") ? deleted : tasks).slice(
                 0,
-                args.query === "slow" ? 9 : 6,
+                args.query[0] === "slow" ? 9 : 6,
               ),
       };
     } else return route.continue();

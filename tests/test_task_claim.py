@@ -362,7 +362,7 @@ async def test_mcp_schema_reads_and_errors(client: BaseClient) -> None:
     assert (await call(client, "task_get", id=task))["assigned"] == target
     for full in (False, True):
         assert (await call(client, "task_list", full=full))["items"][0]["assigned"] == target
-    assert (await call(client, "search", query="Claimable", kinds=["tasks"]))["tasks"][0][
+    assert (await call(client, "search", query=["Claimable"], kinds=["tasks"]))["tasks"][0][
         "assigned"
     ] == target
     assert (await resource(client, f"backlog://tasks/{task}"))["assigned"] == target
@@ -536,7 +536,9 @@ async def test_comments_report_current_assignment(client: BaseClient) -> None:
     for comments in (
         (await call(client, "task_get", id=task))["comments"],
         (await call(client, "task_comment_list", task_id=task))["items"],
-        (await call(client, "search", query="Ownership progress", kinds=["comments"]))["comments"],
+        (await call(client, "search", query=["Ownership progress"], kinds=["comments"]))[
+            "comments"
+        ],
     ):
         assert comments and all(comment["task_assigned"] == second for comment in comments)
     await call(client, "task_claim", task=task, expected=second, assigned=None)

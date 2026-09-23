@@ -114,7 +114,7 @@ async def test_inference_and_index_work_run_in_threads(
     )
     await embeddings.encode_texts(embeddings.EncodeTexts(texts=["Hello"]))
     await embeddings.search(
-        embeddings.Search(query="Hello"),
+        embeddings.Search(query=["Hello"]),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -173,7 +173,7 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
         backlog.transaction,
     )
     result = await embeddings.search(
-        embeddings.Search(query="Сбросить пароль", limit=1),
+        embeddings.Search(query=["Сбросить пароль"], limit=1),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -184,7 +184,7 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
     assert result.memory[0].shared
     assert result.count == 2
     filtered = await embeddings.search(
-        embeddings.Search(query="Сбросить пароль", status=[Status.TODO], tag="auth"),
+        embeddings.Search(query=["Сбросить пароль"], status=[Status.TODO], tag="auth"),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -192,7 +192,7 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
     assert filtered.tasks == []
     assert [item.id for item in filtered.memory] == [note.id]
     global_result = await embeddings.search(
-        embeddings.Search(query="password", all_projects=True, min_score=-1),
+        embeddings.Search(query=["password"], all_projects=True, min_score=-1),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -236,7 +236,7 @@ async def test_vector_search_honors_floor_without_lexical_promotion(
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(
         embeddings.Search(
-            query="Needle", **({"min_score": min_score} if min_score is not None else {})
+            query=["Needle"], **({"min_score": min_score} if min_score is not None else {})
         ),
         backlog,
         connection=await backlog.open(),
@@ -270,7 +270,7 @@ async def test_search_uses_default_semantic_floor_without_fts(
 
     monkeypatch.setattr(embeddings, "match_ids", matches)
     result = await embeddings.search(
-        embeddings.Search(query="Needle"),
+        embeddings.Search(query=["Needle"]),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -294,7 +294,9 @@ async def test_index_retains_vectors_for_unchanged_text(
     before = await embeddings.indexes(backlog, connection, backlog.transaction)
     assert before[0].ids == [task.id]
     assert before[0].vectors.shape == (1, 512)
-    assert before[0].digests == {task.id: sha256(embeddings.document(task).encode()).digest()}
+    assert before[0].digests == {
+        task.id: sha256(json.dumps(embeddings.record_passages(task)).encode()).digest()
+    }
     original = embeddings.encoder.encode
     calls = []
 
@@ -340,7 +342,7 @@ async def test_results_are_read_by_id_after_ranking(
 
     monkeypatch.setattr(embeddings, "match_ids", changed)
     result = await embeddings.search(
-        embeddings.Search(query="Reset the password"),
+        embeddings.Search(query=["Reset the password"]),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -488,7 +490,10 @@ async def test_search_uses_old_index_during_rebuild_and_keeps_new_queue(
         assert await embeddings.indexes(backlog, connection, backlog.transaction) is old
         result = await asyncio.wait_for(
             embeddings.search(
-                embeddings.Search(query="Reset password"), backlog, connection, backlog.transaction
+                embeddings.Search(query=["Reset password"]),
+                backlog,
+                connection,
+                backlog.transaction,
             ),
             1,
         )

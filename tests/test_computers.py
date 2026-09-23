@@ -230,8 +230,8 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
     assert (await call(client, "task_list", all_computers=True))["count"] == 2
 
     #: Semantic matches score anything above zero, so only exact matches count here.
-    assert (await call(client, "search", query="laptop", min_score=1))["count"] == 0
-    found = await call(client, "search", query="laptop", all_computers=True)
+    assert (await call(client, "search", query=["laptop"], min_score=1))["count"] == 0
+    found = await call(client, "search", query=["laptop"], all_computers=True)
     assert found["principal"] == "local@here"
     assert found["tasks"][0]["project"] == "local/app"
 
@@ -249,7 +249,7 @@ async def test_tools_tell_the_computers_apart(client: BaseClient, backlog: Backl
         "local@here",
         1,
     )
-    scoped_search = await call(client, "search", query="laptop", project="app", computer="laptop")
+    scoped_search = await call(client, "search", query=["laptop"], project="app", computer="laptop")
     assert (scoped_search["project"], scoped_search["principal"]) == ("local/app", "local@here")
     assert [item["id"] for item in scoped_search["tasks"]] == [away["items"][0]["id"]]
     assert counted["this_principal"] == "local@here"

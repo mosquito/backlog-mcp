@@ -334,7 +334,7 @@ async def test_response_principal_uses_connection_computer(
                 ("task_list", {"full": True}),
                 ("memory_list", {}),
                 ("memory_list", {"full": True}),
-                ("search", {"query": "Principal regression"}),
+                ("search", {"query": ["Principal regression"]}),
                 ("stats", {}),
             ):
                 result = await call(client, tool, **scope, **arguments)

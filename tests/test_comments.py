@@ -47,7 +47,7 @@ async def test_comment_search_has_separate_content_and_follows_task_scope(backlo
         ),
         backlog.transaction,
     )
-    query = embeddings.Search(query='"Specialcommentneedle"', min_score=1)
+    query = embeddings.Search(query=['"Specialcommentneedle"'], min_score=1)
     found = await embeddings.search(
         query, backlog, connection=await backlog.open(), transaction=backlog.transaction
     )
@@ -127,7 +127,7 @@ async def test_comments_have_independent_semantic_vectors(backlog: Backlog) -> N
         backlog.transaction,
     )
     result = await embeddings.search(
-        embeddings.Search(query="recover login credentials", kinds=["comments"], min_score=0),
+        embeddings.Search(query=["recover login credentials"], kinds=["comments"], min_score=0),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -140,7 +140,7 @@ async def test_comments_have_independent_semantic_vectors(backlog: Backlog) -> N
         backlog.transaction,
     )
     refreshed = await embeddings.search(
-        embeddings.Search(query='"uniquenewcomment"', kinds=["comments"], min_score=1),
+        embeddings.Search(query=['"uniquenewcomment"'], kinds=["comments"], min_score=1),
         backlog,
         connection=await backlog.open(),
         transaction=backlog.transaction,
@@ -204,7 +204,7 @@ async def test_external_comments_invalidate_semantic_cache(backlog: Backlog) -> 
         ),
         backlog.transaction,
     )
-    query = embeddings.Search(query="lost credentials", kinds=["comments"], min_score=-1)
+    query = embeddings.Search(query=["lost credentials"], kinds=["comments"], min_score=-1)
     assert (
         await embeddings.search(
             query, backlog, connection=await backlog.open(), transaction=backlog.transaction

@@ -832,7 +832,7 @@ class Search(Command):
             embeddings.Matches,
             "search",
             **self.listing(),
-            query=text,
+            query=[text],
             kinds=self.kind or None,
             tag=self.tag or None,
             limit=self.limit,

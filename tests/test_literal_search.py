@@ -43,7 +43,7 @@ async def test_literal_search_skips_model_and_applies_filters(
 
     async def find(query: str, **args: Any) -> embeddings.Matches:
         return await embeddings.search(
-            embeddings.Search(query=query, kinds=["tasks"], **args),
+            embeddings.Search(query=[query], kinds=["tasks"], **args),
             backlog,
             connection,
             backlog.transaction,
@@ -80,13 +80,13 @@ async def test_literal_search_respects_project_and_principal(backlog: Backlog) -
             ),
             backlog.transaction,
         )
-    args = embeddings.Search(query='"unique literal"', kinds=["tasks"], project=project.full_name)
+    args = embeddings.Search(query=['"unique literal"'], kinds=["tasks"], project=project.full_name)
     result = await embeddings.search(args, backlog, connection, backlog.transaction)
     assert result.count == 1
     assert result.tasks[0].project == project.full_name
     stranger = backlog.view(principal="stranger")
     result = await embeddings.search(
-        embeddings.Search(query='"unique literal"', all_computers=True),
+        embeddings.Search(query=['"unique literal"'], all_computers=True),
         stranger,
         connection,
         backlog.transaction,
@@ -148,7 +148,7 @@ async def test_documented_literal_examples(backlog: Backlog) -> None:
     for query, expected in cases.items():
         assert f"`{query}`" in guidance.read("search")
         found = await embeddings.search(
-            embeddings.Search(query=query, kinds=["tasks"]),
+            embeddings.Search(query=[query], kinds=["tasks"]),
             backlog,
             connection,
             backlog.transaction,
@@ -203,7 +203,7 @@ async def test_mixed_search_routes_queries_and_merges_without_duplicates(
 
     monkeypatch.setattr(embeddings.encoder, "encode", capture)
     args = embeddings.Search(
-        query='"token" восстановить "production"', kinds=["tasks"], min_score=-1, tag="ui"
+        query=['"token" восстановить "production"'], kinds=["tasks"], min_score=-1, tag="ui"
     )
     result = await embeddings.search(args, backlog, connection, backlog.transaction)
     assert encoded[-1] == "token восстановить production"

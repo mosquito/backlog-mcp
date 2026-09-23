@@ -1615,7 +1615,8 @@ async def search(
     project_board.
     Quoted expressions use full-text search, unquoted text uses vectors, mixed queries use both.
     Examples: `"refresh token"` matches a phrase; `"token"*` matches a prefix;
-    `token reset` searches meaning. See guide('search') for full syntax and filters."""
+    `token reset` searches meaning. Pass a list in query for alternative formulations.
+    See guide('search') for full syntax and filters."""
     return await embeddings.search(args, backlog, connection, transaction)
 
 

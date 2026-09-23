@@ -28,20 +28,20 @@ try {
     else if (name === "task_list") result = { items: [], count: 0 };
     else if (name === "search") {
       calls.push(args);
-      if (args.query === "failure") return route.fulfill({ status: 503, body: "Unavailable" });
-      if (args.query === "slow")
+      if (args.query[0] === "failure") return route.fulfill({ status: 503, body: "Unavailable" });
+      if (args.query[0] === "slow")
         await new Promise((resolve) => {
           release = resolve;
         });
       result = {
-        tasks: args.query === "history-task" ? [{id: 123, project: "test/project", title: "History task"}] : [],
+        tasks: args.query[0] === "history-task" ? [{id: 123, project: "test/project", title: "History task"}] : [],
         comments: [],
         memory: [],
-        projects: args.query === "positions"
+        projects: args.query[0] === "positions"
           ? Array.from({ length: 40 }, (_, index) => ({
               id: index + 1, full_name: "test/project", name: `Result ${index + 1}`,
             }))
-          : [{ id: 1, full_name: "test/project", name: args.query }],
+          : [{ id: 1, full_name: "test/project", name: args.query[0] }],
       };
     } else return route.continue();
     await route.fulfill({
@@ -101,7 +101,7 @@ try {
   await change("score", "0.3");
   await change("scope", "current", true);
   assert.deepEqual(calls.at(-1), {
-    query: "needle",
+    query: ["needle"],
     kinds: ["tasks", "comments", "memory", "projects"],
     limit: 42,
     min_score: 0.3,

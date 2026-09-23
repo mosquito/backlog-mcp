@@ -6,6 +6,31 @@ text search receives only the quoted expressions; vector search receives the who
 with double quotes removed. Mixed results show text matches first, then vector matches,
 without duplicates. Quoted expressions in a mixed query are combined with AND.
 
+## Multiple formulations
+
+`query` requires a list of 1–5 strings, even for one formulation. Use 2–5 short rephrasings of the
+same intent, for example in both languages, to improve recall:
+
+```json
+{"query": ["recover account access", "восстановить доступ к аккаунту"], "kinds": ["tasks", "memory"]}
+```
+
+One formulation uses cosine ranking. Multiple semantic formulations
+use equal-weight reciprocal rank fusion (RRF, k=60). Each record appears once;
+`limit` applies after fusion. The response echoes the formulations in `queries`.
+Semantic `score` is cosine similarity for one formulation and an RRF sum for a
+multi-formulation request. `min_score` filters cosine matches before fusion.
+
+Quote rules apply separately to each formulation. Text matches remain first with
+`match: "fts"` and no score; they do not enter semantic RRF. Semantic results use
+`match: "semantic"`. Exact matches are deduplicated across formulations in input order.
+
+Vector search represents each record by its full text, heading, and body paragraphs.
+Short paragraphs remain separate. The record's cosine score is its best passage
+score. Results remain records, not separate passages.
+
+## Query syntax
+
 | Query | Finds |
 | --- | --- |
 | `token` | Related meanings, using vector similarity. |

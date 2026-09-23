@@ -287,18 +287,18 @@ async def test_search_prefixes_closed_tasks_and_updated_index(client: BaseClient
     )
     other = await call(client, "project_save", root="../other")
     await call(client, "task_add", title="Authentication service", project=other["slug"])
-    found = await call(client, "search", query='"auth"* "serv"*')
+    found = await call(client, "search", query=['"auth"* "serv"*'])
     assert [item["id"] for item in found["tasks"]] == [task["id"]]
-    assert (await call(client, "search", query='"token" "secur"*'))["count"] == 1
-    assert (await call(client, "search", query='"auth"*', status=["todo"]))["count"] == 0
-    assert (await call(client, "search", query='"auth"*', all_projects=True))["count"] == 2
-    malformed = await client.call_tool("search", {"query": '" OR *'})
+    assert (await call(client, "search", query=['"token" "secur"*']))["count"] == 1
+    assert (await call(client, "search", query=['"auth"*'], status=["todo"]))["count"] == 0
+    assert (await call(client, "search", query=['"auth"*'], all_projects=True))["count"] == 2
+    malformed = await client.call_tool("search", {"query": ['" OR *']})
     assert malformed.is_error
     assert "Invalid FTS5 expression" in str(malformed.content)
 
     await call(client, "task_update", id=task["id"], title="Login", body="", tags=[])
-    assert (await call(client, "search", query='"auth"*', min_score=1))["count"] == 0
-    assert (await call(client, "search", query='"login"'))["count"] == 1
+    assert (await call(client, "search", query=['"auth"*'], min_score=1))["count"] == 0
+    assert (await call(client, "search", query=['"login"']))["count"] == 1
 
 
 async def test_task_body_updates_replace_description(client: BaseClient) -> None:
@@ -501,7 +501,7 @@ async def test_delete_asks_only_across_projects(
             await operations.read_note(await backlog.open(), backlog.actor, saved["id"]) is None
         ) is expected
         if expected:
-            assert (await call(client, "search", query="candidate", all_projects=True))[
+            assert (await call(client, "search", query=["candidate"], all_projects=True))[
                 "count"
             ] == 0
 
@@ -573,18 +573,18 @@ async def test_search_covers_tasks_and_notes_together(client: BaseClient) -> Non
     saved = await call(client, "memory_save", title="dev vm", body="host: vm-3.internal")
     await call(client, "memory_save", title="staging", body="https://staging.example")
 
-    found = await call(client, "search", query='"vm"', limit=1)
+    found = await call(client, "search", query=['"vm"'], limit=1)
     assert found["count"] == 2
     assert [item["id"] for item in found["tasks"]] == [task["id"]]
     assert [item["id"] for item in found["memory"]] == [saved["id"]]
     #: The excerpt marks the hit, and the id is what a task body links to as `note #id`.
     assert "[vm]" in found["memory"][0]["snippet"]
-    assert (await call(client, "search", query="vm", status=["todo"]))["tasks"] == []
-    assert (await call(client, "search", query="staging"))["memory"][0]["title"] == "staging"
-    assert (await call(client, "search", query="nothing here", min_score=1))["count"] == 0
+    assert (await call(client, "search", query=["vm"], status=["todo"]))["tasks"] == []
+    assert (await call(client, "search", query=["staging"]))["memory"][0]["title"] == "staging"
+    assert (await call(client, "search", query=["nothing here"], min_score=1))["count"] == 0
 
     await call(client, "memory_append", id=saved["id"], text="port 2222")
-    assert (await call(client, "search", query='"port"'))["memory"][0]["id"] == saved["id"]
+    assert (await call(client, "search", query=['"port"']))["memory"][0]["id"] == saved["id"]
 
 
 async def test_shared_notes_cross_projects(client: BaseClient) -> None:
@@ -597,7 +597,7 @@ async def test_shared_notes_cross_projects(client: BaseClient) -> None:
     listed = await call(client, "memory_list")
     assert [item["id"] for item in listed["items"]] == [theirs["id"]]
     assert (await call(client, "memory_get", title="staging"))["project"] == other["full_name"]
-    assert (await call(client, "search", query='"theirs"'))["count"] == 1
+    assert (await call(client, "search", query=['"theirs"']))["count"] == 1
 
     #: Saving by title from here creates a local note; the shared note of the other project stays.
     mine = await call(client, "memory_save", title="staging", body="mine")
@@ -607,7 +607,7 @@ async def test_shared_notes_cross_projects(client: BaseClient) -> None:
     assert (await call(client, "memory_list", shared=True))["count"] == 1
     assert (await call(client, "memory_list", shared=False))["count"] == 1
     assert (await call(client, "memory_list", all_projects=True))["count"] == 3
-    assert (await call(client, "search", query='"theirs"', all_projects=True, min_score=1))[
+    assert (await call(client, "search", query=['"theirs"'], all_projects=True, min_score=1))[
         "count"
     ] == 2
 
@@ -671,7 +671,7 @@ async def test_note_delete_asks_only_across_projects(
             await operations.read_note(await backlog.open(), backlog.actor, saved["id"]) is None
         ) is expected
         if expected:
-            assert (await call(client, "search", query="candidate", all_projects=True))[
+            assert (await call(client, "search", query=["candidate"], all_projects=True))[
                 "count"
             ] == 0
 
@@ -733,7 +733,7 @@ async def test_project_delete_takes_the_whole_board(backlog: Backlog) -> None:
         assert (
             await operations.read_note(await backlog.open(), backlog.actor, private["id"]) is None
         )
-        assert (await call(client, "search", query="Doomed", all_projects=True))["count"] == 0
+        assert (await call(client, "search", query=["Doomed"], all_projects=True))["count"] == 0
         #: The directory still decides.
         assert (await backlog.scope())[1].value == "directory"
         #: The directory is free again: registering it makes a new project.
@@ -762,18 +762,18 @@ async def test_search_separates_quoted_text_and_vector_matches(client: BaseClien
     lexical = await call(client, "task_add", title="Password rotation", body="Rotate password")
     semantic = await call(client, "task_add", title="Сбросить пароль")
     note = await call(client, "memory_save", title="Password policy", body="Change password")
-    result = await call(client, "search", query="password")
+    result = await call(client, "search", query=["password"])
     assert [item["id"] for item in result["tasks"]] == [lexical["id"], semantic["id"]]
     assert len({item["id"] for item in result["tasks"]}) == 2
     assert all(item["match"] == "semantic" for item in result["tasks"])
     assert result["tasks"][1]["score"] > 0
     assert result["tasks"][1]["snippet"] is None
     assert [item["id"] for item in result["memory"]] == [note["id"]]
-    strict = await call(client, "search", query='"passw"*', min_score=1)
+    strict = await call(client, "search", query=['"passw"*'], min_score=1)
     assert [item["id"] for item in strict["tasks"]] == [lexical["id"]]
     assert strict["tasks"][0]["score"] is None
     assert [item["id"] for item in strict["memory"]] == [note["id"]]
-    limited = await call(client, "search", query="password", limit=1)
+    limited = await call(client, "search", query=["password"], limit=1)
     assert [item["id"] for item in limited["tasks"]] == [lexical["id"]]
     assert [item["id"] for item in limited["memory"]] == [note["id"]]
 
@@ -952,7 +952,7 @@ async def test_closed_timestamps_round_only_in_public_output(
         for item in listed["items"]:
             assert type(item["closed_at"]) is int and item["closed_at"] == 1700000001
     found = await call(
-        client, "search", query="Fractional closure", status=["done"], kinds=["tasks"]
+        client, "search", query=["Fractional closure"], status=["done"], kinds=["tasks"]
     )
     assert len(found["tasks"]) == 2
     for item in found["tasks"]:

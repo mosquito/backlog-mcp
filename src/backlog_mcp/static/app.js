@@ -381,7 +381,7 @@ async function board(target) {
     if (text) {
       const found = await call("search", {
         project: target.project,
-        query: text,
+        query: [text],
         kinds: ["tasks"],
         status: visibleStatuses,
         limit: 100,
@@ -1178,7 +1178,7 @@ async function search() {
       return;
     }
     const args = {
-      query: query.value, kinds,
+      query: [query.value], kinds,
       limit: Number(searchLimit.value), min_score: Number(searchScore.value),
     };
     if (searchStatus.value) args.status = [searchStatus.value];
@@ -1212,7 +1212,7 @@ async function search() {
                     ? projectRoute(item.full_name)
                     : taskRoute(item.task_id || item.id),
               onclick: (event) => {
-                if (kind === "tasks" || kind === "comments") saveSearchHistory(args.query);
+                if (kind === "tasks" || kind === "comments") saveSearchHistory(args.query[0]);
                 selectedResult = [...results.querySelectorAll("a")].indexOf(event.currentTarget);
                 highlight(false);
                 dialog.close();

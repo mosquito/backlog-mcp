@@ -213,7 +213,13 @@ Avoid full listings and reading every task or note to answer a question. Refine 
 filters when results are weak. Reserve listing tools for requested inventories or complete
 reviews, with filters and pagination; use `stats` for counts.
 
-`backlog search` and the MCP `search` tool select text, vector, or mixed search from the query.
+The MCP `search` tool requires `query` as a list of 1–5 strings, for example
+`{"query": ["recover account access", "восстановить доступ к аккаунту"]}`.
+UI and CLI searches send one formulation. The response echoes the list in `queries`.
+Several semantic formulations use equal-weight reciprocal rank fusion (RRF, k=60).
+Each record is ranked by its best match among its full text, heading, and body paragraphs.
+
+`backlog search` and the MCP `search` tool select text, vector, or mixed search from each formulation.
 Quoted expressions alone use full-text matching only: `"token"`, `"token"*`,
 or `"token" OR "password"`. Queries without double quotes use multilingual vector
 search only. Mixed queries search quoted expressions as text and the whole query without
@@ -227,8 +233,10 @@ Shared memory remains visible across projects only when the caller can access it
 Use `backlog search orchestration --kind projects --all-computers` to find accessible projects
 without selecting a current project. `min_score` (`--min-score` in the terminal) defaults to `0.15`
 and applies only to vector search. Web UI searches use `0.12`. Text matches ignore
-this threshold. MCP results include `match` (`fts` or `semantic`) and a cosine `score`
-for semantic matches (`null` for text matches). Text excerpts remain in `snippet`.
+this threshold. MCP results include `match` (`fts` or `semantic`). Semantic `score` is
+cosine similarity for one formulation or an RRF sum for multiple formulations;
+text matches have a `null` score. `min_score` applies before fusion.
+Text excerpts remain in `snippet`.
 Vector matches can use different words or languages from the query.
 
 The bundled Model2Vec model is

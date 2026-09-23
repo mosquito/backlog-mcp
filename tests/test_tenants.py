@@ -52,7 +52,7 @@ async def test_users_cannot_read_or_mutate_each_others_data(backlog: Backlog, ad
             assert (await call(bob, "project_list", all_computers=True))["items"] == []
             assert (await call(bob, "task_list", all_computers=True))["items"] == []
             assert (await call(bob, "memory_list", all_computers=True))["items"] == []
-            found = await call(bob, "search", query="Confidential", all_computers=True)
+            found = await call(bob, "search", query=["Confidential"], all_computers=True)
             assert not found["tasks"] and not found["memory"] and not found["comments"]
             assert (await call(bob, "stats", all_computers=True))["total"] == 0
             for method, args in (
@@ -72,7 +72,7 @@ async def test_users_cannot_read_or_mutate_each_others_data(backlog: Backlog, ad
             # IDs are unique across the shared database.
             assert own["id"] != task["id"]
             await call(bob, "task_update", id=own["id"], title="Bob updated")
-            found = await call(bob, "search", query="Confidential", all_projects=True)
+            found = await call(bob, "search", query=["Confidential"], all_projects=True)
             assert all(item["title"] != "ConfidentialTask" for item in found["tasks"])
             assert not found["memory"] and not found["comments"]
             assert (await call(alice, "task_get", id=task["id"]))["title"] == "ConfidentialTask"
