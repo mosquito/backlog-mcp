@@ -269,7 +269,14 @@ function linkNode(p) {
 }
 async function board(target) {
   const params = target.params;
-  const tableView = params.get("view") === "table";
+  const viewKey = `backlog:board-view:${endpoint}:${identity.principal}`;
+  let preferredView;
+  try {
+    preferredView = localStorage.getItem(viewKey);
+  } catch {
+    preferredView = null;
+  }
+  const tableView = (params.get("view") || preferredView) === "table";
   const filters = { project: target.project };
   if (params.get("tag")) filters.tag = params.get("tag");
   if (params.get("priority")) filters.priority = params.get("priority");
@@ -335,6 +342,11 @@ async function board(target) {
   );
   const tasks = [...open.items, ...done.items];
   const switchView = (view) => {
+    try {
+      localStorage.setItem(viewKey, view);
+    } catch {
+      notify(new Error("The browser could not save the view preference."));
+    }
     const p = new URLSearchParams(params);
     p.set("view", view);
     navigate(projectRoute(target.project, p));
@@ -363,8 +375,8 @@ async function board(target) {
     { class: "muted" },
     "Showing up to 500 open tasks and the 50 most recently changed completed tasks. Refresh to load updates.",
   );
-  if (tableView)
-    return el("section", { class: "board-page" }, heading, toolbar, taskTable(tasks), note);
+  heading.querySelector(".filters").append(toolbar);
+  if (tableView) return el("section", { class: "board-page" }, heading, taskTable(tasks), note);
   const columns = el("div", { class: "board" });
   for (const status of statuses.slice(0, 4)) {
     const items = tasks.filter((t) => t.status === status);
@@ -425,7 +437,7 @@ async function board(target) {
     };
     columns.append(column);
   }
-  return el("section", { class: "board-page" }, heading, toolbar, columns, note);
+  return el("section", { class: "board-page" }, heading, columns, note);
 }
 async function detail(task) {
   const panel = el("section", { class: "detail" });

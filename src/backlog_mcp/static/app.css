@@ -1241,7 +1241,24 @@ button,
   align-items: center;
   flex-wrap: wrap;
   gap: 16px;
-  margin-top: 20px;
+  margin-top: 0;
+}
+.board-page .filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.board-page .filters > * {
+  width: auto;
+}
+.board-page .filters > input {
+  width: min(100%, 280px);
+}
+.board-page .filters > select {
+  width: 180px;
+}
+.board-page .filters > .board-toolbar {
+  flex: 1 1 auto;
 }
 .board-toolbar > .muted {
   font-size: 12px;

@@ -513,7 +513,8 @@ Existing hash routes redirect to this format.
 
 The tracker supports projects, a kanban board, task details, Markdown editing,
 comments, task relations, and search with Cmd+K or Ctrl+K. Switch between Kanban
-and Table on a project page; `view=table` in the query string preserves the choice.
+and Table on a project page. The browser remembers the choice in localStorage;
+an explicit `view=table` or `view=kanban` in the URL takes priority.
 Both views use the same filters and loaded tasks. The table shows task ID/title,
 status, priority, assignment, update time, and tags. On narrow screens, scroll
 inside the table to reach its other columns. Drag a task between
@@ -524,7 +525,9 @@ to reload it; changes from other clients do not appear automatically.
 Use **Memory** in the header to browse notes for the current project or all
 accessible projects. Filter by tag or shared status, page through the list, and
 open a note to read its Markdown content, source project, tags, and author dates.
-The Memory view is read-only. Links use `#note123`; `#123` still
+Use **Add note** to create memory or **Edit note** on a note you can edit.
+The form saves drafts in this browser, supports Markdown preview, and limits content
+to 1024 characters. Add note refuses duplicate titles. Links use `#note123`; `#123` still
 identifies a task.
 Cmd+K searches tasks, comments, memory, and projects. Use the checkboxes below
 the query to select content types; the All projects checkbox controls the scope.
