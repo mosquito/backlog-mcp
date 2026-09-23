@@ -392,7 +392,7 @@ class HTTPOptions(argclass.Group):
     listen: str = argclass.Argument(default="127.0.0.1", help="Address to listen on, HTTP only")
     port: int = argclass.Argument(default=3009, help="Port to listen on, HTTP only")
     no_console: bool = argclass.Argument(
-        default=False, help="Do not serve the bundled MCP console at /"
+        default=False, help="Do not serve the bundled MCP console at /console"
     )
     trust_proxy: bool = argclass.Argument(
         default=False,
@@ -1775,7 +1775,7 @@ class CLI(argclass.Parser):
         description=(
             "Run the MCP server on the same backlog the other commands use. stdio is the "
             "transport clients start by themselves; --protocol=http serves the endpoint at "
-            "/mcp and the bundled console at /. The http group configures the listener; "
+            "/mcp and the bundled console at /console. The http group configures the listener; "
             "the auth group configures Basic accounts and JWT verification. `backlog-mcp` is "
             "the same command without the word mcp. Over HTTP, "
             "?computer=<name>&project=<slug> on the endpoint URL serves a client as another "

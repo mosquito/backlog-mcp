@@ -76,7 +76,7 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
             "comments": [],
             "links": [],
         }
-        async with session.get(server.make_url("/")) as response:
+        async with session.get(server.make_url(CONSOLE_PATH)) as response:
             assert response.status == 200
             assert response.content_type == "text/html"
     assert backlog.database.connection is None
@@ -178,7 +178,7 @@ async def test_a_foreign_origin_is_refused_unless_the_proxy_is_trusted(
 async def test_console_can_be_disabled(backlog: Backlog) -> None:
     async with (
         TestClient(TestServer(application(backlog, console=False))) as client,
-        client.get("/") as response,
+        client.get(CONSOLE_PATH) as response,
     ):
         assert response.status == 404
 

@@ -1,0 +1,2 @@
+- marked 18.0.14: https://registry.npmjs.org/marked/-/marked-18.0.14.tgz
+- dompurify 3.4.15: https://registry.npmjs.org/dompurify/-/dompurify-3.4.15.tgz

@@ -152,12 +152,10 @@ def test_invalid_configuration_fails_before_serving(
         ("head", "/mcp"),
         ("post", "/mcp"),
         ("delete", "/mcp"),
-        ("post", "/"),
-        ("delete", "/"),
-        ("get", "/console.js/extra"),
+        ("get", "/mcp/unknown"),
     ],
 )
-async def test_authentication_protects_all_routes_and_methods(
+async def test_authentication_protects_mcp_routes_and_methods(
     backlog: Backlog, path: str, method: str, credentials: Credentials
 ) -> None:
     async with TestClient(TestServer(httpd.application(backlog, **credentials.options))) as client:
@@ -186,13 +184,13 @@ async def test_static_console_loads_without_credentials(
     backlog: Backlog, credentials: Credentials
 ) -> None:
     async with TestClient(TestServer(httpd.application(backlog, **credentials.options))) as client:
-        page = await client.get("/")
+        page = await client.get("/console")
         assert page.status == 200
         html = await page.text()
         assert 'data-endpoint="/mcp"' in html
-        assert 'src="/console.js"' in html
-        assert 'href="/console.css"' in html
-        for path in ("/", "/console.js", "/console.css"):
+        assert 'src="/console/console.js"' in html
+        assert 'href="/console/console.css"' in html
+        for path in ("/console", "/console/console.js", "/console/console.css"):
             assert (await client.get(path)).status == 200
             assert (await client.head(path)).status == 200
         assert (await client.get("/mcp")).status == 401
@@ -204,8 +202,8 @@ async def test_disabled_console_does_not_exempt_static_paths(
 ) -> None:
     app = httpd.application(backlog, console=False, **credentials.options)
     async with TestClient(TestServer(app)) as client:
-        for path in ("/", "/console.js", "/console.css"):
-            assert (await client.get(path)).status == 401
+        for path in ("/console", "/console/console.js", "/console/console.css"):
+            assert (await client.get(path)).status == 404
             assert (await client.get(path, headers=credentials.headers)).status == 404
 
 

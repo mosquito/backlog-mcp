@@ -15,6 +15,7 @@ from aiohttp_tiny_mcp.console import Console
 from aiohttp_tiny_mcp.storage.namespaces import namespace
 from aiohttp_tiny_mcp.storage.sqlite import SqliteStorage
 
+from . import webui
 from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, user_identity
 from .backlog import Backlog, register
 from .server import ACTIVE_REGISTRY, VERSION, persistent_registry, use
@@ -24,8 +25,7 @@ log = logging.getLogger(__name__)
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 ENDPOINT_PATH = "/mcp"
-CONSOLE_PATH = "/"
-CONSOLE_ASSETS = frozenset({CONSOLE_PATH, "/console.js", "/console.css"})
+CONSOLE_PATH = "/console"
 PRINCIPAL = web.RequestKey("backlog_principal", Principal)
 STORAGE = web.AppKey("backlog_storage", SqliteStorage)
 
@@ -79,13 +79,11 @@ def bind(backlog: Backlog, configured: Registry | None = None) -> Middleware:
     return middleware
 
 
-def authentication(endpoint: Endpoint, *, public_paths: frozenset[str] = frozenset()) -> Middleware:
-    """Reject invalid credentials before routing or body parsing; allow console assets."""
+def authentication(endpoint: Endpoint) -> Middleware:
+    """Authenticate MCP requests before binding their application identity."""
 
     @web.middleware
     async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
-        if request.method in {"GET", "HEAD"} and request.path in public_paths:
-            return await handler(request)
         token = namespace.set(None)
         try:
             try:
@@ -113,7 +111,7 @@ def application(
     console: bool = True,
     trust_proxy: bool = False,
 ) -> web.Application:
-    """The authenticated MCP endpoint at `/mcp` and the public static console at `/`.
+    """The authenticated MCP subapp at `/mcp` and the public UI at `/ui`.
 
     Without Basic credentials or a JWT key, requests do not require authentication.
     Project memberships control data access. Sessions remain principal-scoped.
@@ -151,11 +149,19 @@ def application(
     middlewares: list[Middleware] = [bind(backlog, configured)]
     endpoint = Endpoint(configured, trust_proxy_origin_validation=trust_proxy)
     if policies:
-        public_paths = CONSOLE_ASSETS if console else frozenset()
-        middlewares.insert(0, authentication(endpoint, public_paths=public_paths))
-    app = web.Application(middlewares=middlewares)
+        middlewares.insert(0, authentication(endpoint))
+    mcp = web.Application(middlewares=middlewares)
+    mcp.add_routes(endpoint.routes("", metadata=False))
+    app = web.Application()
     app[STORAGE] = storage
-    endpoint.setup(app, ENDPOINT_PATH)
+    app.add_routes(endpoint.metadata_routes())
+    app.add_subapp(ENDPOINT_PATH, mcp)
+
+    async def index(request: web.Request) -> web.Response:
+        raise web.HTTPFound("/ui/")
+
+    app.router.add_get("/", index)
+    app.add_subapp("/ui", webui.application(ENDPOINT_PATH))
     if console:
         page = Console(
             endpoint_path=ENDPOINT_PATH,

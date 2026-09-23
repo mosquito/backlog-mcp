@@ -415,7 +415,7 @@ backlog-mcp --protocol=http --auth-basic=alice:secret --auth-basic=bob:another-s
 `backlog-mcp` is `backlog mcp` without the word. A config file holds these options in its
 `[mcp]` table and nested groups. Environment variables use `BACKLOG_MCP_HTTP_PORT` and
 related names. `--config FILE` is accepted before and after `mcp`. Over HTTP the endpoint
-lives at `/mcp` and the bundled console at `/`. Configure Basic credentials or a JWT
+lives at `/mcp` and the bundled console at `/console`. Configure Basic credentials or a JWT
 verification key to protect MCP requests. The console HTML, JS, and CSS are public;
 they contain no backlog data. Without authentication, bind to `127.0.0.1`.
 The endpoint refuses a browser
@@ -493,7 +493,37 @@ The server applies numbered SQL migrations at startup. Legacy 0.1 databases requ
 Import the old installation later with a separate ad hoc script. Back up the SQLite
 file with SQLite's backup API when the server is running.
 
-### JWT authentication
+### Browser interface
+
+Open `/` or `/ui/` on the HTTP server. The root redirects to the tracker.
+The diagnostic MCP console is at `/console`; `--http-no-console` disables it.
+The MCP URL remains `/mcp`, including its existing query parameters.
+
+The tracker supports projects, a kanban board, task details, Markdown editing,
+comments, task relations, and search with Cmd+K or Ctrl+K. Drag a task between
+columns to change its status. Filters are saved in the page URL. The board loads
+up to 500 open tasks and the 50 most recently changed completed tasks. Use Refresh
+to reload it; changes from other clients do not appear automatically.
+
+Sign in with Basic credentials or a Bearer token supported by the server.
+Credentials stay in `sessionStorage` unless you select Remember me, which uses
+`localStorage`. Sign out clears both stores. Requests send credentials only to
+the configured MCP endpoint. Public UI assets live at `/ui/static/`; the MCP
+subapplication applies authentication independently.
+
+Drafts persist in `localStorage`, scoped by user and task. Before saving edits,
+the browser reads the task again and compares its timestamp and editable fields.
+If the task changed, the editor displays the base, current, and draft values.
+You can keep your changes or merge them manually. This check is not atomic:
+another client can write between the comparison and the update. The current API
+does not offer server-side compare-and-swap.
+
+The UI uses native JavaScript modules without a build step or npm installation.
+Marked and DOMPurify are vendored with their licenses; Markdown is sanitized
+before display. Run the client tests with `node --test tests/webui_client.mjs`
+using Node.js 22 or newer.
+
+## JWT authentication
 
 Configure one or both verification methods in `[mcp.auth.jwt]`. `public_key` accepts a PEM
 public key or its file path. `pre_shared_key` accepts an HS256 shared secret of at least
