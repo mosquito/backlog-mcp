@@ -1,10 +1,19 @@
+import { editProject, addBinding } from "./project-form.js";
 import { el, button, field, select, projectRoute, modal } from "./dom.js";
 
-export async function projectSettings(project, { call, navigate, principal }) {
+export async function projectSettings(project, actions) {
+  const { call, navigate, principal, notify } = actions;
   const [summary, access] = await Promise.all([
     call("project_board", { project }),
     call("project_members", { project }),
   ]);
+  const title = el("h1", {}, summary.project.name);
+  const description = el("p", { class: "muted" }, summary.project.description || "No description.");
+  const language = el(
+    "p",
+    {},
+    `Preferred language: ${summary.project.preferred_language || "No preference"}`,
+  );
   const owner = summary.project.role === "owner";
   const members = el("div", { class: "project-members" });
   const bindings = el("div", { class: "project-bindings" });
@@ -18,9 +27,7 @@ export async function projectSettings(project, { call, navigate, principal }) {
           { class: "member-row" },
           el("strong", {}, member.principal),
           el("span", { class: "tag" }, member.role),
-          owner && member.role !== "owner"
-            ? button("Change role", () => share(member))
-            : null,
+          owner && member.role !== "owner" ? button("Change role", () => share(member)) : null,
         ),
       ),
     );
@@ -97,7 +104,7 @@ export async function projectSettings(project, { call, navigate, principal }) {
     "section",
     { class: "project-settings" },
     el("div", { class: "eyebrow" }, "Project settings"),
-    el("h1", {}, summary.project.name),
+    title,
     el(
       "nav",
       { class: "view-switch", "aria-label": "Project view" },
@@ -108,13 +115,24 @@ export async function projectSettings(project, { call, navigate, principal }) {
     el(
       "section",
       { class: "panel" },
-      el("h2", {}, "Project info"),
-      el("p", {}, el("strong", {}, project)),
       el(
-        "p",
-        { class: "muted" },
-        summary.project.description || "No description.",
+        "div",
+        { class: "row spread" },
+        el("h2", {}, "Project info"),
+        summary.project.role !== "reader"
+          ? button("Edit project", async () => {
+              const saved = await editProject(project, summary.project, actions);
+              if (!saved || disposed) return;
+              Object.assign(summary.project, saved);
+              title.textContent = saved.name;
+              description.textContent = saved.description || "No description.";
+              language.textContent = `Preferred language: ${saved.preferred_language || "No preference"}`;
+            })
+          : null,
       ),
+      el("p", {}, el("strong", {}, project)),
+      description,
+      language,
       el("p", {}, `Your role: ${summary.project.role}`),
       summary.project.archived ? el("p", {}, "Archived project") : null,
     ),
@@ -128,18 +146,25 @@ export async function projectSettings(project, { call, navigate, principal }) {
         owner ? button("Share project", () => share(), "primary") : null,
       ),
       members,
-      owner
-        ? null
-        : el(
-            "p",
-            { class: "muted" },
-            "Only the project owner can manage access.",
-          ),
+      owner ? null : el("p", { class: "muted" }, "Only the project owner can manage access."),
     ),
     el(
       "section",
       { class: "panel" },
-      el("h2", {}, "Computer bindings"),
+      el(
+        "div",
+        { class: "row spread" },
+        el("h2", {}, "Computer bindings"),
+        button("Add binding", async () => {
+          if (await addBinding(project, actions)) {
+            try {
+              show(await call("project_members", { project }));
+            } catch (error) {
+              notify(error);
+            }
+          }
+        }),
+      ),
       bindings,
     ),
   );

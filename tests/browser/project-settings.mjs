@@ -134,6 +134,7 @@ try {
       0,
     );
     assert.equal(await page.locator(".binding-row").count(), 3);
+    assert.equal(await page.getByRole("button", {name: "Edit project", exact: true}).count(), role === "reader" ? 0 : 1);
   }
   await page.getByRole("button", { name: "Table", exact: true }).click();
   await page.locator(".board-page").waitFor();
