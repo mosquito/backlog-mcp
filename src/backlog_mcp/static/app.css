@@ -1926,7 +1926,13 @@ main {
 .search-advanced p { font-size: 12px; margin-bottom: 0; }
 
 .search-help { margin-top: 10px; font-size: 13px; }
-.search-help summary { cursor: pointer; width: 28px; text-align: center; border: 1px solid var(--line); border-radius: 50%; }
+.search-help summary { cursor: pointer; display: inline-block; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; list-style: none; padding: 4px 0; }
+.search-help summary::-webkit-details-marker { display: none; }
+.search-help summary:hover { color: var(--text); }
+.search-help-content { max-height: 40dvh; overflow: auto; overscroll-behavior: contain; }
+.search-help-content table { font-size: 13px; }
+.search-help-content td, .search-help-content th { white-space: normal; overflow-wrap: anywhere; }
+.search-help-content code { white-space: normal; }
 .search-help p { color: var(--muted); line-height: 1.5; }
 
 .conflict-markdown { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }

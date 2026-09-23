@@ -133,7 +133,7 @@ export class MCP {
         const result = await this.send("initialize", {
           protocolVersion: this.version,
           capabilities: this.onElicit ? { elicitation: { form: {} } } : {},
-          clientInfo: { name: "backlog-web", version: "0.28.0" },
+          clientInfo: { name: "backlog-web", version: "0.28.1" },
         });
         if (!["2025-11-25", "2025-06-18", "2025-03-26"].includes(result.protocolVersion))
           throw new Error("Unsupported MCP protocol version.");
@@ -145,12 +145,12 @@ export class MCP {
       });
     return this.ready;
   }
-  async call(name, args = {}) {
+  async request(method, params = {}) {
     await this.initialize();
     let result;
     const previous = this.session;
     try {
-      result = await this.send("tools/call", { name, arguments: args });
+      result = await this.send(method, params);
     } catch (error) {
       if (!(error instanceof HttpError) || error.status !== 404) throw error;
       // A concurrent request may already have replaced the expired session.
@@ -159,8 +159,12 @@ export class MCP {
         this.ready = null;
       }
       await this.initialize();
-      result = await this.send("tools/call", { name, arguments: args });
+      result = await this.send(method, params);
     }
+    return result;
+  }
+  async call(name, args = {}) {
+    const result = await this.request("tools/call", { name, arguments: args });
     const text = (result.content || [])
       .filter((block) => block.type === "text")
       .map((block) => block.text)

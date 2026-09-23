@@ -5,10 +5,15 @@ const browser = await (process.env.BROWSER === "webkit" ? webkit : chromium).lau
 );
 const page = await browser.newPage();
 const calls = [];
-let release;
+let release,
+  helpFailure = true;
 try {
   await page.route("**/mcp", async (route) => {
     const rpc = route.request().postDataJSON();
+    if (rpc.method === "tools/list" && helpFailure) {
+      helpFailure = false;
+      return route.fulfill({ status: 503, body: "Unavailable" });
+    }
     if (rpc.method !== "tools/call") return route.continue();
     const { name, arguments: args } = rpc.params;
     let result;
@@ -48,16 +53,28 @@ try {
   assert.equal(calls.at(-1).limit, 15);
   assert.equal(calls.at(-1).min_score, 0.12);
   assert.equal(calls.at(-1).all_computers, true);
-  await page.getByLabel("Search syntax", { exact: true }).click();
-  assert.match(await page.locator(".search-help").innerText(), /FTS5 expressions/);
+  assert.equal(await page.locator(".search-help").getAttribute("open"), null);
+  await page.locator(".search-help summary").click();
+  await page
+    .locator(".search-help-content")
+    .getByText(/reopen query syntax to retry/)
+    .waitFor();
+  await page.locator(".search-help summary").click();
+  await page.locator(".search-help summary").click();
+  await page.locator(".search-help-content table").waitFor();
+  assert.match(await page.locator(".search-help").innerText(), /A star inside quotes/);
+  assert.doesNotMatch(await page.locator(".search-help").innerText(), /SQLite|FTS5/);
   if (process.env.SCREENSHOT_DIR) {
-    for (const width of [1280,390]) for (const colorScheme of ["light","dark"]) {
-      await page.setViewportSize({width,height:844});
-      await page.emulateMedia({colorScheme});
-      await page.screenshot({path:`${process.env.SCREENSHOT_DIR}/search-help-${width}-${colorScheme}.png`});
-    }
+    for (const width of [1280, 390])
+      for (const colorScheme of ["light", "dark"]) {
+        await page.setViewportSize({ width, height: 844 });
+        await page.emulateMedia({ colorScheme });
+        await page.screenshot({
+          path: `${process.env.SCREENSHOT_DIR}/search-help-${width}-${colorScheme}.png`,
+        });
+      }
   }
-  await page.getByLabel("Search syntax", { exact: true }).click();
+  await page.locator(".search-help summary").click();
   await page.locator(".search-advanced summary").click();
   async function change(id, value, select = false) {
     const control = page.locator(`#search-${id}`);

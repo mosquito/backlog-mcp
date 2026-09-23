@@ -92,3 +92,66 @@ async def test_literal_search_respects_project_and_principal(backlog: Backlog) -
         backlog.transaction,
     )
     assert result.count == 0
+
+
+async def test_documented_literal_examples(backlog: Backlog) -> None:
+    project, _ = await backlog.current()
+    connection = await backlog.open()
+    titles = [
+        "token",
+        "tokens",
+        "tokenizer",
+        "refresh token",
+        "refresh tokens",
+        "legacy token",
+        "password reset",
+        "token reset",
+        "say hello now",
+        "payload",
+    ]
+    for title in titles:
+        await mutate(
+            operations.add_task(
+                connection,
+                backlog.actor,
+                project_id=project.id,
+                title=title,
+                body="token" if title == "payload" else "",
+                tags=["web-ui"] if title == "payload" else [],
+            ),
+            backlog.transaction,
+        )
+    exact = {"token", "refresh token", "legacy token", "token reset", "payload"}
+    prefix = exact | {"tokens", "tokenizer", "refresh tokens"}
+    cases = {
+        '"token"': exact,
+        '"token*"': exact,
+        '"token"*': prefix,
+        '"refresh token"': {"refresh token"},
+        '"refresh token"*': {"refresh token", "refresh tokens"},
+        "fts: token*": prefix,
+        "fts: token refresh": {"refresh token"},
+        "fts: token AND refresh": {"refresh token"},
+        "fts: token OR password": exact | {"password reset"},
+        "fts: token NOT legacy": exact - {"legacy token"},
+        "fts: (token OR password) AND reset": {"token reset", "password reset"},
+        "fts: refresh + token": {"refresh token"},
+        "fts: NEAR(refresh token, 5)": {"refresh token"},
+        "fts: NEAR(refresh token)": {"refresh token"},
+        "fts: ^token": {"token", "token reset", "payload"},
+        "fts: title:token": exact - {"payload"},
+        "fts: title:(token OR password)": (exact - {"payload"}) | {"password reset"},
+        "fts: {title body}:token": exact,
+        "fts: -tags:token": exact,
+        'fts: tags:"web-ui"': {"payload"},
+        '"say ""hello"" now"': {"say hello now"},
+    }
+    for query, expected in cases.items():
+        assert f"`{query}`" in (operations.search.__doc__ or "")
+        found = await embeddings.search(
+            embeddings.Search(query=query, kinds=["tasks"]),
+            backlog,
+            connection,
+            backlog.transaction,
+        )
+        assert {task.title for task in found.tasks} == expected, query

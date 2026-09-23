@@ -1762,7 +1762,53 @@ async def search(
     whenever you are uncertain what to do or what conventions apply. Combines full-text prefix
     matching and multilingual semantic search (FTS matches first).
     Prefer targeted search over full listings. Read individual matches with `memory_get` or
-    `task_get` only when detail is needed."""
+    `task_get` only when detail is needed.
+
+    ## Query syntax
+
+    Plain text searches prefixes and related meanings. Start with a double quote or `fts:`
+    to disable semantic matches.
+
+    | Query | Finds |
+    | --- | --- |
+    | `token` | Word prefixes such as token, tokens, tokenizer, plus related meanings. |
+    | `"token"` | Only the word token, without prefixes or related meanings. |
+    | `"token*"` | Only the word token. A star inside quotes does not enable prefixes. |
+    | `"token"*` | Words starting with token, including tokens and tokenizer. |
+    | `"refresh token"` | The adjacent words refresh token, in this order. |
+    | `"refresh token"*` | The word refresh followed by a word starting with token. |
+    | `fts: token*` | Words starting with token, without related meanings. |
+    | `fts: token refresh` | Both words, anywhere in the same field set. |
+    | `fts: token AND refresh` | Both words, like the previous example. |
+    | `fts: token OR password` | Either word, or both. |
+    | `fts: token NOT legacy` | The word token, excluding records with legacy. |
+    | `fts: (token OR password) AND reset` | Either token or password, and also reset. |
+    | `fts: refresh + token` | The phrase refresh token, like quoted adjacent words. |
+    | `fts: NEAR(refresh token, 5)` | Both words, either order; at most five words between them. |
+    | `fts: NEAR(refresh token)` | The same proximity search with a default distance of ten words. |
+    | `fts: ^token` | A field starting with the word token. |
+    | `fts: title:token` | The word token in the title field. |
+    | `fts: title:(token OR password)` | Either word in the title field. |
+    | `fts: {title body}:token` | The word token in title or body. |
+    | `fts: -tags:token` | The word token in fields other than tags. |
+    | `fts: tags:"web-ui"` | The adjacent words web ui in tags; punctuation is a separator. |
+    | `"say ""hello"" now"` | The phrase say hello now. Double an inner quote to escape it. |
+
+    **Fields:** Tasks and Memory support `title`, `body`, `tags`; Comments support `body`;
+    Projects support `slug`, `name`, `description`. Select compatible content types before
+    using a field filter. An unknown field or incomplete expression produces an error.
+
+    Words are case-insensitive; punctuation separates words. Quotes match words, not an entire
+    field or punctuation. Use uppercase `AND`, `OR`, `NOT`, and `NEAR`.
+    Use parentheses to make grouping explicit.
+    A trailing star outside quotes is a word-prefix operator; leading and middle wildcards
+    are not supported. To match punctuation-containing text, put it in double quotes.
+
+    **Filters:** Use the Tag filter (`tag` in MCP) for an exact tag, such as `web-ui`.
+    Choose content types with `kinds`, task statuses with `status`, and scope with `project`,
+    `all_projects`, `computer`, or `all_computers`. `limit` is 1–200 results per content type.
+    `min_score` is -1–1 and filters semantic matches only; quoted and `fts:` queries ignore it.
+    """
     return await embeddings.search(args, backlog, connection, transaction)
 
 

@@ -943,6 +943,30 @@ async function detail(task) {
   return panel;
 }
 const dialog = document.querySelector("#search-dialog");
+const syntaxHelp = dialog.querySelector(".search-help");
+const syntaxContent = dialog.querySelector(".search-help-content");
+let syntaxClient;
+syntaxHelp.addEventListener("toggle", async () => {
+  if (!syntaxHelp.open || !client || syntaxClient === client) return;
+  const source = client;
+  syntaxContent.replaceChildren(el("p", {}, "Loading query syntax…"));
+  try {
+    let cursor, description;
+    do {
+      const page = await source.request("tools/list", cursor ? { cursor } : {});
+      description = page.tools.find(tool => tool.name === "search")?.description;
+      cursor = page.nextCursor;
+    } while (!description && cursor);
+    const marker = "## Query syntax";
+    const start = description?.indexOf(marker) ?? -1;
+    if (start < 0) throw new Error("The server does not provide query syntax help.");
+    if (source !== client) return;
+    syntaxContent.replaceChildren(markdown(description.slice(start + marker.length).trim()));
+    syntaxClient = source;
+  } catch (error) {
+    if (source === client) syntaxContent.replaceChildren(el("p", {}, `${error.message} Close and reopen query syntax to retry.`));
+  }
+});
 const searchKinds = [...dialog.querySelectorAll('[name="search-kind"]')];
 const searchLabels = {
   tasks: "Tasks",
@@ -972,6 +996,7 @@ function searchPlaceholder() {
 }
 function openSearch() {
   if (!identity) return;
+  syntaxHelp.open = false;
   let saved;
   try {
     saved = JSON.parse(localStorage.getItem(searchPreferenceKey()));
