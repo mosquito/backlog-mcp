@@ -706,6 +706,13 @@ async function detail(task) {
   return panel;
 }
 const dialog = document.querySelector("#search-dialog");
+const searchKinds = [...dialog.querySelectorAll('[name="search-kind"]')];
+const searchLabels = {
+  tasks: "Tasks",
+  comments: "Comments",
+  memory: "Memory",
+  projects: "Projects",
+};
 const query = document.querySelector("#search-query"),
   all = document.querySelector("#search-all"),
   results = document.querySelector("#search-results");
@@ -741,8 +748,12 @@ function searchState(text, loading = false) {
 function scheduleSearch() {
   searchGeneration++;
   clearTimeout(searchTimer);
+  if (!searchKinds.some((input) => input.checked)) {
+    searchState("Select at least one content type to search.");
+    return;
+  }
   if (!query.value.trim()) {
-    searchState("Start typing to find tasks and comments.");
+    searchState("Start typing to search the selected content.");
     return;
   }
   searchState("Searching…", true);
@@ -756,6 +767,7 @@ all.onchange = () => {
   clearTimeout(searchTimer);
   search();
 };
+for (const input of searchKinds) input.onchange = all.onchange;
 dialog.addEventListener("close", () => {
   searchGeneration++;
   clearTimeout(searchTimer);
@@ -765,22 +777,27 @@ dialog.addEventListener("close", () => {
 });
 async function search() {
   const current = ++searchGeneration;
+  const kinds = searchKinds.filter((input) => input.checked).map((input) => input.value);
+  if (!kinds.length) {
+    searchState("Select at least one content type to search.");
+    return;
+  }
   if (!query.value.trim()) {
-    searchState("Start typing to find tasks and comments.");
+    searchState("Start typing to search the selected content.");
     return;
   }
   searchState("Searching…", true);
   try {
-    const args = { query: query.value, kinds: ["tasks", "comments"], limit: 15, min_score: 0.12 };
+    const args = { query: query.value, kinds, limit: 15, min_score: 0.12 };
     if (project) args.project = project;
     if (all.checked || !project) args.all_computers = true;
     const found = await call("search", args);
     if (current !== searchGeneration || !identity || !dialog.open) return;
     query.setAttribute("aria-busy", "false");
     results.replaceChildren();
-    for (const kind of ["tasks", "comments"]) {
+    for (const kind of kinds) {
       if (!found[kind].length) continue;
-      results.append(el("h3", { role: "presentation" }, kind === "tasks" ? "Tasks" : "Comments"));
+      results.append(el("h3", { role: "presentation" }, searchLabels[kind]));
       for (const item of found[kind])
         results.append(
           el(
@@ -790,20 +807,31 @@ async function search() {
               id: `search-${kind}-${item.id}`,
               role: "option",
               "aria-selected": "false",
-              href: taskRoute(item.task_id || item.id),
+              href:
+                kind === "memory"
+                  ? memoryRoute(item.project, new URLSearchParams({ note: item.id }))
+                  : kind === "projects"
+                    ? projectRoute(item.full_name)
+                    : taskRoute(item.task_id || item.id),
               onclick: () => dialog.close(),
             },
             el(
               "strong",
               {},
-              kind === "tasks" ? `#${item.id} ${item.title}` : `Comment on #${item.task_id}`,
+              kind === "tasks"
+                ? `#${item.id} ${item.title}`
+                : kind === "comments"
+                  ? `Comment on #${item.task_id}`
+                  : item.title || item.name,
             ),
             el(
               "small",
               { class: "search-meta" },
-              [item.project, item.status].filter(Boolean).join(" · "),
+              [item.project || item.full_name, item.status, item.shared ? "Shared" : ""]
+                .filter(Boolean)
+                .join(" · "),
             ),
-            el("small", {}, (item.snippet || item.body || "").slice(0, 220)),
+            el("small", {}, (item.snippet || item.body || item.description || "").slice(0, 220)),
           ),
         );
     }

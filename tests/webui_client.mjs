@@ -150,7 +150,7 @@ test("editing sends only changed fields", () => {
   assert.deepEqual(changed(base, { ...base, tags: [] }), { tags: [] });
 });
 
-test("memory uses query IDs while fragments still identify tasks", () => {
+test("memory and tasks use distinct short identifiers", () => {
   const target = route(
     memoryRoute("alice/repo", new URLSearchParams({ note: "17", offset: "25", shared: "true" })),
   );
@@ -159,8 +159,14 @@ test("memory uses query IDs while fragments still identify tasks", () => {
   assert.equal(target.project, "alice/repo");
   assert.equal(target.params.get("offset"), "25");
   assert.equal(target.params.get("shared"), "true");
+  assert.equal(target.params.has("note"), false);
+  assert.equal(route("/ui/#note17").id, 17);
+  assert.equal(route("/ui/#note17").kind, "memory");
+  assert.equal(route("/ui/?view=memory&note=17").redirect, "/ui/?view=memory#note17");
   assert.equal(route(memoryRoute()).project, "");
   assert.equal(route("/ui/?view=memory#42").kind, "task");
-  for (const note of ["0", "-1", "abc", "9007199254740992"])
+  for (const note of ["0", "-1", "abc", "9007199254740992"]) {
     assert.equal(route(`/ui/?view=memory&note=${note}`).kind, "missing");
+    assert.equal(route(`/ui/#note${note}`).kind, "missing");
+  }
 });

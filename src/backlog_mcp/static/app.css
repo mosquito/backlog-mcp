@@ -1045,6 +1045,23 @@ button.destructive {
   font-weight: 600;
   cursor: pointer;
 }
+.search-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  border: 0;
+  padding: 0;
+  margin: 1rem 0 0.75rem;
+  min-width: 0;
+}
+.search-kinds legend {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 0.5rem;
+}
+.search-kinds .inline {
+  margin: 0;
+}
 #search-dialog > .inline {
   margin-top: 16px;
 }

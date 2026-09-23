@@ -25,12 +25,15 @@ export const projectRoute = (project, filters = new URLSearchParams()) => {
   return "/ui/?" + params;
 };
 export const taskRoute = (id, edit = false) => `/ui/${edit ? "?view=edit" : ""}#${id}`;
+export const noteRoute = (id) => `/ui/#note${id}`;
 export function memoryRoute(project = "", filters = new URLSearchParams()) {
   const params = new URLSearchParams(filters);
+  const note = params.get("note");
+  params.delete("note");
   params.set("view", "memory");
   if (project) params.set("project", project);
   else params.delete("project");
-  return "/ui/?" + params;
+  return "/ui/?" + params + (note ? `#note${note}` : "");
 }
 export function route(href = location.href) {
   const url = new URL(href, "https://backlog.invalid/ui/");
@@ -60,6 +63,9 @@ export function route(href = location.href) {
     }
     if (path === "/") return { redirect: "/ui/" + (old.size ? "?" + old : "") };
   }
+  const memory = url.hash.match(/^#note([1-9]\d*)$/);
+  if (memory && Number.isSafeInteger(Number(memory[1])))
+    return { kind: "memory", project: params.get("project") || "", id: Number(memory[1]), params };
   const task = url.hash.match(/^#([1-9]\d*)$/);
   if (task && Number.isSafeInteger(Number(task[1])))
     return { kind: params.get("view") === "edit" ? "edit" : "task", id: Number(task[1]), params };
@@ -68,6 +74,7 @@ export function route(href = location.href) {
     const note = params.get("note");
     if (note !== null && (!/^[1-9]\d*$/.test(note) || !Number.isSafeInteger(Number(note))))
       return { kind: "missing", params };
+    if (note) return { redirect: memoryRoute(params.get("project") || "", params) };
     return {
       kind: "memory",
       project: params.get("project") || "",

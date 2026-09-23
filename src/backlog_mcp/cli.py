@@ -1835,7 +1835,7 @@ class CLI(argclass.Parser):
             "implementation details or documentation summaries. `memory add` creates a note "
             "or replaces the one with that title, `memory append` adds a paragraph, and `backlog "
             "search` finds notes as well as tasks. A note has an id for good, so a task body "
-            "can say `note #3`."
+            "can say `#note3`."
         ),
     )
     skills = Skills(

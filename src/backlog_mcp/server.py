@@ -234,7 +234,9 @@ Save useful new context proactively as soon as the user supplies it. Do not wait
 to remember it or for the session to end. Search first, then update an existing note or create \
 one short note per topic. Use `memory_save` to replace outdated context and `memory_append` for \
 related facts. A supplied body replaces the whole body. Omit guesses, duplicates, and secrets. \
-Shared notes are visible across projects. Link notes by stable id, such as `note #3`.
+Shared notes are visible across projects. Use `#note{ID}` as the short identifier for a memory
+note (for example, `#note3`), and `#{ID}` for a task (for example, `#42`). The Web UI opens
+these identifiers as URL fragments: `/ui/#note3` and `/ui/#42`. Pass numeric IDs to MCP tools.
 
 Reach. `task_list`, `memory_list`, `search` and `stats` stay inside one project, cover every \
 project of this computer with `all_projects=true`, every project of another computer with \

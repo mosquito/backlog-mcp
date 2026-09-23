@@ -390,7 +390,7 @@ constraints, corrections, and reasons for decisions as they arise. Search first,
 existing note or create one short note per topic. Omit guesses and duplicates.
 
 A note body holds at most 1,024 characters, including appended paragraphs.
-A note has a Markdown body, tags and a stable id, so a task body can say `see note #3`. One title per project: saving the same title again replaces the
+A note has a Markdown body, tags and a stable id, so a task body can say `see #note3`. One title per project: saving the same title again replaces the
 body. `--shared` makes a note visible from every project. Notes are in the search index with the
 tasks. Never write a secret into a note, only where the secret lives.
 
@@ -524,8 +524,10 @@ to reload it; changes from other clients do not appear automatically.
 Use **Memory** in the header to browse notes for the current project or all
 accessible projects. Filter by tag or shared status, page through the list, and
 open a note to read its Markdown content, source project, tags, and author dates.
-The Memory view is read-only. Links use `?view=memory&note=123`; `#123` still
+The Memory view is read-only. Links use `#note123`; `#123` still
 identifies a task.
+Cmd+K searches tasks, comments, memory, and projects. Use the checkboxes below
+the query to select content types; the All projects checkbox controls the scope.
 
 Sign in with Basic credentials or a Bearer token supported by the server.
 Credentials stay in `sessionStorage` unless you select Remember me, which uses
