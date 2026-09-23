@@ -324,6 +324,15 @@ function linkNode(p) {
     ),
   );
 }
+function boardSection(title, data = { count: 0, items: [] }, explanation) {
+  return el("details", { class: "board-summary" },
+    el("summary", {}, `${title} (${data.count})`),
+    el("p", { class: "muted" }, explanation),
+    el("p", { class: "muted" }, `${data.items.length} of ${data.count} shown`),
+    data.items.length ? el("ul", {}, ...data.items.map(task =>
+      el("li", {}, link(`#${task.id} ${task.title}`, taskRoute(task.id)),
+        ` · ${task.status} · ${task.priority}`))) : el("p", {}, "No tasks."));
+}
 async function board(target) {
   const params = target.params;
   const viewKey = `backlog:board-view:${endpoint}:${identity.principal}`;
@@ -428,6 +437,9 @@ async function board(target) {
       `${summary.tasks.open} open · ${summary.tasks.done} done · ${summary.tasks.total} total · `,
       link(`Deleted (${summary.tasks.deleted || 0})`, projectRoute(target.project, deletedParams)),
     ),
+    el("div", { class: "board-summaries" },
+      boardSection("Ready", summary.ready, "Unassigned todo/doing tasks with no unfinished direct dependencies. Up to 10 tasks are listed."),
+      boardSection("My active tasks", summary.claimed, `Open tasks assigned to ${identity.principal}, across all markers. Up to 10 tasks are listed.`)),
     el(
       "form",
       {

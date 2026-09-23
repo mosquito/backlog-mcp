@@ -1879,3 +1879,8 @@ main {
 }
 
 .assignment-label { overflow-wrap: anywhere; font-family: monospace; }
+
+.board-summaries { display: flex; gap: 12px; flex-wrap: wrap; margin: 12px 0; }
+.board-summary { flex: 1 1 260px; min-width: 0; padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px; }
+.board-summary summary { cursor: pointer; font-weight: 600; }
+.board-summary li { margin: 8px 0; overflow-wrap: anywhere; }
