@@ -108,13 +108,20 @@ note, which is one piece of lasting context from the user that persists across s
 `whoami` reports `principal` as `user@computer`, auth type and owner handle without a project.
 
 Agent workflow:
-1. Check project registration first. At session start or when changing projects or directories,
-use `whoami` and `project_list` to compare the principal and project roots with the local
-workspace. Use `all_computers=true` to find an existing logical project on another computer.
-For HTTP connections, the server cwd is not the local cwd. If the local binding is missing
-or wrong, call `project_save(project=<existing full_name>, root=<absolute local project root>)`.
+1. Check project registration first. The simplest way to find a project is to read its board
+by absolute local path. At session start or when changing projects or directories, first call
+`project_board(project=<absolute local project path>)`. Compare the returned principal
+(`user@computer`) and project roots with the actual local workspace.
+For HTTP connections, the server cwd is not the local cwd. If the binding matches, use the
+returned `full_name` for subsequent calls. No `project_list` or `project_save` call is needed.
+If the project is not found or the binding is wrong, use `project_list`; use
+`all_computers=true` to find an existing logical project on another computer.
+Use `whoami` when the authenticated principal needs clarification. If the local binding is
+missing or wrong, call
+`project_save(project=<existing full_name>, root=<absolute local project root>)`.
 Create a project only if no matching logical project exists. Leave correct bindings unchanged.
-Read `project_board(project=<full_name>)` for project context, counts and ready/claimed tasks.
+Complete this check before searching context, managing tasks or investigating code.
+The board provides project context, counts and ready/claimed tasks.
 Registration and reading a board do not select a project for an unscoped HTTP connection;
 pass `project=` explicitly when needed.
 
@@ -283,8 +290,8 @@ reviews the open backlog.
 #: The backlog the handlers work on. A context variable, so tests can run several at once.
 ACTIVE: ContextVar[Backlog] = ContextVar("backlog")
 
-# Keep tool catalog pages below the default stdio reader's 64 KiB frame limit.
-registry = Registry("backlog", VERSION, instructions=INSTRUCTIONS, page_size=20)
+# Return the whole catalogue for clients that do not follow nextCursor.
+registry = Registry("backlog", VERSION, instructions=INSTRUCTIONS)
 
 
 async def active(ex: Exchange) -> Backlog:
