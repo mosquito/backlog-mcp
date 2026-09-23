@@ -12,8 +12,7 @@ export async function memoryPage(target, actions) {
     const note = target.id ? await call("memory_get", { id: target.id }) : null;
     return memoryEditor(note?.project || target.project, projects.items, actions, note);
   }
-  const requestedOffset = Number(params.get("offset"));
-  const offset = Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? requestedOffset : 0;
+  const offset = 0;
   const limit = 25;
   const args = { limit, offset };
   if (target.project) args.project = target.project;
@@ -76,35 +75,36 @@ export async function memoryPage(target, actions) {
       }),
     );
   };
+  function noteItem(note) {
+    const item = link("", change({ note: note.id }), "memory-item");
+    item.onclick = (event) => {
+      if (
+        event.button === 0 &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey
+      )
+        window.scrollTo(0, 0);
+    };
+    if (note.id === target.id) item.setAttribute("aria-current", "page");
+    item.append(
+      el(
+        "div",
+        { class: "memory-item-meta" },
+        `Note ${note.id}`,
+        ...(note.shared ? [el("span", { class: "tag" }, "Shared")] : []),
+      ),
+      el("strong", {}, note.title),
+      el("p", {}, note.snippet || "No preview available."),
+      el("small", {}, note.project),
+    );
+    return item;
+  }
   const list = el(
     "nav",
     { class: "memory-list", "aria-label": "Memory notes" },
-    ...notes.items.map((note) => {
-      const item = link("", change({ note: note.id }), "memory-item");
-      item.onclick = (event) => {
-        if (
-          event.button === 0 &&
-          !event.metaKey &&
-          !event.ctrlKey &&
-          !event.shiftKey &&
-          !event.altKey
-        )
-          window.scrollTo(0, 0);
-      };
-      if (note.id === target.id) item.setAttribute("aria-current", "page");
-      item.append(
-        el(
-          "div",
-          { class: "memory-item-meta" },
-          `Note ${note.id}`,
-          ...(note.shared ? [el("span", { class: "tag" }, "Shared")] : []),
-        ),
-        el("strong", {}, note.title),
-        el("p", {}, note.snippet || "No preview available."),
-        el("small", {}, note.project),
-      );
-      return item;
-    }),
+    ...notes.items.map(noteItem),
   );
   if (!notes.items.length)
     list.append(
@@ -115,25 +115,61 @@ export async function memoryPage(target, actions) {
         el("p", { class: "muted" }, "Choose another project or change the filters."),
       ),
     );
-  const previous = button("Previous", () =>
-    navigate(change({ offset: Math.max(0, offset - limit), note: null })),
+  let nextOffset = notes.items.length;
+  let total = notes.count;
+  let loading = false;
+  let disposed = false;
+  const seen = new Set(notes.items.map((note) => note.id));
+  const sentinel = el("div", { class: "memory-pagination", role: "status", "aria-live": "polite" });
+  const observer = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadMore();
+    },
+    { rootMargin: "200px" },
   );
-  previous.disabled = offset === 0;
-  const next = button("Next", () => navigate(change({ offset: offset + limit, note: null })));
-  next.disabled = offset + notes.items.length >= notes.count;
-  const pagination = el(
-    "div",
-    { class: "memory-pagination" },
-    previous,
-    el(
-      "span",
-      { class: "muted" },
-      notes.items.length
-        ? `${offset + 1}–${offset + notes.items.length} of ${notes.count}`
-        : `0 of ${notes.count}`,
-    ),
-    next,
-  );
+  function state() {
+    sentinel.replaceChildren(
+      el(
+        "span",
+        { class: "muted" },
+        nextOffset < total
+          ? `${seen.size} of ${total} notes · Scroll for more`
+          : `${seen.size} notes · All loaded`,
+      ),
+    );
+  }
+  async function loadMore() {
+    if (loading || disposed || nextOffset >= total || !list.isConnected) return;
+    loading = true;
+    list.setAttribute("aria-busy", "true");
+    observer.unobserve(sentinel);
+    sentinel.replaceChildren(el("span", {}, "Loading more notes…"));
+    try {
+      const page = await call("memory_list", { ...args, offset: nextOffset });
+      if (disposed || !list.isConnected) return;
+      nextOffset += page.items.length;
+      total = page.count;
+      for (const note of page.items) {
+        if (seen.has(note.id)) continue;
+        seen.add(note.id);
+        list.insertBefore(noteItem(note), sentinel);
+      }
+      if (!page.items.length) total = nextOffset;
+      state();
+      if (nextOffset < total) observer.observe(sentinel);
+    } catch (error) {
+      if (!disposed && list.isConnected)
+        sentinel.replaceChildren(
+          el("span", { class: "error" }, `Could not load more notes: ${error.message}`),
+          button("Retry", loadMore),
+        );
+    } finally {
+      loading = false;
+      list.removeAttribute("aria-busy");
+    }
+  }
+  state();
+  list.append(sentinel);
   const detail = el("article", { class: "panel memory-detail" });
   if (target.id) {
     try {
@@ -193,7 +229,7 @@ export async function memoryPage(target, actions) {
         el("p", { class: "muted" }, "Read project context, decisions, and shared agreements."),
       ),
     );
-  return el(
+  const page = el(
     "section",
     { class: `memory-page${target.id ? " has-selection" : ""}` },
     el("div", { class: "eyebrow" }, "Knowledge"),
@@ -222,11 +258,14 @@ export async function memoryPage(target, actions) {
       `${notes.count} notes · ${target.project || "All accessible projects"}`,
     ),
     filters,
-    el(
-      "div",
-      { class: "memory-layout" },
-      el("aside", { class: "memory-sidebar" }, list, pagination),
-      detail,
-    ),
+    el("div", { class: "memory-layout" }, el("aside", { class: "memory-sidebar" }, list), detail),
   );
+  page.mount = () => {
+    if (nextOffset < total) observer.observe(sentinel);
+  };
+  page.dispose = () => {
+    disposed = true;
+    observer.disconnect();
+  };
+  return page;
 }

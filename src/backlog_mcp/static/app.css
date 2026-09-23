@@ -1507,6 +1507,8 @@ button,
 }
 .memory-pagination {
   display: flex;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
   gap: 8px;
   align-items: center;
   justify-content: space-between;

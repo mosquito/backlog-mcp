@@ -101,6 +101,7 @@ async function connect(authorization = credentials()) {
   await render();
 }
 function showLogin(error, reportError = true) {
+  content.firstElementChild?.dispose?.();
   document.querySelector("#principal").textContent = "";
   document.querySelector("#logout").hidden = true;
   document.querySelector("#memory-open").hidden = true;
@@ -186,6 +187,7 @@ async function render() {
   if (!identity) return;
   const current = ++generation;
   let selectedProject = "";
+  content.firstElementChild?.dispose?.();
   content.replaceChildren(el("p", { class: "muted" }, "Loading…"));
   try {
     let page;
@@ -207,9 +209,13 @@ async function render() {
       if (!selectedProject) throw new Error("Choose a project before creating a task.");
       page = editor(task, selectedProject, actions);
     } else page = el("div", {}, el("h1", {}, "Page not found"), link("Back to projects", "/ui/"));
-    if (current !== generation || !identity) return;
+    if (current !== generation || !identity) {
+      page.dispose?.();
+      return;
+    }
     project = selectedProject;
     content.replaceChildren(page);
+    page.mount?.();
     document.querySelector("#project-name").textContent = project;
     document.querySelector("#memory-open").href = memoryRoute(project);
     if (target.kind === "memory")

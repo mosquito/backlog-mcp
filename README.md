@@ -523,7 +523,7 @@ up to 500 open tasks and the 50 most recently changed completed tasks. Use Refre
 to reload it; changes from other clients do not appear automatically.
 
 Use **Memory** in the header to browse notes for the current project or all
-accessible projects. Filter by tag or shared status, page through the list, and
+accessible projects. Filter by tag or shared status, scroll to load more notes, and
 open a note to read its Markdown content, source project, tags, and author dates.
 Use **Add note** to create memory or **Edit note** on a note you can edit.
 The form saves drafts in this browser, supports Markdown preview, and limits content
