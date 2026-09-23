@@ -1,10 +1,13 @@
 """The browser subapplication is public while MCP remains authenticated."""
 
+import re
+
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import application
+from backlog_mcp.webui import STATIC
 
 
 @pytest.mark.parametrize("console", [False, True])
@@ -72,10 +75,44 @@ async def test_index_supports_head_and_conditional_requests(backlog: Backlog) ->
             assert response.content_type == "text/html"
             body = await response.read()
             etag = response.headers["ETag"]
+            links = response.headers["Link"]
             head = await client.head(path)
             assert head.status == 200
+            assert head.headers["Link"] == links
             assert head.content_length == len(body)
             assert await head.read() == b""
             cached = await client.get(path, headers={"If-None-Match": etag})
             assert cached.status == 304
+            assert cached.headers["Link"] == links
             assert await cached.read() == b""
+
+
+async def test_index_preloads_eager_assets(backlog: Backlog) -> None:
+    async with TestClient(TestServer(application(backlog, console=False))) as client:
+        response = await client.get("/ui/")
+        hints = dict(re.findall(r"</ui/static/([^>]+)>; ([^,]+)", response.headers["Link"]))
+        pending = ["app.js"]
+        modules = set()
+        while pending:
+            name = pending.pop()
+            if name in modules:
+                continue
+            modules.add(name)
+            source = (STATIC / name).read_text()
+            for dependency in re.findall(
+                r"import\s+(?:[^;]*?\s+from\s+)?[\"\'](\./[^\"\']+)", source
+            ):
+                pending.append(str((STATIC / name).parent.joinpath(dependency).relative_to(STATIC)))
+        assert {name for name, hint in hints.items() if hint == "rel=modulepreload"} == modules
+        for name in ("app.css", "markdown.css"):
+            assert hints[name] == "rel=preload; as=style"
+        assert hints["vendor/highlight.min.js"] == "rel=preload; as=script"
+        for theme in ("light", "dark"):
+            assert (
+                f'media="(prefers-color-scheme: {theme})"' in hints[f"vendor/highlight-{theme}.css"]
+            )
+        assert "vendor/mermaid.min.js" not in hints
+        for name in hints:
+            asset = await client.get("/ui/static/" + name)
+            assert asset.status == 200
+            assert await asset.read()
