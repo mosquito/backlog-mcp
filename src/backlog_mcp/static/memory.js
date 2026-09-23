@@ -1,4 +1,4 @@
-import { el, button, link, field, select, date, projectRoute, memoryRoute } from "./dom.js";
+import { el, button, link, field, select, date, projectRoute, memoryRoute, modal } from "./dom.js";
 import { memoryEditor } from "./memory-editor.js";
 
 export async function memoryPage(target, actions) {
@@ -164,6 +164,32 @@ export async function memoryPage(target, actions) {
   if (target.id) {
     try {
       const note = await call("memory_get", { id: target.id });
+      const canEdit = projects.items.some(
+        (p) => p.full_name === note.project && ["owner", "editor"].includes(p.role),
+      );
+      const remove = button(
+        "Delete note",
+        async () => {
+          const confirmed = await modal({
+            title: "Delete note?",
+            description: `${note.title} — ${note.project}`,
+            content: [el("p", {}, "This permanently deletes the note.")],
+            action: "Delete note",
+            danger: true,
+          });
+          if (!confirmed) return;
+          remove.disabled = true;
+          try {
+            const result = await call("memory_delete", { id: note.id });
+            if (result.deleted) navigate(change({ note: null }));
+          } catch (error) {
+            actions.notify(error);
+          } finally {
+            remove.disabled = false;
+          }
+        },
+        "destructive",
+      );
       detail.append(
         link("← Back to notes", change({ note: null }), "memory-back"),
         el("div", { class: "eyebrow" }, `Memory · ${note.id}`),
@@ -171,15 +197,14 @@ export async function memoryPage(target, actions) {
           "div",
           { class: "row spread memory-title" },
           el("h2", {}, note.title),
-          projects.items.some(
-            (p) => p.full_name === note.project && ["owner", "editor"].includes(p.role),
-          )
+          canEdit
             ? link(
                 "Edit note",
                 memoryRoute(note.project, new URLSearchParams({ note: note.id, edit: "true" })),
                 "button",
               )
             : null,
+          canEdit ? remove : null,
         ),
         el(
           "div",
