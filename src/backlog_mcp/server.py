@@ -15,7 +15,6 @@ import aiosqlite
 from aiohttp_tiny_mcp import Authentication, Exchange, Extension, Hint, NeedInput, Registry, elicit
 from aiohttp_tiny_mcp.protocol.models import CompleteParams, TextResourceContents
 from aiohttp_tiny_mcp.storage.hub import NOTIFICATIONS, topic
-from aiohttp_tiny_mcp.storage.sqlite import SqliteHub, SqliteSessionStore, SqliteStorage
 from pydantic import BaseModel, Field, field_serializer
 
 from . import embeddings, skills
@@ -78,6 +77,7 @@ from .models import (
     relation,
 )
 from .names import owner_name, principal_label, principal_user
+from .protocol_storage import ProtocolHub, ProtocolSessions, ProtocolStorage
 from .queries import QUERIES
 from .records import (
     NOTE_LIMIT,
@@ -348,15 +348,15 @@ ACTIVE_REGISTRY: ContextVar[Registry] = ContextVar("backlog_registry", default=r
 
 def persistent_registry(
     backlog: Backlog, policies: Sequence[Authentication] = ()
-) -> tuple[Registry, SqliteStorage]:
+) -> tuple[Registry, ProtocolStorage]:
     """Use the application database for protocol sessions and notification events."""
-    storage = SqliteStorage(backlog.database.path)
+    storage = ProtocolStorage(backlog)
     configured = Registry(
         "backlog",
         VERSION,
         instructions=registry.instructions,
-        hub=SqliteHub(storage),
-        session_store=SqliteSessionStore(storage),
+        hub=ProtocolHub(storage),
+        session_store=ProtocolSessions(storage),
         auth=policies or None,
         page_size=registry.page_size,
     )

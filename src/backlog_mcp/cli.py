@@ -490,6 +490,7 @@ class Serve(Command):
         finally:
             ACTIVE_REGISTRY.reset(token)
             await storage.close()
+            await backlog.close()
         return 0
 
     async def __call__(self) -> int:
