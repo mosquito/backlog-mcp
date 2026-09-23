@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
@@ -74,7 +75,27 @@ def bind(backlog: Backlog, configured: Registry | None = None) -> Middleware:
                 ACTIVE_REGISTRY.set(configured)
         except ValueError as error:
             raise web.HTTPBadRequest(text=str(error)) from error
-        return await handler(request)
+        response = await handler(request)
+        if request.method == "GET" and response.status == 404:
+            missing_session = False
+            if isinstance(response, web.Response) and response.content_type == "application/json":
+                try:
+                    payload = json.loads(response.text or "{}")
+                except ValueError:
+                    payload = None
+                if isinstance(payload, dict):
+                    rpc_error = payload.get("error")
+                    missing_session = (
+                        isinstance(rpc_error, dict) and rpc_error.get("code") == -32001
+                    )
+            if missing_session:
+                log.warning(
+                    "MCP GET rejected: session not found or owned by another principal; "
+                    "the client must initialize a new session"
+                )
+            else:
+                log.warning("MCP GET returned 404 without a session-not-found error")
+        return response
 
     return middleware
 

@@ -183,6 +183,49 @@ async def test_console_can_be_disabled(backlog: Backlog) -> None:
         assert response.status == 404
 
 
+async def test_get_notification_stream_survives_restart(
+    backlog: Backlog, caplog: pytest.LogCaptureFixture
+) -> None:
+    headers = {
+        "Authorization": encode_basic_auth("user", "secret"),
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-11-25",
+    }
+    async with ClientSession(headers=headers) as client:
+        async with TestServer(application(backlog, basic=["user:secret"])) as server:
+            url = server.make_url("/mcp?computer=laptop")
+            async with client.post(
+                url,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "get-regression", "version": "1"},
+                    },
+                },
+            ) as response:
+                assert response.status == 200
+                await response.read()
+                session = {"Mcp-Session-Id": response.headers["Mcp-Session-Id"]}
+            async with client.get(url, headers=session) as response:
+                assert response.status == 200
+                assert response.content_type == "text/event-stream"
+
+        async with TestServer(application(backlog, basic=["user:secret"])) as server:
+            url = server.make_url("/mcp?computer=laptop")
+            async with client.get(url, headers=session) as response:
+                assert response.status == 200
+                assert response.content_type == "text/event-stream"
+            async with client.get(url, headers={"Mcp-Session-Id": "missing"}) as response:
+                assert response.status == 404
+                assert (await response.json())["error"]["message"] == "session not found"
+            assert "MCP GET rejected: session not found" in caplog.text
+            assert session["Mcp-Session-Id"] not in caplog.text
+
+
 async def test_http_binding_uses_application_backlog(backlog: Backlog) -> None:
     app = application(backlog, console=False)
     unrelated = Backlog(backlog.database, project="not-registered")
