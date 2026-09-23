@@ -75,15 +75,15 @@ wheels = [
 
 [[package]]
 name = "aiohttp-tiny-mcp"
-version = "0.5.2"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1e/23/c282e2031d88a12cdc78c7a740e1495c9388026615f55545ae7539117f2c/aiohttp_tiny_mcp-0.5.2.tar.gz", hash = "sha256:5a7998954fcea5a4ef5f3e7af63bd70d6d6f9d1bb38de35f731d026027feb887", size = 123595, upload-time = "2026-09-23T07:40:13.691Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/4d/bfbcbafbc72320085d38cd1db2fd2ab96c47d396a86b6bef85ea89c245cf/aiohttp_tiny_mcp-0.5.4.tar.gz", hash = "sha256:3150ab7c3c6f8fa3bbd12a17871215b61a3a4c3eace31387cc05fa624f56312e", size = 123705, upload-time = "2026-09-23T08:18:20.555Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/10/7affc0375ff68a9bf4cc46d6ca2645924c066240b8d4347ac05add7f7b02/aiohttp_tiny_mcp-0.5.2-py3-none-any.whl", hash = "sha256:6765d87952a960c19e1e35e232dea0cc164c6b0f6f41931dbd19940173e60913", size = 153178, upload-time = "2026-09-23T07:40:12.228Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/a7/7e87037878827ebfc59f1e1fdb8e277092c2c5976a021d68c2263ae69cf6/aiohttp_tiny_mcp-0.5.4-py3-none-any.whl", hash = "sha256:e2e03747f4d696a553ecb535e48439c083029c6c42a029c82f1805cb114449ac", size = 153310, upload-time = "2026-09-23T08:18:19.216Z" },
 ]
 
 [package.optional-dependencies]
@@ -252,7 +252,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp-tiny-mcp", extras = ["jwt"], specifier = "~=0.5.0" },
+    { name = "aiohttp-tiny-mcp", extras = ["jwt"], specifier = "~=0.5.3" },
     { name = "aiosql", specifier = ">=15.0" },
     { name = "aiosqlite", specifier = ">=0.21.0" },
     { name = "argclass", specifier = ">=1.11.0" },
