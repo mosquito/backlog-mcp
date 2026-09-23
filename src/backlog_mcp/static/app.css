@@ -1,4 +1,5 @@
 :root {
+  scroll-padding-top: 110px;
   font-family:
     Inter,
     ui-sans-serif,
@@ -869,4 +870,240 @@ dialog > button + button {
     --dialog-shadow: #00000060;
     --backdrop: #00000090;
   }
+}
+
+/* Discussion and dialogs share the same reading width and action hierarchy. */
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+.section-heading h2 {
+  margin: 0;
+}
+.activity .comment-form {
+  border: 0;
+  padding: 0 0 24px;
+}
+.comment-form > label {
+  margin-bottom: 10px;
+}
+.comment-form textarea {
+  border-radius: 0 0 7px 7px;
+  padding: 14px;
+  min-height: 140px;
+}
+.comment-form .comment-preview {
+  margin: 0;
+  border-radius: 0 0 7px 7px;
+  min-height: 140px;
+}
+.comment-preview:empty::before {
+  content: "Nothing to preview yet.";
+  color: var(--muted);
+}
+.comment-form .form-actions {
+  justify-content: space-between;
+  margin-top: 12px;
+}
+.timeline {
+  border-top: 1px solid var(--line);
+}
+.timeline .comment {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 14px;
+  padding: 24px 0;
+  border: 0;
+}
+.timeline .comment + .comment {
+  border-top: 1px solid var(--line);
+}
+.comment-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--tag-bg);
+  color: var(--tag-text);
+  font-size: 12px;
+  font-weight: 650;
+}
+.comment-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 4px 0 14px;
+  font-size: 12px;
+}
+.comment-heading strong {
+  overflow-wrap: anywhere;
+}
+.comment-heading time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.comment-content {
+  min-width: 0;
+}
+.comment-content .markdown h2 {
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+.comment-content .markdown h1 {
+  font-size: 20px;
+}
+.timeline .system-event {
+  padding: 16px 0;
+}
+.system-event .comment-avatar {
+  background: transparent;
+  font-size: 18px;
+  color: var(--muted);
+}
+.system-event .markdown {
+  color: var(--muted);
+  font-size: 12px;
+}
+.system-event .comment-heading {
+  margin-bottom: 6px;
+}
+.empty-state {
+  color: var(--muted);
+  text-align: center;
+  padding: 20px;
+  font-size: 13px;
+}
+.action-dialog {
+  width: min(480px, calc(100vw - 32px));
+  padding: 0;
+}
+.modal-form {
+  padding: 24px;
+}
+.modal-heading {
+  margin-bottom: 22px;
+}
+.modal-heading h2 {
+  font-size: 20px;
+  margin-bottom: 8px;
+}
+.modal-heading p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.modal-content {
+  display: grid;
+  gap: 14px;
+  overflow-wrap: anywhere;
+}
+.modal-content:empty {
+  display: none;
+}
+.modal-content p {
+  margin: 0 0 20px;
+}
+.modal-content label {
+  margin: 0;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding-top: 24px;
+}
+.modal-error {
+  margin: 16px 0 0;
+  font-size: 13px;
+}
+button.destructive {
+  background: var(--toast);
+  border-color: var(--toast);
+  color: var(--on-primary);
+}
+.conflict-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.conflict-values > div {
+  min-width: 0;
+  background: var(--surface);
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.conflict-values strong {
+  font-size: 12px;
+  color: var(--muted);
+}
+.conflict-values pre {
+  max-height: 240px;
+  overflow: auto;
+}
+.conflict summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+#search-dialog > .inline {
+  margin-top: 16px;
+}
+#search-results h3 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  padding: 0 12px;
+  margin: 20px 0 8px;
+}
+.search-result strong {
+  font-weight: 550;
+}
+@media (max-width: 600px) {
+  .timeline .comment {
+    grid-template-columns: 26px minmax(0, 1fr);
+    gap: 10px;
+  }
+  .comment-avatar {
+    width: 26px;
+    height: 26px;
+  }
+  .comment-heading {
+    margin-top: 2px;
+  }
+  .comment-heading time {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
+  .comment-form .form-actions > small {
+    font-size: 11px;
+  }
+  .modal-form {
+    padding: 20px;
+  }
+  .modal-actions > button {
+    flex: 1;
+  }
+  .conflict-values {
+    grid-template-columns: 1fr;
+  }
+}
+
+.modal-content .relation-matches {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.modal-content .relation-matches:empty {
+  display: none;
 }

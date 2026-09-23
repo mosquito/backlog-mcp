@@ -1,6 +1,6 @@
 import { MCP, HttpError } from "./mcp.js";
 import { markdown } from "./markdown.js";
-import { el, button, link, select, field, date, projectRoute, route } from "./dom.js";
+import { el, button, link, select, field, date, projectRoute, route, modal } from "./dom.js";
 import { editor } from "./editor.js";
 
 const content = document.querySelector("#content");
@@ -416,37 +416,30 @@ async function detail(task) {
             result.items.filter((p) => p.role !== "reader").map((p) => p.full_name),
             task.project,
           );
-          const dialog = el(
-            "dialog",
-            {},
-            el("h2", {}, "Move task"),
-            field("Destination project", chooser),
-            button(
-              "Move task",
-              operation(async () => {
-                await call("task_move", { id: task.id, project: chooser.value });
-                dialog.close();
-                dialog.remove();
-                await render();
-              }),
-              "primary",
-            ),
-            button("Cancel", () => {
-              dialog.close();
-              dialog.remove();
-            }),
-          );
-          document.body.append(dialog);
-          dialog.showModal();
+          const moved = await modal({
+            title: "Move task",
+            description: task.title,
+            content: [field("Destination project", chooser)],
+            action: "Move task",
+            onSubmit: () => call("task_move", { id: task.id, project: chooser.value }),
+          });
+          if (moved) await render();
         }),
       ),
       button(
         "Delete",
         operation(async () => {
-          if (confirm(`Delete task #${task.id} “${task.title}”?`)) {
-            await call("task_delete", { id: task.id });
-            navigate(projectRoute(task.project));
-          }
+          const removed = await modal({
+            title: "Delete task?",
+            description: task.title,
+            content: [
+              el("p", {}, "The task will be marked as deleted and removed from the board."),
+            ],
+            action: "Delete task",
+            danger: true,
+            onSubmit: () => call("task_delete", { id: task.id }),
+          });
+          if (removed) navigate(projectRoute(task.project));
         }),
         "danger",
       ),
@@ -475,13 +468,22 @@ async function detail(task) {
           button(
             "Remove",
             operation(async () => {
-              if (!confirm("Remove this relation?")) return;
-              await call("task_unlink", {
-                task: task.id,
-                target: item.task,
-                relation: item.relation,
+              const removed = await modal({
+                title: "Remove relation?",
+                description: item.title,
+                content: [
+                  el("p", {}, `Remove the ${item.relation} relation? Both tasks will be kept.`),
+                ],
+                action: "Remove relation",
+                danger: true,
+                onSubmit: () =>
+                  call("task_unlink", {
+                    task: task.id,
+                    target: item.task,
+                    relation: item.relation,
+                  }),
               });
-              await render();
+              if (removed) await render();
             }),
             "quiet",
           ),
@@ -538,95 +540,138 @@ async function detail(task) {
       }
     }, 250);
   };
-  const linkForm = el(
-    "form",
-    { class: "relation-form" },
-    field("Relation", relation),
-    field("Task ID", target),
-    field("Reason", reason),
-    el("button", { type: "submit" }, "Add relation"),
-  );
-  linkForm.onsubmit = async (e) => {
-    e.preventDefault();
-    const submit = linkForm.querySelector("button");
-    submit.disabled = true;
-    try {
-      await call("task_link", {
-        task: task.id,
-        target: Number(target.value),
-        relation: relation.value,
-        reason: reason.value,
-      });
-      await render();
-    } catch (error) {
-      notify(error);
-    } finally {
-      submit.disabled = false;
-    }
-  };
+  const addRelation = button("Add relation", async () => {
+    const added = await modal({
+      title: "Add relation",
+      description: "Find a task or enter its ID, then choose how it relates to this task.",
+      content: [
+        field("Find a task", find),
+        matches,
+        field("Task ID", target),
+        field("Relation", relation),
+        field("Reason (optional)", reason),
+      ],
+      action: "Add relation",
+      onSubmit: () =>
+        call("task_link", {
+          task: task.id,
+          target: Number(target.value),
+          relation: relation.value,
+          reason: reason.value,
+        }),
+    });
+    clearTimeout(timer);
+    sequence++;
+    if (added) await render();
+  });
   panel.append(
     el(
       "section",
-      { class: "panel" },
-      el("h2", {}, "Relations"),
-      links,
-      linkForm,
-      field("Find a task", find),
-      matches,
+      { class: "panel relations" },
+      el("div", { class: "section-heading" }, el("h2", {}, "Relations"), addRelation),
+      task.links?.length ? links : el("p", { class: "empty-state" }, "No relations yet."),
     ),
   );
   const commentBody = el("textarea", {
-    required: true,
     placeholder: "Write a comment in Markdown…",
     "aria-label": "Comment",
   });
-  const preview = el("div", { class: "markdown", hidden: true });
+  const preview = el("div", { class: "comment-preview markdown", hidden: true });
+  const commentError = el("p", { class: "error", role: "alert", hidden: true });
+  const textTab = button("Write", () => changeCommentView(false));
+  const previewTab = button("Preview", () => changeCommentView(true));
+  function changeCommentView(showPreview) {
+    if (showPreview) preview.replaceChildren(markdown(commentBody.value));
+    commentBody.hidden = showPreview;
+    preview.hidden = !showPreview;
+    textTab.setAttribute("aria-pressed", String(!showPreview));
+    previewTab.setAttribute("aria-pressed", String(showPreview));
+  }
   const commentForm = el(
     "form",
     { class: "comment-form" },
-    field("Add a comment", commentBody),
+    el("label", { htmlFor: "comment-body" }, "Add a comment"),
+    el("div", { class: "editor-tabs" }, textTab, previewTab),
+    commentBody,
     preview,
+    commentError,
     el(
       "div",
       { class: "form-actions" },
+      el("small", { class: "muted" }, "Markdown supported"),
       el("button", { type: "submit", class: "primary" }, "Add comment"),
-      button("Preview", () => {
-        preview.replaceChildren(markdown(commentBody.value));
-        preview.hidden = !preview.hidden;
-      }),
     ),
   );
+  commentBody.id = "comment-body";
+  changeCommentView(false);
   commentForm.onsubmit = async (e) => {
     e.preventDefault();
-    const submit = commentForm.querySelector("[type=submit]");
+    if (!commentBody.value.trim()) {
+      changeCommentView(false);
+      commentError.textContent = "Write a comment before sending.";
+      commentError.hidden = false;
+      commentBody.focus();
+      return;
+    }
+    const submit = commentForm.querySelector('[type="submit"]');
     submit.disabled = true;
+    commentError.hidden = true;
     try {
-      await call("task_comment_add", { task_id: task.id, body: commentBody.value });
+      const added = await call("task_comment_add", { task_id: task.id, body: commentBody.value });
       await render();
+      document.getElementById(`comment-${added.id}`)?.scrollIntoView({ block: "center" });
     } catch (error) {
-      notify(error);
+      commentError.textContent = error.message;
+      commentError.hidden = false;
     } finally {
       submit.disabled = false;
     }
   };
+  const comments = (task.comments || []).map((comment) => {
+    const system = comment.kind !== "comment";
+    return el(
+      "article",
+      { class: system ? "comment system-event" : "comment", id: `comment-${comment.id}` },
+      el(
+        "div",
+        { class: "comment-avatar", "aria-hidden": "true" },
+        system ? "↳" : comment.principal.slice(0, 1).toUpperCase(),
+      ),
+      el(
+        "div",
+        { class: "comment-content" },
+        el(
+          "div",
+          { class: "comment-heading" },
+          el("strong", {}, comment.principal),
+          system
+            ? el("span", { class: "tag" }, comment.kind === "status" ? "Status changed" : "Moved")
+            : null,
+          el(
+            "time",
+            { dateTime: new Date(comment.created_at * 1000).toISOString() },
+            date(comment.created_at),
+          ),
+        ),
+        el("div", { class: "markdown" }, markdown(comment.body)),
+      ),
+    );
+  });
   panel.append(
     el(
       "section",
-      { class: "panel" },
-      el("h2", {}, "Activity"),
-      ...(task.comments || []).map((comment) =>
-        el(
-          "article",
-          { class: "comment" },
-          el(
-            "p",
-            { class: "muted" },
-            `${comment.principal} · ${date(comment.created_at)} · ${comment.kind}`,
-          ),
-          el("div", { class: "markdown" }, markdown(comment.body)),
-        ),
+      { class: "panel activity" },
+      el(
+        "div",
+        { class: "section-heading" },
+        el("h2", {}, "Discussion & activity"),
+        el("span", { class: "count" }, String(comments.length)),
       ),
       commentForm,
+      el("div", { class: "timeline" }, ...comments),
+      comments.length
+        ? null
+        : el("p", { class: "empty-state" }, "No activity yet. Start the conversation above."),
     ),
   );
   return panel;

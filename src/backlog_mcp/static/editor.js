@@ -1,4 +1,4 @@
-import { el, button, link, select, field, projectRoute } from "./dom.js";
+import { el, button, link, select, field, projectRoute, modal } from "./dom.js";
 
 const fields = ["title", "priority", "status", "tags", "body"];
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -118,8 +118,15 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
       link("Cancel", task ? `#/t/${task.id}` : projectRoute(project), "button"),
       button(
         "Discard draft",
-        () => {
-          if (confirm("Discard the saved draft?")) {
+        async () => {
+          if (
+            await modal({
+              title: "Discard draft?",
+              description: "Your unsaved changes will be removed from this browser.",
+              action: "Discard draft",
+              danger: true,
+            })
+          ) {
             localStorage.removeItem(key);
             navigate(task ? `#/t/${task.id}` : projectRoute(project));
           }
@@ -179,16 +186,20 @@ export function editor(task, project, { call, notify, navigate, markdown, princi
           "details",
           { open: true },
           el("summary", {}, key),
-          ...[
-            ["Base", base[key]],
-            ["Current", current[key]],
-            ["Your draft", ours[key]],
-          ].map(([label, value]) =>
-            el(
-              "div",
-              {},
-              el("strong", {}, label),
-              el("pre", {}, typeof value === "string" ? value : JSON.stringify(value)),
+          el(
+            "div",
+            { class: "conflict-values" },
+            ...[
+              ["Base", base[key]],
+              ["Current", current[key]],
+              ["Your draft", ours[key]],
+            ].map(([label, value]) =>
+              el(
+                "div",
+                {},
+                el("strong", {}, label),
+                el("pre", {}, typeof value === "string" ? value : JSON.stringify(value)),
+              ),
             ),
           ),
         ),
