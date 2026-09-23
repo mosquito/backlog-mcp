@@ -520,6 +520,12 @@ columns to change its status. Filters are saved in the page URL. The board loads
 up to 500 open tasks and the 50 most recently changed completed tasks. Use Refresh
 to reload it; changes from other clients do not appear automatically.
 
+Use **Memory** in the header to browse notes for the current project or all
+accessible projects. Filter by tag or shared status, page through the list, and
+open a note to read its Markdown content, source project, tags, and author dates.
+The Memory view is read-only. Links use `?view=memory&note=123`; `#123` still
+identifies a task.
+
 Sign in with Basic credentials or a Bearer token supported by the server.
 Credentials stay in `sessionStorage` unless you select Remember me, which uses
 `localStorage`. Sign out clears both stores. Requests send credentials only to

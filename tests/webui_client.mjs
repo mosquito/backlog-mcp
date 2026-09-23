@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MCP, HttpError, RpcError, ToolError } from "../src/backlog_mcp/static/mcp.js";
-import { route, taskRoute, projectRoute } from "../src/backlog_mcp/static/dom.js";
+import { route, taskRoute, projectRoute, memoryRoute } from "../src/backlog_mcp/static/dom.js";
 import { changed } from "../src/backlog_mcp/static/editor.js";
 
 globalThis.location = { origin: "https://backlog.test" };
@@ -148,4 +148,19 @@ test("editing sends only changed fields", () => {
   const base = { title: "Task", status: "todo", priority: "normal", body: "Text", tags: ["a"] };
   assert.deepEqual(changed(base, { ...base, title: "Edited" }), { title: "Edited" });
   assert.deepEqual(changed(base, { ...base, tags: [] }), { tags: [] });
+});
+
+test("memory uses query IDs while fragments still identify tasks", () => {
+  const target = route(
+    memoryRoute("alice/repo", new URLSearchParams({ note: "17", offset: "25", shared: "true" })),
+  );
+  assert.equal(target.kind, "memory");
+  assert.equal(target.id, 17);
+  assert.equal(target.project, "alice/repo");
+  assert.equal(target.params.get("offset"), "25");
+  assert.equal(target.params.get("shared"), "true");
+  assert.equal(route(memoryRoute()).project, "");
+  assert.equal(route("/ui/?view=memory#42").kind, "task");
+  for (const note of ["0", "-1", "abc", "9007199254740992"])
+    assert.equal(route(`/ui/?view=memory&note=${note}`).kind, "missing");
 });

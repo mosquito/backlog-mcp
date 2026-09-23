@@ -8,6 +8,7 @@ import {
   field,
   date,
   projectRoute,
+  memoryRoute,
   taskRoute,
   route,
   modal,
@@ -15,6 +16,7 @@ import {
 import { editor } from "./editor.js";
 import { taskPicker } from "./task-picker.js";
 import { taskTable } from "./task-table.js";
+import { memoryPage } from "./memory.js";
 
 const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
@@ -95,11 +97,13 @@ async function connect(authorization = credentials()) {
   identity = await client.call("whoami");
   document.querySelector("#principal").textContent = identity.principal;
   document.querySelector("#logout").hidden = false;
+  document.querySelector("#memory-open").hidden = false;
   await render();
 }
 function showLogin(error, reportError = true) {
   document.querySelector("#principal").textContent = "";
   document.querySelector("#logout").hidden = true;
+  document.querySelector("#memory-open").hidden = true;
   document.querySelector("#project-name").textContent = "";
   document.querySelector("#search-dialog").close();
   const methods = error?.schemes?.length ? [...new Set(error.schemes)] : ["basic", "bearer"];
@@ -187,6 +191,9 @@ async function render() {
     let page;
     if (target.kind === "projects") {
       page = await projects(target);
+    } else if (target.kind === "memory") {
+      selectedProject = target.project;
+      page = await memoryPage(target, actions);
     } else if (target.kind === "board") {
       selectedProject = target.project;
       page = await board(target);
@@ -204,6 +211,10 @@ async function render() {
     project = selectedProject;
     content.replaceChildren(page);
     document.querySelector("#project-name").textContent = project;
+    document.querySelector("#memory-open").href = memoryRoute(project);
+    if (target.kind === "memory")
+      document.querySelector("#memory-open").setAttribute("aria-current", "page");
+    else document.querySelector("#memory-open").removeAttribute("aria-current");
   } catch (error) {
     if (current !== generation) return;
     content.replaceChildren(
