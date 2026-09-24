@@ -6,7 +6,11 @@
    Search for related tasks and agreements. Verify technical facts in code.
 3. For work spanning multiple steps or sessions, reuse or create a task.
    Read it with `task_get`, then claim through `task_claim` before starting.
-4. Set doing. Record findings and checks with `task_comment_add`.
+4. Set doing. Use `task_comment_add` for progress, review, findings, checks, questions,
+   and proposed requirement changes. The task body is the agreed definition.
+   Edit it only on an explicit user request or to reflect explicitly agreed requirements
+   that make it incorrect or outdated. Add a separate comment explaining every body edit.
+   New findings alone do not authorize changes to the body.
 5. Verify the outcome, update obsolete memory, close the task, and release
    through `task_claim(expected=<your claim>, assigned=null)`.
 

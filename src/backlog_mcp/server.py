@@ -757,7 +757,13 @@ class UpdateTask(BaseModel):
     title: str | None = Field(default=None, description="Updated task title.")
     body: str | None = Field(
         default=None,
-        description="Replaces the task description. Use task_comment_add for progress updates.",
+        description=(
+            "Replaces the agreed task definition; an empty string clears it. "
+            "Edit only on an explicit user request or to reflect explicitly agreed requirements "
+            "that make the current body incorrect or outdated. Add a separate comment explaining "
+            "the reason. Use task_comment_add for review feedback, suggestions, progress, "
+            "findings, and unapproved requirement changes; do not put them in body edits."
+        ),
     )
     status: Status | None = Field(
         default=None,
@@ -1277,8 +1283,11 @@ async def task_comment_add(
 ) -> CommentOut:
     """Record progress, findings, blockers, or verification as a separate Markdown comment.
 
-    Use this for routine updates. Follow the project's preferred_language. Task descriptions
-    change only through task_update. Repeated calls create separate comments.
+    Use this for progress, review feedback, research results, hypotheses, questions,
+    suggestions, and proposed requirement changes. New findings do not authorize body edits.
+    Keep proposals here until the user explicitly agrees. After an authorized body edit,
+    add a separate comment explaining its reason. See guide('tasks').
+    Follow the project's preferred_language. Repeated calls create separate comments.
     """
     async with transaction:
         comment = await add_comment(connection, backlog.actor, args.task_id, args.body)
@@ -1313,8 +1322,13 @@ async def task_update(
 ) -> TaskOut:
     """Edit task fields. A supplied body replaces the description; an empty string clears it.
 
-    Use task_comment_add for progress, findings, and verification. Status transitions create
-    separate history entries. Mark active work doing and completed work done or cancelled.
+    The body is the agreed task definition. Edit it only on an explicit user request or
+    to reflect explicitly agreed requirements that make it incorrect or outdated.
+    Add a separate comment explaining every body edit and its authorization.
+    Use task_comment_add for review feedback, suggestions, progress, findings, verification,
+    and unapproved requirement changes. Do not put these in body edits.
+    Status transitions create separate history entries.
+    Mark active work doing and completed work done or cancelled.
     Closing stamps the closing time; reopening clears it. expected_assigned, when supplied,
     is compared under the writer lock. An active temporary edit claim requires that marker.
     release_edit=true restores its previous assignment in the same transaction.

@@ -48,9 +48,13 @@ inventory; apply filters and paginate through that scope. Use `stats` for counts
 - Blocked on something outside the task: set `status="blocked"` and explain the blocker with `task_comment_add`.
 - Being worked on now: set `status="doing"`, one task at a time.
 
-Use `task_comment_add(task_id, body)` for progress and decisions. Status transitions
-create separate history entries. `task_update(body=...)` replaces the task description;
-use it only when the task definition changes. Follow the project's `preferred_language`.
+Use `task_comment_add(task_id, body)` for progress, review feedback, findings, questions,
+suggestions, verification, and proposed requirement changes. The body is the agreed task
+definition. Use `task_update(body=...)` only on an explicit user request or to reflect
+explicitly agreed requirements that make it incorrect or outdated. Add a separate comment
+explaining every body edit and its authorization. New findings alone do not authorize edits.
+Status transitions create separate history entries. See `guide('tasks')`.
+Follow the project's `preferred_language` for task and comment text.
 
 ## 4. File what is missing
 

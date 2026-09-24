@@ -62,8 +62,12 @@ dependency links, so the body is where a dependency lives.
 When executing work, update task status with `task_update`: set to `doing` when starting work,
 and `done` or `cancelled` upon completion.
 
-Use `task_comment_add(task_id, body)` for progress, findings, and verification.
-`task_update(body=...)` replaces the description; use it when the task definition changes.
+Use `task_comment_add(task_id, body)` for progress, review feedback, findings, questions,
+suggestions, verification, and proposed requirement changes. The body is the agreed task
+definition. Use `task_update(body=...)` only on an explicit user request or to reflect
+explicitly agreed requirements that make it incorrect or outdated. Add a separate comment
+explaining every body edit and its authorization. New findings alone do not authorize edits.
+Status transitions create separate history entries. See `guide('tasks')`.
 Follow the project's `preferred_language` for task and comment text.
 
 ## 6. Retain knowledge supplied by the user

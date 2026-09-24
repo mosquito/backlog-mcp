@@ -51,10 +51,17 @@ assigned=<principal>:<marker>)` for an unassigned task.
 Use the principal from `whoami` and a distinct URL-safe marker per agent run.
 Both `expected` and `assigned` are required. If the claim conflicts, do not start work.
 Set `doing` when work starts. Use `task_comment_add(task_id=<id>, body=...)`
-for findings, decisions, checks, blockers, remaining work, and relevant commit
+for progress, review feedback, findings, hypotheses, questions, suggestions, proposed
+requirement changes, decisions, checks, blockers, remaining work, and relevant commit
 hashes or deployment state. Send only new update text.
 Use `task_update` for task fields and status.
-`task_update(body=...)` replaces the entire description; it does not append history.
+The task body is the agreed definition: goal, scope, requirements, constraints,
+and acceptance criteria. Do not use it as a work log or for unapproved requirements.
+Use `task_update(body=...)` only on an explicit user request to change the definition,
+or to reflect explicitly agreed requirements that make the current body incorrect
+or outdated. It replaces the entire description; it does not append history.
+For every body edit, add a separate comment explaining the reason and the user request
+or agreement that authorized it. New information alone does not authorize a body edit.
 Read comments with `task_get` or `task_comment_list`.
 If scope must be replaced, close the old task and create a successor referencing it.
 Set `done` only when the outcome is verified, `blocked` with the blocker and next

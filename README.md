@@ -110,7 +110,12 @@ blocks. Dates and entry types appear outside the comment text. `backlog task com
 shows the complete history without the task description.
 
 Over MCP, `task_comment_add(task_id, body)` adds a comment. `task_update(body=...)`
-replaces the description; an empty string clears it. `task_get` returns all comments
+replaces the description; an empty string clears it. The body holds the agreed goal, scope,
+requirements, constraints, and acceptance criteria. Agents put progress, review feedback,
+findings, questions, and proposed changes in comments. They edit the body only on an explicit
+user request or to reflect explicitly agreed requirements that make it incorrect or outdated.
+Every body edit requires a separate comment explaining its reason and authorization.
+New findings alone do not authorize edits. `task_get` returns all comments
 in a separate `comments` list. `task_comment_list(task_id)` returns the complete history
 on its own. Entries sort by creation time, then id. Status transitions
 and project moves create history entries without changing the description.
