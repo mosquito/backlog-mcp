@@ -23,7 +23,12 @@ from pydantic import (
 
 from .names import principal_label
 
-Seconds = Annotated[float, PlainSerializer(round, return_type=int, when_used="json")]
+# Publish the json shape: whole seconds, not the stored float.
+Seconds = Annotated[
+    float,
+    PlainSerializer(round, return_type=int, when_used="json"),
+    WithJsonSchema({"type": "integer"}),
+]
 
 ASSIGNMENT_PATTERN = (
     r"^(?:[A-Za-z0-9_.~-]|%[0-9A-Fa-f]{2})+"
@@ -195,9 +200,15 @@ class Identity(Actor):
     handle: str = Field(description="Owner handle used in qualified project names.")
 
 
+# Publish the json shape: attribution serializes to a user@computer label.
+ActorLabel = Annotated[
+    Actor | None, WithJsonSchema({"anyOf": [{"type": "string"}, {"type": "null"}]})
+]
+
+
 class Attributed(BaseModel):
-    created_by: Actor | None = None
-    updated_by: Actor | None = None
+    created_by: ActorLabel = None
+    updated_by: ActorLabel = None
 
     @field_serializer("created_by", "updated_by", when_used="json")
     def actor_text(self, value: Actor | None) -> str | None:
@@ -232,6 +243,10 @@ class ProjectRootOut(BaseModel):
         return value
 
 
+# Publish the json shape: a binding serializes to user@computer:path text.
+ProjectRoot = Annotated[ProjectRootOut, WithJsonSchema({"type": "string"})]
+
+
 class ProjectOut(Attributed):
     """A project with its task counts."""
 
@@ -246,7 +261,7 @@ class ProjectOut(Attributed):
     def owner_text(self, value: str) -> str:
         return principal_label(value)
 
-    roots: list[ProjectRootOut] = Field(default_factory=list)
+    roots: list[ProjectRoot] = Field(default_factory=list)
     here: bool = Field(
         description=("True when this computer has a non-empty filesystem binding for the project.")
     )
@@ -421,7 +436,7 @@ class BoardProject(BaseModel):
     preferred_language: str | None
     role: str
     archived: bool
-    roots: list[ProjectRootOut]
+    roots: list[ProjectRoot]
 
 
 class BoardCounts(BaseModel):
@@ -510,6 +525,7 @@ __all__ = [
     "Priority",
     "ProjectDeleted",
     "ProjectOut",
+    "ProjectRoot",
     "ProjectRootOut",
     "Projects",
     "ProjectBoard",

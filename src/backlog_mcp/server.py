@@ -63,6 +63,7 @@ from .models import (
     ProjectBoard,
     ProjectDeleted,
     ProjectOut,
+    ProjectRoot,
     ProjectRootOut,
     Projects,
     Relation,
@@ -554,7 +555,7 @@ class ShareProject(ProjectRef):
 
 class Members(Actor):
     items: list[dict[str, str]]
-    roots: list[ProjectRootOut] = Field(default_factory=list)
+    roots: list[ProjectRoot] = Field(default_factory=list)
 
     @field_serializer("items", when_used="json")
     def principal_labels(self, values: list[dict[str, str]]) -> list[dict[str, str]]:

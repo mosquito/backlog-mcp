@@ -931,6 +931,29 @@ def test_attribution_strings_round_trip_and_schema() -> None:
         assert schema["properties"][field]["anyOf"] == [{"type": "string"}, {"type": "null"}]
 
 
+def test_published_output_schemas_describe_serialized_results() -> None:
+    """Tools publish a validation-mode schema; results are serialized. Both shapes must agree."""
+
+    def shape(node: Any) -> Any:
+        if isinstance(node, dict):
+            skip = ("$schema", "default", "title", "required", "description")
+            return {key: shape(value) for key, value in sorted(node.items()) if key not in skip}
+        if isinstance(node, list):
+            return [shape(item) for item in node]
+        return node
+
+    checked = 0
+    for name, spec in sorted(registry.tools.items()):
+        if spec.output_schema is None:
+            continue
+        model = spec.bound.returns
+        assert shape(spec.output_schema) == shape(model.model_json_schema(mode="serialization")), (
+            f"{name} publishes an output schema that its results do not match"
+        )
+        checked += 1
+    assert checked > 20
+
+
 async def test_closed_timestamps_round_only_in_public_output(
     client: BaseClient, backlog: Backlog
 ) -> None:
