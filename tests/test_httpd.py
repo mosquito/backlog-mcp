@@ -61,7 +61,9 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
     async with (
         TestServer(app) as server,
         ClientSession(headers={"Authorization": encode_basic_auth("user", "secret")}) as session,
-        Client(str(server.make_url("/mcp")), pick(adapter), session=session) as client,
+        Client(
+            str(server.make_url("/mcp?computer=here")), pick(adapter), session=session
+        ) as client,
     ):
         await client.initialize()
         prompts = {prompt.name: prompt for prompt in await client.list_prompts()}
@@ -93,6 +95,30 @@ async def test_authenticated_mcp_requests_share_persisted_tasks(
     assert stored.title == "Over HTTP"
 
 
+@pytest.mark.parametrize("query", ["", "?computer=", "?computer=laptop"])
+@pytest.mark.parametrize("authenticated", [False, True])
+async def test_http_computer_defaults_to_unknown(
+    backlog: Backlog, query: str, authenticated: bool
+) -> None:
+    app = application(backlog, basic=["user:secret"] if authenticated else [], console=False)
+    headers = {"Authorization": encode_basic_auth("user", "secret")} if authenticated else {}
+    async with (
+        TestServer(app) as server,
+        ClientSession(headers=headers) as session,
+        Client(str(server.make_url("/mcp" + query)), pick(None), session=session) as client,
+    ):
+        await client.initialize()
+        identity = await call(client, "whoami")
+        username = "user" if authenticated else "local"
+        computer = "laptop" if query == "?computer=laptop" else "unknown"
+        assert identity["principal"] == f"{username}@{computer}"
+        # An unspecified client must not register the server's working directory.
+        result = await client.call_tool("task_add", {"title": "No implicit server project"})
+        assert result.is_error
+        assert (await call(client, "project_list", all_computers=True))["items"] == []
+    assert backlog.computer == "here"
+
+
 async def test_the_query_string_serves_a_client_as_another_computer(backlog: Backlog) -> None:
     app = application(backlog, console=False)
     view = backlog.view(computer="laptop")
@@ -122,7 +148,7 @@ async def test_the_query_string_serves_a_client_as_another_computer(backlog: Bac
         async with Client(str(endpoint), pick(None)) as client:
             await client.initialize()
             scope = payload(await client.call_tool("project_board", {"project": "app"}))
-            assert scope["principal"] == "local@here"
+            assert scope["principal"] == "local@unknown"
             assert scope["project"]["roots"] == ["local@laptop:/srv/app"]
             listed = payload(await client.call_tool("project_list", {"all_computers": True}))
             assert {item["slug"]: item["here"] for item in listed["items"]}["app"] is False
@@ -148,7 +174,9 @@ async def test_the_auth_query_parameter_stands_in_for_the_header(
     app = application(backlog, basic=["a:>>>"], console=False)
     async with TestServer(app) as server:
         endpoint = server.make_url(ENDPOINT_PATH)
-        async with Client(str(endpoint.with_query(auth=token)), pick(None)) as client:
+        async with Client(
+            str(endpoint.with_query(auth=token, computer="here")), pick(None)
+        ) as client:
             await client.initialize()
             task = payload(await client.call_tool("task_add", {"title": "Via the URL"}))
             assert task["title"] == "Via the URL"
@@ -238,7 +266,7 @@ async def test_http_binding_uses_application_backlog(backlog: Backlog) -> None:
     try:
         async with (
             TestServer(app) as server,
-            Client(str(server.make_url("/mcp")), pick(None)) as client,
+            Client(str(server.make_url("/mcp?computer=here")), pick(None)) as client,
         ):
             await client.initialize()
             result = await client.read_resource("backlog://project")
@@ -282,7 +310,9 @@ async def test_without_accounts_the_server_asks_for_nothing(backlog: Backlog) ->
     async with TestClient(TestServer(application(backlog))) as client:
         async with client.get(CONSOLE_PATH) as response:
             assert response.status == 200
-        async with Client(str(client.make_url(ENDPOINT_PATH)), pick(None)) as mcp:
+        async with Client(
+            str(client.make_url(ENDPOINT_PATH).with_query(computer="here")), pick(None)
+        ) as mcp:
             handshake = await mcp.initialize()
             assert handshake["resultType"] == "complete"
             result = await mcp.call_tool("task_add", {"title": "No password needed"})

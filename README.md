@@ -359,6 +359,7 @@ parameters on the endpoint URL:
 https://backlog.example.com/mcp?computer=laptop&project=app
 ```
 
+An omitted or empty `computer` uses `unknown`, never the server's host name.
 `computer` names the computer the client runs on, and `project` fixes its current project, since
 the server cannot see the client's working directory. A client that cannot send an
 `Authorization` header passes the credentials in the URL instead, as `auth=<base64 of

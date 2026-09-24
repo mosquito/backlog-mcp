@@ -895,7 +895,7 @@ async def test_watch_prints_each_event(
     from backlog_mcp.httpd import ENDPOINT_PATH, application
 
     async with TestServer(application(backlog, console=False)) as server:
-        url = str(server.make_url(ENDPOINT_PATH))
+        url = str(server.make_url(ENDPOINT_PATH).with_query(computer=backlog.computer))
         flags = ["--database", str(tmp_path / "unused.sqlite3")]
         watching = asyncio.create_task(
             asyncio.to_thread(cli.main, [*flags, "-r", str(tmp_path), "watch", url, "-n", "1"])
@@ -904,7 +904,8 @@ async def test_watch_prints_each_event(
             await writer.initialize()
             title = "Watched"
             while not watching.done():
-                await writer.call_tool("task_add", {"title": title})
+                result = await writer.call_tool("task_add", {"title": title})
+                assert not result.is_error
                 await asyncio.sleep(0.1)
         assert await watching == 0
     output = capsys.readouterr().out

@@ -124,7 +124,7 @@ async def test_a_legacy_get_stream_carries_the_event(backlog: Backlog) -> None:
     """Revisions before 2026-07-28 subscribe by URI and read the GET stream."""
     app = application(backlog, console=False)
     async with TestServer(app) as server:
-        url = str(server.make_url(ENDPOINT_PATH))
+        url = str(server.make_url(ENDPOINT_PATH).with_query(computer=backlog.computer))
         async with (
             Client(url, pick("2025-03-26")) as listener,
             Client(url, pick("2025-03-26")) as writer,
@@ -255,7 +255,7 @@ async def test_a_listener_picks_its_project(backlog: Backlog) -> None:
 async def test_a_legacy_stream_hears_every_broadcast_unasked(backlog: Backlog) -> None:
     app = application(backlog, console=False)
     async with TestServer(app) as server:
-        url = str(server.make_url(ENDPOINT_PATH))
+        url = str(server.make_url(ENDPOINT_PATH).with_query(computer=backlog.computer))
         async with (
             Client(url, pick("2025-03-26")) as listener,
             Client(url, pick("2025-03-26")) as writer,

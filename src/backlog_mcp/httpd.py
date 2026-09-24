@@ -41,14 +41,14 @@ def bind(backlog: Backlog, configured: Registry | None = None) -> Middleware:
     """Middleware that points the handlers at this backlog, per request.
 
     `?computer=<name>` serves the request as that computer and `?project=<slug>` fixes its
-    project, so one server answers for every computer of its user. Without them a request is
-    served as the computer the server runs on, from its working directory.
+    project, so one server answers for every computer of its user. Without a computer name,
+    the request uses `unknown` instead of the server's computer name.
     """
 
     @web.middleware
     async def middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
         connection = await backlog.open()
-        computer = request.query.get("computer") or None
+        computer = request.query.get("computer") or "unknown"
         project = request.query.get("project") or None
         try:
             identity = None

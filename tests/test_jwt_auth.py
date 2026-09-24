@@ -237,9 +237,9 @@ async def test_authenticated_mcp_handshake_and_calls(
     authentication_options: dict[str, str],
 ) -> None:
     async with TestServer(httpd.application(backlog, **authentication_options)) as server:
-        endpoint = server.make_url("/mcp")
+        endpoint = server.make_url("/mcp?computer=here")
         if query:
-            endpoint = endpoint.with_query(credentials.query)
+            endpoint = endpoint.update_query(credentials.query)
         headers = {} if query else credentials.headers
         async with (
             ClientSession(headers=headers) as session,
@@ -467,8 +467,12 @@ async def test_jwt_notifications_exclude_other_users_and_local_stdio(backlog: Ba
         TestServer(httpd.application(backlog, jwt_pre_shared_key=PSK)) as server,
         ClientSession(headers={"Authorization": f"Bearer {token(sub='alice')}"}) as alice_http,
         ClientSession(headers={"Authorization": f"Bearer {token(sub='bob')}"}) as bob_http,
-        Client(str(server.make_url("/mcp")), pick("2026-07-28"), session=alice_http) as listener,
-        Client(str(server.make_url("/mcp")), pick("2026-07-28"), session=bob_http) as writer,
+        Client(
+            str(server.make_url("/mcp?computer=here")), pick("2026-07-28"), session=alice_http
+        ) as listener,
+        Client(
+            str(server.make_url("/mcp?computer=here")), pick("2026-07-28"), session=bob_http
+        ) as writer,
         connect(registry, adapter="2026-07-28") as stdio,
     ):
         await listener.initialize()

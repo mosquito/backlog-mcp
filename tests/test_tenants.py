@@ -25,7 +25,9 @@ async def account(
 ) -> AsyncIterator[Client]:
     async with (
         ClientSession(headers={"Authorization": encode_basic_auth(username, password)}) as session,
-        Client(str(server.make_url("/mcp")), pick(adapter), session=session) as client,
+        Client(
+            str(server.make_url("/mcp?computer=here")), pick(adapter), session=session
+        ) as client,
     ):
         await client.initialize()
         yield client
@@ -169,7 +171,7 @@ async def test_basic_and_jwt_with_the_same_subject_share_data(backlog: Backlog) 
         ) as server,
         account(server, "alice") as basic,
         ClientSession(headers={"Authorization": f"Bearer {token(sub='alice')}"}) as session,
-        Client(str(server.make_url("/mcp")), pick(None), session=session) as jwt,
+        Client(str(server.make_url("/mcp?computer=here")), pick(None), session=session) as jwt,
     ):
         await jwt.initialize()
         identity = await call(jwt, "whoami")
@@ -248,7 +250,7 @@ async def test_http_without_authorizers_uses_user_default(
         ):
             await client.initialize()
             identity = await call(client, "whoami")
-            assert identity["principal"] == f"server-user@{instance.computer}"
+            assert identity["principal"] == "server-user@unknown"
             assert identity["handle"] == "server-user"
             project = await call(client, "project_save", root="", name="Default owned")
             assert project["full_name"] == "server-user/default-owned"
@@ -262,7 +264,7 @@ async def test_http_without_authorizers_uses_user_default(
                 event = (await asyncio.wait_for(frames.get(), 5))["params"]["_meta"][
                     "backlog/event"
                 ]
-                assert event["principal"] == f"server-user@{instance.computer}"
+                assert event["principal"] == "server-user@unknown"
             finally:
                 collecting.cancel()
                 await asyncio.gather(collecting, return_exceptions=True)
