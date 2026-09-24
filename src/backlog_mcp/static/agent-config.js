@@ -3,10 +3,12 @@ export function shellQuote(value) {
   return "'" + value.replaceAll("'", "'\"'\"'") + "'";
 }
 
-export function agentConfig({ endpoint, method = "basic", username = "", secret = "" }) {
+export function agentConfig({ endpoint, computer = "", method = "basic", username = "", secret = "" }) {
   const url = new URL(endpoint);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
     throw new Error("Use an HTTP or HTTPS MCP URL without embedded credentials.");
+  if (!computer.trim()) throw new Error("Enter your computer name.");
+  url.searchParams.set("computer", computer.trim());
   let authorization = "";
   if (method === "basic") {
     if (!username || !secret) throw new Error("Enter your username and password.");

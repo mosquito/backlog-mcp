@@ -3,6 +3,7 @@ import { el, button, link } from "./dom.js";
 
 const form = document.querySelector("#connection-form");
 const endpoint = document.querySelector("#endpoint");
+const computer = document.querySelector("#computer");
 const method = document.querySelector("#method");
 const username = document.querySelector("#username");
 const secret = document.querySelector("#secret");
@@ -11,6 +12,11 @@ const empty = document.querySelector("#setup-empty");
 const error = document.querySelector("#connection-error");
 const status = document.querySelector("#copy-status");
 endpoint.value = new URL("/mcp", location.origin).href;
+const computerWords = ["cedar", "maple", "birch", "pine", "oak", "elm", "willow", "aspen"];
+computer.value =
+  computerWords[Math.floor(Math.random() * computerWords.length)] +
+  "-" +
+  (Math.floor(Math.random() * 9999) + 1);
 let selected = "claude",
   generated;
 const guides = {
@@ -112,12 +118,36 @@ method.onchange = () => {
   document.querySelector("#secret-label").textContent = basic ? "Password" : "Bearer token";
   clearOutput();
 };
+function restoreCredentials() {
+  try {
+    const key = "backlog:auth:/mcp";
+    const authorization = sessionStorage.getItem(key) || localStorage.getItem(key) || "";
+    if (authorization.startsWith("Basic ")) {
+      const bytes = Uint8Array.from(atob(authorization.slice(6)), (c) => c.charCodeAt(0));
+      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      const separator = decoded.indexOf(":");
+      if (separator < 0) return;
+      method.value = "basic";
+      method.onchange();
+      username.value = decoded.slice(0, separator);
+      secret.value = decoded.slice(separator + 1);
+    } else if (authorization.startsWith("Bearer ")) {
+      method.value = "bearer";
+      method.onchange();
+      secret.value = authorization.slice(7);
+    }
+  } catch {
+    // Keep manual entry available if storage is blocked or credentials are malformed.
+  }
+}
+restoreCredentials();
 form.addEventListener("input", clearOutput);
 form.onsubmit = (event) => {
   event.preventDefault();
   try {
     generated = agentConfig({
       endpoint: endpoint.value,
+      computer: computer.value,
       method: method.value,
       username: username.value,
       secret: secret.value,

@@ -3,14 +3,15 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { agentConfig } from "../src/backlog_mcp/static/agent-config.js";
 
+const computer = "workstation";
 const endpoint = "https://backlog.example:8443/mcp";
 test("all clients use the same endpoint and UTF-8 Basic credentials", () => {
-  const data = agentConfig({ endpoint, username: "пользователь", secret: 'p:a\"ss🔑' });
+  const data = agentConfig({ endpoint, computer, username: "пользователь", secret: 'p:a\"ss🔑' });
   const claude = JSON.parse(data.claude.config).mcpServers.backlog;
   const antigravity = JSON.parse(data.antigravity.config).mcpServers.backlog;
-  assert.equal(claude.url, endpoint);
+  assert.equal(claude.url, endpoint + "?computer=workstation");
   assert.equal(claude.type, "http");
-  assert.equal(antigravity.serverUrl, endpoint);
+  assert.equal(antigravity.serverUrl, claude.url);
   assert.deepEqual(antigravity.headers, claude.headers);
   assert.equal(
     Buffer.from(claude.headers.Authorization.slice(6), "base64").toString(),
@@ -26,7 +27,7 @@ test("all clients use the same endpoint and UTF-8 Basic credentials", () => {
 });
 test("shell commands preserve quotes and substitution syntax as literal arguments", () => {
   const secret = `token'\"$(printf injected)\`printf injected\``;
-  const data = agentConfig({ endpoint, method: "bearer", secret });
+  const data = agentConfig({ endpoint, computer, method: "bearer", secret });
   for (const [name, config] of Object.entries(data).filter(([, c]) => c.command)) {
     const command = `${name}() { printf '%s\\0' "$@"; }; ${config.command}`;
     const result = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
@@ -49,7 +50,7 @@ test("shell commands preserve quotes and substitution syntax as literal argument
   }
 });
 test("no-auth output omits headers and invalid credentials fail", () => {
-  const data = agentConfig({ endpoint, method: "none" });
+  const data = agentConfig({ endpoint, computer, method: "none" });
   assert.equal(JSON.parse(data.claude.config).mcpServers.backlog.headers, undefined);
   assert.ok(!data.codex.config.includes("http_headers"));
   for (const input of [
@@ -60,5 +61,20 @@ test("no-auth output omits headers and invalid credentials fail", () => {
     { endpoint: "javascript:alert(1)", method: "none" },
     { endpoint: "https://user:pass@example.test/mcp", method: "none" },
   ])
-    assert.throws(() => agentConfig({ endpoint, ...input }));
+    assert.throws(() => agentConfig({ endpoint, computer, ...input }));
+});
+
+test("computer is required and replaces only its own URL parameter", () => {
+  for (const computer of [undefined, "", "  "])
+    assert.throws(() => agentConfig({ endpoint, computer, method: "none" }), /computer name/);
+  const data = agentConfig({
+    endpoint: endpoint + "?project=owner%2Frepo&computer=old",
+    computer: "  laptop & стол  ",
+    method: "none",
+  });
+  const url = new URL(JSON.parse(data.claude.config).mcpServers.backlog.url);
+  assert.equal(url.searchParams.get("project"), "owner/repo");
+  assert.deepEqual(url.searchParams.getAll("computer"), ["laptop & стол"]);
+  assert.equal(JSON.parse(data.antigravity.config).mcpServers.backlog.serverUrl, url.href);
+  assert.ok(data.codex.config.includes(JSON.stringify(url.href)));
 });
