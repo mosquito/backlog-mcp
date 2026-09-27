@@ -1,0 +1,190 @@
+name: release
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  FORCE_COLOR: "1"
+  IMAGE_DIGEST: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          lfs: true
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - run: node --test tests/webui_client.mjs
+      - run: uv sync --all-groups
+      - run: uv run ruff format --check src tests
+      - run: uv run ruff check src tests
+      - run: uv run mypy src
+      - run: uv run pytest -v --cov=backlog_mcp --cov-report=term-missing
+
+  validate:
+    if: >-
+      github.event_name == 'release' &&
+      github.event.action == 'published' &&
+      github.repository == 'mosquito/backlog-mcp'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
+      release_revision: ${{ steps.version.outputs.release_revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          lfs: true
+          persist-credentials: false
+
+      - id: version
+        name: Verify release and project versions
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          def fail(message: str) -> None:
+              print(f"::error::{message}")
+              raise SystemExit(message)
+
+          tag = os.environ["RELEASE_TAG"]
+          match = re.fullmatch(r"v?([0-9]+\.[0-9]+\.[0-9]+)", tag)
+          if match is None:
+              fail("Release tags must be X.Y.Z or vX.Y.Z.")
+          release_version = match.group(1)
+
+          project_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          if project_version != release_version:
+              fail(
+                  f"Release tag version {release_version} must exactly match "
+                  f"project.version={project_version}."
+              )
+
+          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+              fail("The checked out release revision is not a full lowercase Git commit SHA.")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              print(f"release_version={release_version}", file=output)
+              print(f"release_revision={revision}", file=output)
+          PY
+
+  publish:
+    needs: [test, validate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+      RELEASE_REVISION: ${{ needs.validate.outputs.release_revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.validate.outputs.release_revision }}
+          lfs: true
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+
+      - name: Validate and package the chart
+        run: |
+          set -euo pipefail
+          helm lint charts/backlog-mcp --set image.digest="$IMAGE_DIGEST"
+          helm template backlog-mcp charts/backlog-mcp --set image.digest="$IMAGE_DIGEST" >/dev/null
+          if helm template backlog-mcp charts/backlog-mcp --set image.digest=md5:abcd >/dev/null 2>&1; then
+            echo "The chart accepted an unsupported application digest" >&2
+            exit 1
+          fi
+          if helm template backlog-mcp charts/backlog-mcp \
+            --set image.digest="$IMAGE_DIGEST" \
+            --set test.image.digest=sha256:1 >/dev/null 2>&1; then
+            echo "The chart accepted a malformed test-image digest" >&2
+            exit 1
+          fi
+          helm package charts/backlog-mcp \
+            --version "$RELEASE_VERSION" \
+            --app-version "$RELEASE_VERSION" \
+            --destination "$RUNNER_TEMP"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ghcr.io/mosquito/backlog-mcp
+          tags: |
+            type=raw,value=${{ needs.validate.outputs.release_version }}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/mosquito/backlog-mcp
+            org.opencontainers.image.revision=${{ needs.validate.outputs.release_revision }}
+            org.opencontainers.image.version=${{ needs.validate.outputs.release_version }}
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Publish linux/amd64 release image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=backlog-mcp-linux-amd64
+          cache-to: type=gha,mode=max,scope=backlog-mcp-linux-amd64
+          provenance: mode=max
+          sbom: true
+
+      - name: Push the OCI chart
+        env:
+          HELM_REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$HELM_REGISTRY_PASSWORD" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP/backlog-mcp-${RELEASE_VERSION}.tgz" oci://ghcr.io/mosquito/charts
+
+      - name: Attach the chart to the published GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release upload "$RELEASE_TAG"
+          "$RUNNER_TEMP/backlog-mcp-${RELEASE_VERSION}.tgz"
+          --clobber
+          --repo "$GITHUB_REPOSITORY"
