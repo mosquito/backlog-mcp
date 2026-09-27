@@ -462,6 +462,7 @@ def test_grouped_server_config_round_trip(
             "--http-listen=0.0.0.0",
             "--http-port=4321",
             "--http-no-console",
+            "--http-allowed-origin=https://backlog.example",
             "--http-trust-proxy",
             "--auth-basic=alice:one",
             "--auth-basic=bob:two:parts",
@@ -476,7 +477,13 @@ def test_grouped_server_config_round_trip(
     values = tomllib.loads(target.read_text())["mcp"]
     assert values == {
         "protocol": "http",
-        "http": {"listen": "0.0.0.0", "port": 4321, "no_console": True, "trust_proxy": True},
+        "http": {
+            "listen": "0.0.0.0",
+            "port": 4321,
+            "no_console": True,
+            "allowed_origin": "https://backlog.example",
+            "trust_proxy": True,
+        },
         "auth": {
             "basic": ["alice:one", "bob:two:parts"],
             "jwt": {
@@ -498,6 +505,7 @@ def test_grouped_server_config_round_trip(
         "address": "0.0.0.0",
         "port": 4321,
         "console": False,
+        "allowed_origins": ["https://backlog.example"],
         "trust_proxy": True,
         "basic": ["alice:one", "bob:two:parts"],
         "jwt_public_key": "/etc/public.pem",

@@ -1,7 +1,10 @@
 """The HTTP front end: Basic auth, the console, and the same MCP surface as stdio."""
 
+import asyncio
 import json
+import signal
 from base64 import b64encode, urlsafe_b64encode
+from collections.abc import Callable
 
 import pytest
 from aiohttp import ClientSession, encode_basic_auth
@@ -13,6 +16,7 @@ from aiohttp_tiny_mcp.testing import pick
 from conftest import Credentials
 from test_server import call
 
+from backlog_mcp import httpd
 from backlog_mcp import server as operations
 from backlog_mcp.auth import credentials, user_identity
 from backlog_mcp.backlog import Backlog
@@ -208,12 +212,82 @@ async def test_a_foreign_origin_is_refused_unless_the_proxy_is_trusted(
         assert (response.status == 403) is not trust_proxy
 
 
+@pytest.mark.parametrize(
+    ("origin", "accepted"),
+    [
+        ("https://backlog.example", True),
+        ("https://other.example", False),
+    ],
+)
+async def test_an_exact_external_origin_can_be_allowed(
+    backlog: Backlog, origin: str, accepted: bool
+) -> None:
+    app = application(
+        backlog,
+        console=False,
+        allowed_origins=["https://backlog.example"],
+    )
+    async with (
+        TestServer(app) as server,
+        ClientSession(headers={"Origin": origin}) as session,
+        session.post(server.make_url(ENDPOINT_PATH), json={}) as response,
+    ):
+        assert (response.status != 403) is accepted
+
+
 async def test_console_can_be_disabled(backlog: Backlog) -> None:
     async with (
         TestClient(TestServer(application(backlog, console=False))) as client,
         client.get(CONSOLE_PATH) as response,
     ):
         assert response.status == 404
+
+
+async def test_serve_cleans_up_after_sigterm(
+    backlog: Backlog, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    callbacks: dict[signal.Signals, Callable[[], None]] = {}
+    shutdown_timeouts: list[float] = []
+    loop = asyncio.get_running_loop()
+    app_runner = httpd.web.AppRunner
+
+    def runner(*args: object, shutdown_timeout: float, **kwargs: object) -> object:
+        shutdown_timeouts.append(shutdown_timeout)
+        return app_runner(*args, shutdown_timeout=shutdown_timeout, **kwargs)
+
+    def add_signal_handler(signum: signal.Signals, callback: Callable[[], None]) -> None:
+        callbacks[signum] = callback
+
+    def remove_signal_handler(signum: signal.Signals) -> bool:
+        callbacks.pop(signum, None)
+        return True
+
+    monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
+    monkeypatch.setattr(loop, "remove_signal_handler", remove_signal_handler)
+    monkeypatch.setattr(httpd.web, "AppRunner", runner)
+    task = asyncio.create_task(
+        httpd.serve(
+            backlog,
+            address="127.0.0.1",
+            port=0,
+            console=False,
+            shutdown_timeout=0.2,
+        )
+    )
+    for _ in range(300):
+        if signal.SIGTERM in callbacks:
+            break
+        if task.done():
+            await task
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("server did not install its SIGTERM handler")
+
+    callbacks[signal.SIGTERM]()
+    await asyncio.wait_for(task, timeout=1)
+    assert shutdown_timeouts == [0.2]
+    assert backlog.database.connection is None
+    assert backlog.database.path.exists()
 
 
 async def test_get_notification_stream_survives_restart(

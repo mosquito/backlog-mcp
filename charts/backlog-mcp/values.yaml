@@ -1,0 +1,94 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/mosquito/backlog-mcp
+  pullPolicy: IfNotPresent
+  # Set this to the immutable manifest digest of the image you publish or import.
+  digest: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+strategy:
+  type: Recreate
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  storageClass: ""
+  size: 1Gi
+  existingClaim: ""
+  # Keep a chart-created claim when the release is uninstalled.
+  retain: true
+  annotations: {}
+
+# This Secret is created outside the chart. It must contain the configured key,
+# whose value is a shell-quoted BACKLOG_MCP_AUTH_BASIC account list.
+auth:
+  existingSecret: ""
+  existingSecretKey: BACKLOG_MCP_AUTH_BASIC
+
+http:
+  # Exact external browser Origin accepted behind TLS termination, for example
+  # https://backlog.example.com. Empty keeps same-origin validation only.
+  allowedOrigin: ""
+  # Enable only when a trusted reverse proxy validates Origins itself.
+  trustProxy: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 5
+    timeoutSeconds: 1
+  readiness:
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 1
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 1
+    failureThreshold: 3
+
+terminationGracePeriodSeconds: 30
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+test:
+  image:
+    repository: busybox
+    digest: sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+    pullPolicy: IfNotPresent

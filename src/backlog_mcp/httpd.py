@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import signal
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
@@ -130,6 +131,7 @@ def application(
     jwt_issuer: str = "",
     jwt_audience: str = "",
     console: bool = True,
+    allowed_origins: Sequence[str] = (),
     trust_proxy: bool = False,
 ) -> web.Application:
     """The authenticated MCP subapp at `/mcp` and the public UI at `/ui`.
@@ -137,9 +139,9 @@ def application(
     Without Basic credentials or a JWT key, requests do not require authentication.
     Project memberships control data access. Sessions remain principal-scoped.
 
-    The endpoint refuses a browser `Origin` that is not its own, against DNS rebinding. Behind
-    a TLS-terminating reverse proxy the scheme it sees is not the public one, so `trust_proxy`
-    turns that check off: the proxy must validate the origin instead.
+    The endpoint refuses a browser `Origin` that is not its own, against DNS rebinding.
+    `allowed_origins` adds exact public origins for TLS termination without disabling this check.
+    `trust_proxy` turns the check off entirely, so the proxy must validate the origin instead.
     """
     policies: list[Authentication] = []
     accounts: list[tuple[str, str]] = []
@@ -168,7 +170,11 @@ def application(
         log.warning("no credentials given: every request is served without authentication")
     configured, storage = persistent_registry(backlog, policies)
     middlewares: list[Middleware] = [bind(backlog, configured)]
-    endpoint = Endpoint(configured, trust_proxy_origin_validation=trust_proxy)
+    endpoint = Endpoint(
+        configured,
+        allowed_origins=set(allowed_origins),
+        trust_proxy_origin_validation=trust_proxy,
+    )
     if policies:
         middlewares.insert(0, authentication(endpoint))
     mcp = web.Application(middlewares=middlewares)
@@ -207,16 +213,38 @@ def application(
     return app
 
 
-async def serve(backlog: Backlog, *, address: str, port: int, **kw: Any) -> None:
-    """Serve until cancelled or interrupted. Logs go to stderr, as they do on stdio."""
-    runner = web.AppRunner(application(backlog, **kw))
-    await runner.setup()
+async def serve(
+    backlog: Backlog,
+    *,
+    address: str,
+    port: int,
+    shutdown_timeout: float = 8.0,
+    **kw: Any,
+) -> None:
+    """Serve until interrupted, then clean up HTTP and database resources.
+
+    aiohttp can spend ``shutdown_timeout`` in each of two request-draining phases, so the
+    default remains well below half of the container's 30-second termination grace period.
+    """
+    runner = web.AppRunner(application(backlog, **kw), shutdown_timeout=shutdown_timeout)
+    loop = asyncio.get_running_loop()
+    stopped = asyncio.Event()
+    registered: list[signal.Signals] = []
     try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(signum, stopped.set)
+                registered.append(signum)
+            except NotImplementedError:
+                pass
+        await runner.setup()
         await web.TCPSite(runner, address, port).start()
         where = f"http://{address}:{port}"
         log.info("serving %s%s, console at %s%s", where, ENDPOINT_PATH, where, CONSOLE_PATH)
-        await asyncio.Event().wait()
+        await stopped.wait()
     finally:
+        for signum in registered:
+            loop.remove_signal_handler(signum)
         await runner.cleanup()
 
 

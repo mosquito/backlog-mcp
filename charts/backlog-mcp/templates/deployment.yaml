@@ -1,0 +1,132 @@
+{{- include "backlog-mcp.requireBool" (list .Values.persistence.enabled "persistence.enabled") -}}
+{{- include "backlog-mcp.requireBool" (list .Values.http.trustProxy "http.trustProxy") -}}
+{{- include "backlog-mcp.validatePodAnnotations" .Values.podAnnotations -}}
+{{- $podLabels := mergeOverwrite (deepCopy .Values.podLabels) (include "backlog-mcp.selectorLabels" . | fromYaml) }}
+{{- $podAnnotations := mergeOverwrite (deepCopy .Values.podAnnotations) (dict "checksum/auth-reference" (printf "%s:%s" (include "backlog-mcp.authSecretName" .) (include "backlog-mcp.authSecretKey" .) | sha256sum)) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "backlog-mcp.fullname" . | quote }}
+  labels:
+    {{- include "backlog-mcp.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "backlog-mcp.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- toYaml $podLabels | nindent 8 }}
+      annotations:
+        {{- toYaml $podAnnotations | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "backlog-mcp.serviceAccountName" . | quote }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: {{ include "backlog-mcp.intRange" (list .Values.terminationGracePeriodSeconds "terminationGracePeriodSeconds" 25 2147483647) }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: backlog-mcp
+          image: {{ include "backlog-mcp.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
+          command:
+            - /usr/bin/dumb-init
+            - --
+            - /app/.venv/bin/backlog-mcp
+          args:
+            - --protocol=http
+            - --http-listen=0.0.0.0
+            - --http-port=3009
+            - --http-no-console
+{{- with .Values.http.allowedOrigin }}
+            - {{ printf "--http-allowed-origin=%s" . | quote }}
+{{- end }}
+{{- if .Values.http.trustProxy }}
+            - --http-trust-proxy
+{{- end }}
+          env:
+            - name: BACKLOG_MCP_DATABASE
+              value: /data/backlog.sqlite3
+            - name: BACKLOG_MCP_AUTH_BASIC
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "backlog-mcp.authSecretName" . | quote }}
+                  key: {{ include "backlog-mcp.authSecretKey" . | quote }}
+          ports:
+            - name: http
+              containerPort: 3009
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: http
+            failureThreshold: {{ include "backlog-mcp.intRange" (list .Values.probes.startup.failureThreshold "probes.startup.failureThreshold" 1 2147483647) }}
+            periodSeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.startup.periodSeconds "probes.startup.periodSeconds" 1 2147483647) }}
+            timeoutSeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.startup.timeoutSeconds "probes.startup.timeoutSeconds" 1 2147483647) }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.readiness.initialDelaySeconds "probes.readiness.initialDelaySeconds" 0 2147483647) }}
+            periodSeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.readiness.periodSeconds "probes.readiness.periodSeconds" 1 2147483647) }}
+            timeoutSeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.readiness.timeoutSeconds "probes.readiness.timeoutSeconds" 1 2147483647) }}
+            failureThreshold: {{ include "backlog-mcp.intRange" (list .Values.probes.readiness.failureThreshold "probes.readiness.failureThreshold" 1 2147483647) }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.liveness.initialDelaySeconds "probes.liveness.initialDelaySeconds" 0 2147483647) }}
+            periodSeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.liveness.periodSeconds "probes.liveness.periodSeconds" 1 2147483647) }}
+            timeoutSeconds: {{ include "backlog-mcp.intRange" (list .Values.probes.liveness.timeoutSeconds "probes.liveness.timeoutSeconds" 1 2147483647) }}
+            failureThreshold: {{ include "backlog-mcp.intRange" (list .Values.probes.liveness.failureThreshold "probes.liveness.failureThreshold" 1 2147483647) }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "backlog-mcp.pvcName" . | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

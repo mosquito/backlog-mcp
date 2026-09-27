@@ -394,6 +394,11 @@ class HTTPOptions(argclass.Group):
     no_console: bool = argclass.Argument(
         default=False, help="Do not serve the bundled MCP console at /console"
     )
+    allowed_origin: str = argclass.Argument(
+        default="",
+        help="Additional exact browser Origin accepted by the HTTP endpoint",
+        nargs=argclass.Nargs.ZERO_OR_MORE,
+    )
     trust_proxy: bool = argclass.Argument(
         default=False,
         help=(
@@ -506,6 +511,7 @@ class Serve(Command):
                     jwt_issuer=self.auth.jwt.issuer,
                     jwt_audience=self.auth.jwt.audience,
                     console=not self.http.no_console,
+                    allowed_origins=[self.http.allowed_origin] if self.http.allowed_origin else [],
                     trust_proxy=self.http.trust_proxy,
                 )
             case _:
