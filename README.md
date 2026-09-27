@@ -433,16 +433,18 @@ related names. `--config FILE` is accepted before and after `mcp`. Over HTTP the
 lives at `/mcp` and the bundled console at `/console`. Configure Basic credentials or a JWT
 verification key to protect MCP requests. The console HTML, JS, and CSS are public;
 they contain no backlog data. Without authentication, bind to `127.0.0.1`.
-The endpoint refuses a browser
-`Origin` other than its own, against DNS rebinding; behind a TLS-terminating reverse proxy the
-scheme it sees differs from the public one, so pass `--http-trust-proxy` and let the proxy
-validate origins. One HTTP server can answer for several computers; see [Computers](#computers).
+The endpoint refuses a browser `Origin` other than its own, against DNS rebinding. Behind a
+TLS-terminating reverse proxy, pass the exact public origin with `--http-allowed-origin`; this
+retains validation when the backend sees a different scheme. Use `--http-trust-proxy` only when
+the proxy validates origins itself. One HTTP server can answer for several computers; see
+[Computers](#computers).
 
 Server options use the same group structure in each configuration source:
 
 | CLI flag | TOML table and key | Environment variable |
 | --- | --- | --- |
 | `--http-port` | `[mcp.http] port` | `BACKLOG_MCP_HTTP_PORT` |
+| `--http-allowed-origin` | `[mcp.http] allowed_origin` | `BACKLOG_MCP_HTTP_ALLOWED_ORIGIN` |
 | `--auth-basic` | `[mcp.auth] basic` | `BACKLOG_MCP_AUTH_BASIC` |
 | `--auth-jwt-public-key` | `[mcp.auth.jwt] public_key` | `BACKLOG_MCP_AUTH_JWT_PUBLIC_KEY` |
 
