@@ -9,6 +9,7 @@ from pathlib import Path
 
 import argclass
 import pytest
+from yarl import URL
 
 from backlog_mcp import cli, render
 from backlog_mcp.backlog import Backlog
@@ -450,8 +451,12 @@ def test_generate_config_on_the_server_command_sees_its_options(
     assert loaded["mcp"] == {"protocol": "http", "http": {"port": 3010}, "auth": {"jwt": {}}}
 
 
+@pytest.mark.parametrize(
+    "origins",
+    [[], ["https://backlog.example"], ["https://backlog.example", "https://other.example"]],
+)
 def test_grouped_server_config_round_trip(
-    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, origins: list[str]
 ) -> None:
     target = tmp_path / "server.toml"
     secret = "test-only-jwt-secret-32-bytes-long"
@@ -462,7 +467,8 @@ def test_grouped_server_config_round_trip(
             "--http-listen=0.0.0.0",
             "--http-port=4321",
             "--http-no-console",
-            "--http-allowed-origin=https://backlog.example",
+            "--http-allowed-origin",
+            *origins,
             "--http-trust-proxy",
             "--auth-basic=alice:one",
             "--auth-basic=bob:two:parts",
@@ -481,7 +487,7 @@ def test_grouped_server_config_round_trip(
             "listen": "0.0.0.0",
             "port": 4321,
             "no_console": True,
-            "allowed_origin": "https://backlog.example",
+            **({"allowed_origin": origins} if origins else {}),
             "trust_proxy": True,
         },
         "auth": {
@@ -505,7 +511,7 @@ def test_grouped_server_config_round_trip(
         "address": "0.0.0.0",
         "port": 4321,
         "console": False,
-        "allowed_origins": ["https://backlog.example"],
+        "allowed_origins": frozenset(URL(origin) for origin in origins),
         "trust_proxy": True,
         "basic": ["alice:one", "bob:two:parts"],
         "jwt_public_key": "/etc/public.pem",
@@ -513,6 +519,35 @@ def test_grouped_server_config_round_trip(
         "jwt_issuer": "issuer",
         "jwt_audience": "backlog",
     }
+
+
+@pytest.mark.parametrize(
+    "args, origins",
+    [
+        ([], []),
+        (["--http-allowed-origin"], []),
+        (["--http-allowed-origin=https://backlog.example"], ["https://backlog.example"]),
+        (
+            ["--http-allowed-origin", "https://backlog.example", "https://other.example"],
+            ["https://backlog.example", "https://other.example"],
+        ),
+        (
+            ["--http-allowed-origin", "https://backlog.example", "https://backlog.example"],
+            ["https://backlog.example"],
+        ),
+    ],
+)
+def test_http_allowed_origins_reach_server(
+    run: Runner, monkeypatch: pytest.MonkeyPatch, args: list[str], origins: list[str]
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def serve(backlog: object, **kwargs: object) -> None:
+        seen.update(kwargs)
+
+    monkeypatch.setattr(cli.httpd, "serve", serve)
+    assert run("mcp", "--protocol=http", *args)[0] == 0
+    assert seen["allowed_origins"] == frozenset(URL(origin) for origin in origins)
 
 
 def test_generate_config_prints_defaults_commented_out(run: Runner) -> None:
@@ -529,6 +564,13 @@ def test_generate_config_prints_defaults_commented_out(run: Runner) -> None:
     #: The other commands take their options on the command line only.
     assert "[install]" not in text
     assert "[list]" not in text
+
+
+def test_http_allowed_origins_reject_malformed_url() -> None:
+    parser = cli.CLI(config_files=[])
+    with pytest.raises(SystemExit) as raised:
+        parser.parse_args(["mcp", "--http-allowed-origin", "https://backlog.example:invalid"])
+    assert raised.value.code == 2
 
 
 def test_server_options_come_from_the_config_file(

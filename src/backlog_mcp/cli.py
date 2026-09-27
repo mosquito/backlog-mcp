@@ -23,6 +23,7 @@ import rtoml
 from aiohttp import ClientError as HTTPClientError
 from aiohttp_tiny_mcp import ClientError, elicit_accept
 from rich.prompt import Confirm, Prompt
+from yarl import URL
 
 from . import embeddings, httpd, paths, skills
 from .auth import user_identity
@@ -307,6 +308,8 @@ class ConfigTemplate(argclass.TOMLConfigGenerator):
 
     @staticmethod
     def named(field: argclass.ConfigField) -> argclass.ConfigField:
+        if field.key == "allowed_origin" and field.value is not None:
+            return dataclasses.replace(field, value=[str(origin) for origin in field.value])
         if field.key != "log_level" or field.value is None:
             return field
         value = field.value
@@ -394,8 +397,10 @@ class HTTPOptions(argclass.Group):
     no_console: bool = argclass.Argument(
         default=False, help="Do not serve the bundled MCP console at /console"
     )
-    allowed_origin: str = argclass.Argument(
-        default="",
+    allowed_origin: frozenset[URL] = argclass.Argument(
+        default=[],
+        type=URL,
+        converter=frozenset,
         help="Additional exact browser Origin accepted by the HTTP endpoint",
         nargs=argclass.Nargs.ZERO_OR_MORE,
     )
@@ -511,7 +516,7 @@ class Serve(Command):
                     jwt_issuer=self.auth.jwt.issuer,
                     jwt_audience=self.auth.jwt.audience,
                     console=not self.http.no_console,
-                    allowed_origins=[self.http.allowed_origin] if self.http.allowed_origin else [],
+                    allowed_origins=self.http.allowed_origin,
                     trust_proxy=self.http.trust_proxy,
                 )
             case _:

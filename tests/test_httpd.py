@@ -15,6 +15,7 @@ from aiohttp_tiny_mcp.protocol.selection import AdapterSet
 from aiohttp_tiny_mcp.testing import pick
 from conftest import Credentials
 from test_server import call
+from yarl import URL
 
 from backlog_mcp import httpd
 from backlog_mcp import server as operations
@@ -216,7 +217,8 @@ async def test_a_foreign_origin_is_refused_unless_the_proxy_is_trusted(
     ("origin", "accepted"),
     [
         ("https://backlog.example", True),
-        ("https://other.example", False),
+        ("https://other.example", True),
+        ("https://evil.example", False),
     ],
 )
 async def test_an_exact_external_origin_can_be_allowed(
@@ -225,7 +227,7 @@ async def test_an_exact_external_origin_can_be_allowed(
     app = application(
         backlog,
         console=False,
-        allowed_origins=["https://backlog.example"],
+        allowed_origins=[URL("https://backlog.example"), URL("https://other.example")],
     )
     async with (
         TestServer(app) as server,

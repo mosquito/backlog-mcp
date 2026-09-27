@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import signal
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from typing import Any
 
 from aiohttp import web
@@ -16,6 +16,7 @@ from aiohttp_tiny_mcp.auth.jwt import HMACJWTVerifier, PublicKeyJWTVerifier
 from aiohttp_tiny_mcp.console import Console
 from aiohttp_tiny_mcp.storage.namespaces import namespace
 from aiohttp_tiny_mcp.storage.sqlite import SqliteStorage
+from yarl import URL
 
 from . import webui
 from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, user_identity
@@ -131,7 +132,7 @@ def application(
     jwt_issuer: str = "",
     jwt_audience: str = "",
     console: bool = True,
-    allowed_origins: Sequence[str] = (),
+    allowed_origins: Collection[URL] = (),
     trust_proxy: bool = False,
 ) -> web.Application:
     """The authenticated MCP subapp at `/mcp` and the public UI at `/ui`.
@@ -172,7 +173,8 @@ def application(
     middlewares: list[Middleware] = [bind(backlog, configured)]
     endpoint = Endpoint(
         configured,
-        allowed_origins=set(allowed_origins),
+        # aiohttp-tiny-mcp currently accepts strings, not URL objects.
+        allowed_origins={str(origin) for origin in allowed_origins},
         trust_proxy_origin_validation=trust_proxy,
     )
     if policies:
