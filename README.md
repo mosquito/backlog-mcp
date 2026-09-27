@@ -434,9 +434,10 @@ lives at `/mcp` and the bundled console at `/console`. Configure Basic credentia
 verification key to protect MCP requests. The console HTML, JS, and CSS are public;
 they contain no backlog data. Without authentication, bind to `127.0.0.1`.
 The endpoint refuses a browser `Origin` other than its own, against DNS rebinding. Behind a
-TLS-terminating reverse proxy, pass the exact public origin with `--http-allowed-origin`; this
-retains validation when the backend sees a different scheme. Use `--http-trust-proxy` only when
-the proxy validates origins itself. One HTTP server can answer for several computers; see
+TLS-terminating reverse proxy, pass the exact public origins with
+`--http-allowed-origin ORIGIN [ORIGIN ...]`; this retains validation when the backend sees a
+different scheme. Use `--http-trust-proxy` only when the proxy validates origins itself. One HTTP
+server can answer for several computers; see
 [Computers](#computers).
 
 Server options use the same group structure in each configuration source:
@@ -447,6 +448,19 @@ Server options use the same group structure in each configuration source:
 | `--http-allowed-origin` | `[mcp.http] allowed_origin` | `BACKLOG_MCP_HTTP_ALLOWED_ORIGIN` |
 | `--auth-basic` | `[mcp.auth] basic` | `BACKLOG_MCP_AUTH_BASIC` |
 | `--auth-jwt-public-key` | `[mcp.auth.jwt] public_key` | `BACKLOG_MCP_AUTH_JWT_PUBLIC_KEY` |
+
+Use a TOML array for multiple allowed origins:
+
+```toml
+[mcp.http]
+allowed_origin = ["https://backlog.example", "https://backlog-admin.example"]
+```
+
+In the environment, use a quoted list literal, not a whitespace-separated string:
+
+```sh
+export BACKLOG_MCP_HTTP_ALLOWED_ORIGIN='["https://backlog.example", "https://backlog-admin.example"]'
+```
 
 Move flat HTTP settings to `[mcp.http]`, Basic accounts to `[mcp.auth]`, and JWT
 settings to `[mcp.auth.jwt]`. Replace `--basic` with `--auth-basic` and

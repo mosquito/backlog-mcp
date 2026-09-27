@@ -573,6 +573,25 @@ def test_http_allowed_origins_reject_malformed_url() -> None:
     assert raised.value.code == 2
 
 
+def test_http_allowed_origins_use_environment_and_zero_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "BACKLOG_MCP_HTTP_ALLOWED_ORIGIN",
+        '["https://backlog.example", "https://backlog-admin.example"]',
+    )
+    parser = cli.CLI(config_files=[], auto_env_var_prefix="BACKLOG_MCP_")
+    parser.parse_args(["mcp"])
+    assert parser.mcp.http.allowed_origin == frozenset(
+        [URL("https://backlog.example"), URL("https://backlog-admin.example")]
+    )
+
+    parser.parse_args(["mcp", "--http-allowed-origin=https://override.example"])
+    assert parser.mcp.http.allowed_origin == frozenset([URL("https://override.example")])
+    parser.parse_args(["mcp", "--http-allowed-origin"])
+    assert parser.mcp.http.allowed_origin == frozenset()
+
+
 def test_server_options_come_from_the_config_file(
     run: Runner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
