@@ -397,6 +397,7 @@ class HTTPOptions(argclass.Group):
     allowed_origin: str = argclass.Argument(
         default="",
         help="Additional exact browser Origin accepted by the HTTP endpoint",
+        nargs=argclass.Nargs.ZERO_OR_MORE,
     )
     trust_proxy: bool = argclass.Argument(
         default=False,
