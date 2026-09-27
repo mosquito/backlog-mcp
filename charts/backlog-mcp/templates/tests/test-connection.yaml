@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "backlog-mcp.fullname" . }}-test-connection"
+  labels:
+    {{- include "backlog-mcp.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: tcp-check
+      image: {{ include "backlog-mcp.testImage" . | quote }}
+      imagePullPolicy: {{ .Values.test.image.pullPolicy | quote }}
+      command:
+        - sh
+        - -ec
+        - {{ printf "nc -z -w 5 %s %s" (include "backlog-mcp.fullname" .) (include "backlog-mcp.intRange" (list .Values.service.port "service.port" 1 65535)) | quote }}
+      securityContext:
+        privileged: false
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL

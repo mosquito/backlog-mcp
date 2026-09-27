@@ -1,0 +1,14 @@
+apiVersion: v2
+name: backlog-mcp
+description: A secure, single-replica deployment of backlog-mcp with persistent SQLite storage
+type: application
+version: 0.32.1
+appVersion: "0.32.1"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - mcp
+  - backlog
+  - sqlite
+  - ai
+maintainers:
+  - name: mosquito

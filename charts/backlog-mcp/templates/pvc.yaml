@@ -1,0 +1,27 @@
+{{- include "backlog-mcp.requireBool" (list .Values.persistence.enabled "persistence.enabled") -}}
+{{- include "backlog-mcp.requireBool" (list .Values.persistence.retain "persistence.retain") -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+{{- $annotations := deepCopy .Values.persistence.annotations }}
+{{- if .Values.persistence.retain }}
+{{- $_ := set $annotations "helm.sh/resource-policy" "keep" }}
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "backlog-mcp.pvcName" . | quote }}
+  labels:
+    {{- include "backlog-mcp.labels" . | nindent 4 }}
+  {{- with $annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+{{- end }}

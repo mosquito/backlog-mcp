@@ -1,0 +1,23 @@
+{{- if .Release.IsInstall }}
+1. Create the external Secret before installing this release:
+
+   kubectl -n {{ .Release.Namespace }} create secret generic {{ include "backlog-mcp.authSecretName" . }} \
+     --from-literal={{ include "backlog-mcp.authSecretKey" . }}="$BACKLOG_MCP_AUTH_BASIC"
+{{- else }}
+1. To replace the credentials in the existing Secret, run:
+
+   kubectl -n {{ .Release.Namespace }} create secret generic {{ include "backlog-mcp.authSecretName" . }} \
+     --from-literal={{ include "backlog-mcp.authSecretKey" . }}="$BACKLOG_MCP_AUTH_BASIC" \
+     --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n {{ .Release.Namespace }} rollout restart deployment/{{ include "backlog-mcp.fullname" . }}
+{{- end }}
+
+2. The MCP endpoint is available inside the cluster at:
+
+   http://{{ include "backlog-mcp.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ include "backlog-mcp.intRange" (list .Values.service.port "service.port" 1 65535) }}/mcp
+
+{{- if .Values.ingress.enabled }}
+3. Ingress is enabled. Configure TLS in ingress.tls; the application only serves HTTP behind the ingress.
+{{- end }}
+
+The server uses one SQLite database. Keep replicaCount at 1 and strategy.type at Recreate.

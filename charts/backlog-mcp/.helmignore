@@ -1,0 +1,10 @@
+# macOS filesystem metadata
+.DS_Store
+._*
+templates/.DS_Store
+templates/._*
+templates/tests/.DS_Store
+templates/tests/._*
+
+# Local Helm output
+*.tgz
