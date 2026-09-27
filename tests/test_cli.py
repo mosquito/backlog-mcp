@@ -462,7 +462,9 @@ def test_grouped_server_config_round_trip(
             "--http-listen=0.0.0.0",
             "--http-port=4321",
             "--http-no-console",
-            "--http-allowed-origin=https://backlog.example",
+            "--http-allowed-origin",
+            "https://backlog.example",
+            "https://backlog-admin.example",
             "--http-trust-proxy",
             "--auth-basic=alice:one",
             "--auth-basic=bob:two:parts",
@@ -481,7 +483,10 @@ def test_grouped_server_config_round_trip(
             "listen": "0.0.0.0",
             "port": 4321,
             "no_console": True,
-            "allowed_origin": "https://backlog.example",
+            "allowed_origin": [
+                "https://backlog.example",
+                "https://backlog-admin.example",
+            ],
             "trust_proxy": True,
         },
         "auth": {
@@ -505,7 +510,10 @@ def test_grouped_server_config_round_trip(
         "address": "0.0.0.0",
         "port": 4321,
         "console": False,
-        "allowed_origins": ["https://backlog.example"],
+        "allowed_origins": [
+            "https://backlog.example",
+            "https://backlog-admin.example",
+        ],
         "trust_proxy": True,
         "basic": ["alice:one", "bob:two:parts"],
         "jwt_public_key": "/etc/public.pem",
@@ -513,6 +521,29 @@ def test_grouped_server_config_round_trip(
         "jwt_issuer": "issuer",
         "jwt_audience": "backlog",
     }
+
+
+def test_http_allowed_origins_use_environment_and_zero_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "BACKLOG_MCP_HTTP_ALLOWED_ORIGIN",
+        "https://backlog.example https://backlog-admin.example",
+    )
+    parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
+    parser.parse_args(["mcp"])
+    assert parser.mcp.http.allowed_origin == [
+        "https://backlog.example",
+        "https://backlog-admin.example",
+    ]
+
+    parser = cli.CLI()
+    parser.parse_args(["mcp", "--http-allowed-origin=https://backlog.example"])
+    assert parser.mcp.http.allowed_origin == ["https://backlog.example"]
+
+    parser = cli.CLI()
+    parser.parse_args(["mcp", "--http-allowed-origin"])
+    assert parser.mcp.http.allowed_origin == []
 
 
 def test_generate_config_prints_defaults_commented_out(run: Runner) -> None:

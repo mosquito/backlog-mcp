@@ -138,10 +138,14 @@ def repeated(*aliases: str, help: str, choices: tuple[str, ...] | None = None) -
     return cast(list[str], argclass.Argument(*aliases, **settings))
 
 
+def string_values(value: str | Sequence[str]) -> list[str]:
+    """Normalize a sequence or a shell-quoted environment default."""
+    return shlex.split(value) if isinstance(value, str) else [str(item) for item in value]
+
+
 def secret_accounts(value: str | Sequence[str]) -> list[str]:
     """Normalize environment defaults and keep every account masked in repr."""
-    values = shlex.split(value) if isinstance(value, str) else value
-    return [argclass.SecretString(str(item)) for item in values]
+    return [argclass.SecretString(item) for item in string_values(value)]
 
 
 class BasicAccountsAction(argparse.Action):
@@ -394,9 +398,10 @@ class HTTPOptions(argclass.Group):
     no_console: bool = argclass.Argument(
         default=False, help="Do not serve the bundled MCP console at /console"
     )
-    allowed_origin: str = argclass.Argument(
-        default="",
-        help="Additional exact browser Origin accepted by the HTTP endpoint",
+    allowed_origin: list[str] = argclass.Argument(
+        default=[],
+        converter=string_values,
+        help="Additional exact browser Origins accepted by the HTTP endpoint",
         nargs=argclass.Nargs.ZERO_OR_MORE,
     )
     trust_proxy: bool = argclass.Argument(
@@ -511,7 +516,7 @@ class Serve(Command):
                     jwt_issuer=self.auth.jwt.issuer,
                     jwt_audience=self.auth.jwt.audience,
                     console=not self.http.no_console,
-                    allowed_origins=[self.http.allowed_origin] if self.http.allowed_origin else [],
+                    allowed_origins=self.http.allowed_origin,
                     trust_proxy=self.http.trust_proxy,
                 )
             case _:
