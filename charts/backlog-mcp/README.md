@@ -26,6 +26,10 @@ configure the `ghcr.io/mosquito/backlog-mcp` image package and the chart package
 `mosquito/backlog-mcp` Actions write access (or inherit repository access).
 CI uses only `GITHUB_TOKEN` with `packages: write`.
 
+The application image supports `linux/amd64` and `linux/arm64` under the same release tag.
+Use the multi-platform image index digest in `image.digest` so Kubernetes selects the image
+for each node's architecture.
+
 For a private package, first run `helm registry login ghcr.io` with a token that has
 `read:packages`. Install a published chart by version:
 
