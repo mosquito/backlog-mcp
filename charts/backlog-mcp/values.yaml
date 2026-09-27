@@ -3,7 +3,8 @@ replicaCount: 1
 image:
   repository: ghcr.io/mosquito/backlog-mcp
   pullPolicy: IfNotPresent
-  # Set this to the immutable manifest digest of the image you publish or import.
+  # Release packaging fills this with the published multi-platform image index digest.
+  # For a source checkout or custom image, set the digest of the image you publish or import.
   digest: ""
 
 imagePullSecrets: []

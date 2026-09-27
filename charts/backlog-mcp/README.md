@@ -8,7 +8,7 @@ Helm chart API v2 and works with Helm v3 and v4.
 - Kubernetes 1.25 or later
 - Helm 3.12 or later, or Helm 4
 - A pre-created Secret containing Basic-auth accounts
-- The immutable manifest digest of the application image
+- For a source checkout or custom image: the immutable manifest digest of the application image
 - A ReadWriteOnce volume when persistence is enabled
 
 The server is intentionally a single replica with a `Recreate` strategy. SQLite does not support
@@ -27,8 +27,9 @@ configure the `ghcr.io/mosquito/backlog-mcp` image package and the chart package
 CI uses only `GITHUB_TOKEN` with `packages: write`.
 
 The application image supports `linux/amd64` and `linux/arm64` under the same release tag.
-Use the multi-platform image index digest in `image.digest` so Kubernetes selects the image
-for each node's architecture.
+Published charts include that release's multi-platform image index digest in `image.digest`,
+so no image override is needed. Kubernetes selects the image for each node's architecture.
+Override `image.digest` when deploying a custom image.
 
 For a private package, first run `helm registry login ghcr.io` with a token that has
 `read:packages`. Install a published chart by version:
@@ -154,7 +155,7 @@ Pod when data in an external Secret changes; restart the Deployment after rotati
 | Value | Default | Purpose |
 | --- | --- | --- |
 | `image.repository` | `ghcr.io/mosquito/backlog-mcp` | Application image repository. |
-| `image.digest` | `""` | Required immutable application manifest digest, for example `sha256:...`. |
+| `image.digest` | Release image index digest (empty in source checkout) | Immutable application image digest; override for a custom image. |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `auth.existingSecret` | `<release-fullname>-auth` | Existing Secret containing Basic-auth accounts. |
 | `auth.existingSecretKey` | `BACKLOG_MCP_AUTH_BASIC` | Secret data key passed to the process. |
