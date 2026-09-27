@@ -1,4 +1,6 @@
-.PHONY: all sync format lint types test coverage serve clean
+.PHONY: all sync format lint types test coverage serve clean docker-build
+
+DOCKER_IMAGE ?= backlog-mcp:local
 
 all: lint types test
 
@@ -24,6 +26,9 @@ coverage:
 
 serve:
 	uv run backlog mcp --protocol=http --http-listen=127.0.0.1 --http-port=3009
+
+docker-build:
+	docker build --platform linux/amd64 --tag "$(DOCKER_IMAGE)" .
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .coverage htmlcov
