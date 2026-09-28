@@ -1,9 +1,6 @@
 name: release
 
 on:
-  push:
-    tags:
-      - "*"
   release:
     types:
       - published
@@ -12,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 env:
@@ -58,7 +55,7 @@ jobs:
       contents: write
       packages: write
     env:
-      RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
       RELEASE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -172,10 +169,8 @@ jobs:
       - name: Attach the chart to the published GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" \
-              "$RUNNER_TEMP/backlog-mcp-${RELEASE_VERSION}.tgz" \
-              --clobber \
-              --repo "$GITHUB_REPOSITORY"
-          fi
+        run: >-
+          gh release upload "$RELEASE_TAG"
+          "$RUNNER_TEMP/backlog-mcp-${RELEASE_VERSION}.tgz"
+          --clobber
+          --repo "$GITHUB_REPOSITORY"
