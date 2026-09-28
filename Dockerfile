@@ -29,15 +29,11 @@ LABEL org.opencontainers.image.title="backlog-mcp" \
 ENV BACKLOG_MCP_DATABASE=/data/backlog.sqlite3 \
     BACKLOG_MCP_PROTOCOL=http \
     BACKLOG_MCP_HTTP_LISTEN=0.0.0.0 \
-    BACKLOG_MCP_HTTP_PORT=3009 \
-    BACKLOG_MCP_HTTP_NO_CONSOLE=true \
     HOME=/tmp \
-    PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONFAULTHANDLER=1 \
     PYTHONUNBUFFERED=1 \
-    TMPDIR=/tmp \
-    XDG_CACHE_HOME=/tmp/.cache
+    TMPDIR=/tmp
 
 RUN apk add --no-cache dumb-init=1.2.5-r4 \
     && addgroup -S -g 65532 backlog \

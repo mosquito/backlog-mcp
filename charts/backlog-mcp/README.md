@@ -13,8 +13,8 @@ Helm chart API v2 and works with Helm v3 and v4.
 
 The server is intentionally a single replica with a `Recreate` strategy. SQLite does not support
 multiple independent writers. The container listens on port 3009, stores its database at
-`/data/backlog.sqlite3`, and does not serve the diagnostic console. It serves HTTP only; terminate
-TLS at the ingress. Each HTTP MCP client must identify itself with a stable
+`/data/backlog.sqlite3`, and serves the bundled MCP console at `/console`. It serves HTTP only;
+terminate TLS at the ingress. Each HTTP MCP client must identify itself with a stable
 `?computer=<client-name>` query parameter, with optional `&project=<slug>`; without `computer`,
 the server records the client as `unknown`.
 
