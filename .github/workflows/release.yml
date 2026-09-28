@@ -1,6 +1,9 @@
 name: release
 
 on:
+  push:
+    tags:
+      - "*"
   release:
     types:
       - published
@@ -9,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -38,23 +41,25 @@ jobs:
           node-version: "22"
 
       - run: node --test tests/webui_client.mjs
+
+      - name: Set version from tag
+        run: uv version "${GITHUB_REF_NAME#v}"
+
       - run: uv sync --all-groups
       - run: uv run ruff format --check src tests
       - run: uv run ruff check src tests
       - run: uv run mypy src
       - run: uv run pytest -v --cov=backlog_mcp --cov-report=term-missing
 
-  validate:
-    if: >-
-      github.event_name == 'release' &&
-      github.event.action == 'published' &&
-      github.repository == 'mosquito/backlog-mcp'
+  publish:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-    outputs:
-      release_version: ${{ steps.version.outputs.release_version }}
-      release_revision: ${{ steps.version.outputs.release_revision }}
+      contents: write
+      packages: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+      RELEASE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -62,60 +67,13 @@ jobs:
           lfs: true
           persist-credentials: false
 
-      - id: version
-        name: Verify release and project versions
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Set version from tag
         run: |
-          python3 - <<'PY'
-          import os
-          import re
-          import subprocess
-          import tomllib
-          from pathlib import Path
-
-          def fail(message: str) -> None:
-              print(f"::error::{message}")
-              raise SystemExit(message)
-
-          tag = os.environ["RELEASE_TAG"]
-          match = re.fullmatch(r"v?([0-9]+\.[0-9]+\.[0-9]+)", tag)
-          if match is None:
-              fail("Release tags must be X.Y.Z or vX.Y.Z.")
-          release_version = match.group(1)
-
-          project_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          if project_version != release_version:
-              fail(
-                  f"Release tag version {release_version} must exactly match "
-                  f"project.version={project_version}."
-              )
-
-          revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-          if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
-              fail("The checked out release revision is not a full lowercase Git commit SHA.")
-
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
-              print(f"release_version={release_version}", file=output)
-              print(f"release_revision={revision}", file=output)
-          PY
-
-  publish:
-    needs: [test, validate]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
-    env:
-      RELEASE_TAG: ${{ github.event.release.tag_name }}
-      RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
-      RELEASE_REVISION: ${{ needs.validate.outputs.release_revision }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.validate.outputs.release_revision }}
-          lfs: true
-          persist-credentials: false
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          uv version "$VERSION"
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
 
@@ -146,12 +104,12 @@ jobs:
         with:
           images: ghcr.io/mosquito/backlog-mcp
           tags: |
-            type=raw,value=${{ needs.validate.outputs.release_version }}
+            type=raw,value=${{ env.RELEASE_VERSION }}
             type=raw,value=latest
           labels: |
             org.opencontainers.image.source=https://github.com/mosquito/backlog-mcp
-            org.opencontainers.image.revision=${{ needs.validate.outputs.release_revision }}
-            org.opencontainers.image.version=${{ needs.validate.outputs.release_version }}
+            org.opencontainers.image.revision=${{ env.RELEASE_REVISION }}
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
 
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
@@ -214,8 +172,10 @@ jobs:
       - name: Attach the chart to the published GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release upload "$RELEASE_TAG"
-          "$RUNNER_TEMP/backlog-mcp-${RELEASE_VERSION}.tgz"
-          --clobber
-          --repo "$GITHUB_REPOSITORY"
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              "$RUNNER_TEMP/backlog-mcp-${RELEASE_VERSION}.tgz" \
+              --clobber \
+              --repo "$GITHUB_REPOSITORY"
+          fi

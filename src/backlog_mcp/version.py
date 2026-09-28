@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-VERSION = "0.32.5"
+try:
+    VERSION = version("backlog-mcp")
+except PackageNotFoundError:
+    VERSION = "0.0.0"
+
 
 SHORT = 7
 
