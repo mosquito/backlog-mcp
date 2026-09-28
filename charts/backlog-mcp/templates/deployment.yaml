@@ -42,24 +42,15 @@ spec:
         - name: backlog-mcp
           image: {{ include "backlog-mcp.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy | quote }}
-          command:
-            - /usr/bin/dumb-init
-            - --
-            - /app/.venv/bin/backlog-mcp
-          args:
-            - --protocol=http
-            - --http-listen=0.0.0.0
-            - --http-port=3009
-            - --http-no-console
+          env:
 {{- with .Values.http.allowedOrigin }}
-            - {{ printf "--http-allowed-origin=%s" . | quote }}
+            - name: BACKLOG_MCP_HTTP_ALLOWED_ORIGIN
+              value: {{ list . | toJson | quote }}
 {{- end }}
 {{- if .Values.http.trustProxy }}
-            - --http-trust-proxy
+            - name: BACKLOG_MCP_HTTP_TRUST_PROXY
+              value: "true"
 {{- end }}
-          env:
-            - name: BACKLOG_MCP_DATABASE
-              value: /data/backlog.sqlite3
             - name: BACKLOG_MCP_AUTH_BASIC
               valueFrom:
                 secretKeyRef:
