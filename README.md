@@ -495,12 +495,16 @@ Use `[mcp.http]` for HTTP settings and `[mcp.auth]` for credentials.
 
 Basic accounts accept `foo:password` for plaintext or `bcrypt|foo|<hash>` for an
 existing bcrypt hash. The argument converter hashes plaintext passwords with a random
-salt and cost 10. Existing hashes remain unchanged, including their salt and cost.
+salt and a default cost of 10. Existing hashes remain unchanged, including their salt and cost.
 This applies to CLI arguments, environment variables, and TOML configuration.
+
+Set `--auth-bcrypt-cost`, `BACKLOG_MCP_AUTH_BCRYPT_COST`, or `bcrypt_cost` in `[mcp.auth]`
+to change the cost for new account hashes. The cost must be an integer from 4 to 31.
 
 Generate an account entry interactively with `backlog hash-password` (aliases: `pwhash`,
 `pw`, `hash`). It prompts for a username and a hidden password, then prints
 `bcrypt|username|<hash>`. This command does not open the database or connect to an MCP server.
+Use `backlog pw --bcrypt-cost 8` to select a different cost for the generated hash.
 
 Use `--generate-config` to write the converted accounts to a configuration file:
 

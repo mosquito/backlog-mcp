@@ -26,7 +26,14 @@ from rich.prompt import Confirm, Prompt
 from yarl import URL
 
 from . import embeddings, httpd, paths, skills
-from .auth import bcrypt_account, normalize_accounts, user_identity, validate_account
+from .auth import (
+    BCRYPT_COST,
+    bcrypt_account,
+    normalize_accounts,
+    user_identity,
+    validate_account,
+    validate_bcrypt_cost,
+)
 from .backlog import Backlog, UnknownProject, slugify
 from .client import Connection, Registration, ToolError, bind_directory, connect, directory_project
 from .models import (
@@ -146,10 +153,14 @@ def account_value(value: str) -> str:
     return value
 
 
-def secret_accounts(value: str | Sequence[str]) -> list[str]:
+def account_values(value: str | Sequence[str]) -> list[str]:
+    """Read a shell-quoted environment string or an account sequence."""
+    return shlex.split(value) if isinstance(value, str) else list(value)
+
+
+def secret_accounts(value: str | Sequence[str], cost: int = BCRYPT_COST) -> list[str]:
     """Hash plaintext account values and keep every account masked in repr."""
-    values = shlex.split(value) if isinstance(value, str) else value
-    return [argclass.SecretString(item) for item in normalize_accounts(values)]
+    return [argclass.SecretString(item) for item in normalize_accounts(account_values(value), cost)]
 
 
 class BasicAccountsAction(argparse.Action):
@@ -162,8 +173,12 @@ class BasicAccountsAction(argparse.Action):
         values: Any,
         option_string: str | None = None,
     ) -> None:
-        accounts = secret_accounts(getattr(namespace, self.dest, []) or [])
-        setattr(namespace, self.dest, [*accounts, *secret_accounts(values)])
+        accounts = account_values(getattr(namespace, self.dest, []) or [])
+        setattr(
+            namespace,
+            self.dest,
+            [argclass.SecretString(item) for item in [*accounts, *account_values(values)]],
+        )
 
 
 def build(options: CLI) -> Backlog:
@@ -306,17 +321,27 @@ class ConfigTemplate(argclass.TOMLConfigGenerator):
     TABLES = frozenset({"mcp"})
 
     def render(self, fields: Sequence[argclass.ConfigField]) -> str:
+        cost = validate_bcrypt_cost(
+            next(
+                (
+                    field.value
+                    for field in fields
+                    if field.attr_path == ("mcp", "auth", "bcrypt_cost")
+                ),
+                BCRYPT_COST,
+            )
+        )
         kept = [
-            self.named(field)
+            self.named(field, cost)
             for field in fields
             if not field.attr_path[:-1] or field.attr_path[0] in self.TABLES
         ]
         return super().render(kept)
 
     @staticmethod
-    def named(field: argclass.ConfigField) -> argclass.ConfigField:
+    def named(field: argclass.ConfigField, cost: int = BCRYPT_COST) -> argclass.ConfigField:
         if field.attr_path == ("mcp", "auth", "basic") and field.value is not None:
-            return dataclasses.replace(field, value=secret_accounts(field.value))
+            return dataclasses.replace(field, value=secret_accounts(field.value, cost))
         if field.key == "allowed_origin" and field.value is not None:
             return dataclasses.replace(field, value=[str(origin) for origin in field.value])
         if field.key != "log_level" or field.value is None:
@@ -443,6 +468,13 @@ class JWTOptions(argclass.Group):
 class AuthOptions(argclass.Group):
     """Credentials accepted by the HTTP server."""
 
+    # Argclass converts fields in declaration order, so the cost must precede the accounts.
+    bcrypt_cost: int = argclass.Argument(
+        default=BCRYPT_COST,
+        type=validate_bcrypt_cost,
+        help="Bcrypt cost for plaintext account conversion (4–31); existing hashes are unchanged",
+    )
+
     basic: list[str] = argclass.Secret(
         action=BasicAccountsAction,
         nargs="+",
@@ -458,15 +490,24 @@ class AuthOptions(argclass.Group):
 
     jwt = JWTOptions(title="JWT authentication")
 
+    def convert_accounts(self, value: str | Sequence[str]) -> list[str]:
+        return secret_accounts(value, cost=self.bcrypt_cost)
+
 
 class HashPassword(Command):
     """Prompt for Basic credentials and print one bcrypt account entry."""
+
+    bcrypt_cost: int = argclass.Argument(
+        default=BCRYPT_COST,
+        type=validate_bcrypt_cost,
+        help="Bcrypt cost for the generated password hash (4–31)",
+    )
 
     async def __call__(self) -> int:
         username = Prompt.ask("Username", console=errors)
         password = Prompt.ask("Password", password=True, console=errors)
         validate_account(username, password)
-        hashed = await asyncio.to_thread(bcrypt_account, f"{username}:{password}")
+        hashed = await asyncio.to_thread(bcrypt_account, f"{username}:{password}", self.bcrypt_cost)
         print(hashed)
         return 0
 
@@ -1743,6 +1784,15 @@ class CLI(argclass.Parser):
     environment prefix. `--generate-config` here, or on `mcp`, writes both back. The options
     of the other commands are command-line only.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        auth = self.mcp.auth
+        # Bind the converter to this parser's cloned group, not the shared class prototype.
+        auth.__arguments__ = {
+            **auth.__arguments__,
+            "basic": auth.__arguments__["basic"].copy(converter=auth.convert_accounts),
+        }
 
     log_level: int = argclass.LogLevel
 

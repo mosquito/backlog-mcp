@@ -6,6 +6,7 @@ from base64 import b64decode
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import partial
 
 import bcrypt
 from aiohttp import web
@@ -76,8 +77,19 @@ def validate_account(username: str, password: str) -> None:
         )
 
 
-def bcrypt_account(value: str) -> str:
+def validate_bcrypt_cost(value: int | str) -> int:
+    """Accept the bcrypt work-factor range."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValueError("Bcrypt cost must be an integer between 4 and 31")
+    cost = int(value)
+    if not 4 <= cost <= 31:
+        raise ValueError("Bcrypt cost must be between 4 and 31")
+    return cost
+
+
+def bcrypt_account(value: str, cost: int = BCRYPT_COST) -> str:
     """Convert one plaintext entry or validate an existing bcrypt entry."""
+    cost = validate_bcrypt_cost(cost)
     if value.startswith("bcrypt|") and ":" not in value:
         username, separator, hashed = value.removeprefix("bcrypt|").rpartition("|")
         if not separator or not re.fullmatch(
@@ -93,23 +105,27 @@ def bcrypt_account(value: str) -> str:
     encoded = password.encode("utf-8")
     if len(encoded) > 72:
         raise ValueError("Bcrypt passwords must not exceed 72 UTF-8 bytes")
-    hashed = bcrypt.hashpw(encoded, bcrypt.gensalt(rounds=BCRYPT_COST)).decode("ascii")
+    hashed = bcrypt.hashpw(encoded, bcrypt.gensalt(rounds=cost)).decode("ascii")
     return f"bcrypt|{username}|{hashed}"
 
 
-def normalize_accounts(values: Sequence[str]) -> list[str]:
+def normalize_accounts(values: Sequence[str], cost: int = BCRYPT_COST) -> list[str]:
     """Hash configuration values in a worker while keeping existing hashes unchanged."""
+    cost = validate_bcrypt_cost(cost)
     if not values:
         return []
     with ThreadPoolExecutor(max_workers=1) as executor:
-        return list(executor.map(bcrypt_account, values))
+        return list(executor.map(partial(bcrypt_account, cost=cost), values))
 
 
 class BasicAuthentication(BasicAuth):
     """Verify bcrypt passwords over Basic headers and query credentials."""
 
     def __init__(
-        self, *accounts: tuple[str, str], hashed_accounts: Sequence[tuple[str, str]] = ()
+        self,
+        *accounts: tuple[str, str],
+        hashed_accounts: Sequence[tuple[str, str]] = (),
+        cost: int = BCRYPT_COST,
     ) -> None:
         super().__init__(realm=REALM)
         if not accounts and not hashed_accounts:
@@ -118,7 +134,8 @@ class BasicAuthentication(BasicAuth):
             validate_account(username, password)
         normalized = normalize_accounts(
             [f"{username}:{password}" for username, password in accounts]
-            + [f"bcrypt|{username}|{hashed}" for username, hashed in hashed_accounts]
+            + [f"bcrypt|{username}|{hashed}" for username, hashed in hashed_accounts],
+            cost=cost,
         )
         self.password_hashes: dict[str, bytes] = {}
         for value in normalized:
