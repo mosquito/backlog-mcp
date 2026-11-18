@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from aiohttp import web
+from aiohttp_tiny_mcp.console import Console
 
 STATIC = Path(__file__).with_name("static")
 MODULES = (
@@ -47,11 +48,16 @@ INDEX_LINK = ", ".join(
 def application() -> web.Application:
     """Build the UI subapplication for mounting at /ui."""
     app = web.Application()
+    configurations = Console().render("agent-config.js")
 
     async def index(request: web.Request) -> web.FileResponse:
         return web.FileResponse(STATIC / "index.html", headers={"Link": INDEX_LINK})
 
+    async def agent_config(request: web.Request) -> web.Response:
+        return web.Response(text=configurations, content_type="application/javascript")
+
     app.router.add_get("", index)
     app.router.add_get("/", index)
+    app.router.add_get("/static/console-agent-config.js", agent_config)
     app.router.add_static("/static/", STATIC)
     return app

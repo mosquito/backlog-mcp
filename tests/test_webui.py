@@ -4,6 +4,7 @@ import re
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from aiohttp_tiny_mcp.console import Console
 
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.httpd import application
@@ -37,6 +38,7 @@ async def test_ui_is_public_and_mcp_is_protected(backlog: Backlog, console: bool
             "connect.html",
             "connect.js",
             "agent-config.js",
+            "console-agent-config.js",
             "connect.css",
         ]:
             response = await client.get("/ui/static/" + path)
@@ -50,6 +52,28 @@ async def test_ui_is_public_and_mcp_is_protected(backlog: Backlog, console: bool
         assert (await client.get("/ui/static/missing.js")).status == 404
         assert (await client.get("/ui/static/")).status == 403
         assert (await client.get("/ui-other")).status == 404
+
+
+@pytest.mark.parametrize("console", [False, True])
+async def test_agent_setup_uses_the_installed_console_generator(
+    backlog: Backlog, console: bool
+) -> None:
+    async with TestClient(
+        TestServer(application(backlog, basic=["user:secret"], console=console))
+    ) as client:
+        response = await client.get("/ui/static/console-agent-config.js")
+        assert response.status == 200
+        assert response.content_type == "application/javascript"
+        assert await response.text() == Console().render("agent-config.js")
+        page = await client.get("/ui/static/connect.html")
+        assert page.status == 200
+        scripts = re.findall(r"<script\b[^>]*>", await page.text())
+        generator = next(tag for tag in scripts if 'src="./console-agent-config.js"' in tag)
+        module = next(tag for tag in scripts if 'src="./connect.js"' in tag)
+        assert 'type="module"' not in generator
+        assert "async" not in generator
+        assert 'type="module"' in module
+        assert scripts.index(generator) < scripts.index(module)
 
 
 async def test_missing_browser_assets_do_not_challenge(backlog: Backlog) -> None:
