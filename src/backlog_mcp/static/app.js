@@ -1,4 +1,5 @@
 import { MCP, HttpError } from "./mcp.js";
+import { authorization, loadCredentials, saveCredentials, clearCredentials } from "./credentials.js";
 import { markdown } from "./markdown.js";
 import {
   el,
@@ -31,7 +32,6 @@ const content = document.querySelector("#content");
 const endpoint = document.documentElement.dataset.endpoint;
 const pageLoading = document.querySelector("#page-loading");
 let displayedUrl = "";
-const credentialKey = `backlog:auth:${endpoint}`;
 const statuses = ["todo", "doing", "blocked", "done", "cancelled"];
 const priorities = ["urgent", "high", "normal", "low"];
 const relations = [
@@ -97,16 +97,9 @@ function operation(fn) {
     }
   };
 }
-function credentials() {
-  return sessionStorage.getItem(credentialKey) || localStorage.getItem(credentialKey) || "";
-}
-function clearCredentials() {
-  sessionStorage.removeItem(credentialKey);
-  localStorage.removeItem(credentialKey);
-}
-async function connect(authorization = credentials()) {
+async function connect(auth = authorization(loadCredentials(endpoint))) {
   client?.close();
-  client = new MCP(endpoint, authorization, async (request) => {
+  client = new MCP(endpoint, auth, async (request) => {
     if (request.requestedSchema?.properties?.ok?.type !== "boolean")
       return { action: "decline" };
     const ok = await modal({
@@ -149,7 +142,6 @@ function showLogin(error, reportError = true) {
   });
   const userField = field("Username", username),
     secretField = field("Password", secret);
-  const remember = el("input", { type: "checkbox", name: "remember" });
   const message = el(
     "p",
     { class: "error", role: "alert" },
@@ -165,7 +157,6 @@ function showLogin(error, reportError = true) {
     field("Method", method),
     userField,
     secretField,
-    el("label", { class: "inline" }, remember, "Remember me"),
     message,
     submit,
   );
@@ -181,16 +172,13 @@ function showLogin(error, reportError = true) {
     submit.disabled = true;
     message.textContent = "";
     try {
-      if (method.value === "basic" && username.value.includes(":"))
-        throw new Error("The username cannot contain a colon.");
-      const bytes = new TextEncoder().encode(`${username.value}:${secret.value}`);
-      const authorization =
-        method.value === "basic"
-          ? "Basic " + btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""))
-          : "Bearer " + secret.value.trim();
-      await connect(authorization);
-      clearCredentials();
-      (remember.checked ? localStorage : sessionStorage).setItem(credentialKey, authorization);
+      const credentials = {
+        method: method.value,
+        username: username.value,
+        secret: method.value === "bearer" ? secret.value.trim() : secret.value,
+      };
+      await connect(authorization(credentials));
+      saveCredentials(endpoint, credentials);
     } catch (failure) {
       message.textContent = failure.message;
     } finally {
@@ -200,7 +188,7 @@ function showLogin(error, reportError = true) {
   content.replaceChildren(form);
 }
 document.querySelector("#logout").onclick = () => {
-  clearCredentials();
+  clearCredentials(endpoint);
   client?.close();
   identity = null;
   project = "";
@@ -1304,7 +1292,8 @@ document.addEventListener("click", (event) => {
 window.addEventListener("popstate", render);
 window.addEventListener("hashchange", render);
 connect().catch((error) => {
-  if (error instanceof HttpError && error.status === 401) showLogin(error, Boolean(credentials()));
+  if (error instanceof HttpError && error.status === 401)
+    showLogin(error, Boolean(loadCredentials(endpoint)));
   else {
     showLogin();
     notify(error);

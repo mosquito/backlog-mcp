@@ -197,7 +197,14 @@ def application(
             title=f"backlog {VERSION}",
             description=CONSOLE_ABOUT,
         )
-        page.setup(app, CONSOLE_PATH)
+
+        async def console_index(request: web.Request) -> web.Response:
+            raise web.HTTPFound(request.rel_url.with_path(CONSOLE_PATH, keep_query=True))
+
+        app.router.add_get(f"{CONSOLE_PATH}/", console_index)
+        app.add_routes(
+            route for route in page.routes(CONSOLE_PATH) if route.path != f"{CONSOLE_PATH}/"
+        )
 
     async def lifespan(app: web.Application) -> AsyncIterator[None]:
         connection = await backlog.open()

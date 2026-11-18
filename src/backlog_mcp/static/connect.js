@@ -1,4 +1,5 @@
 import { agentConfig } from "./agent-config.js";
+import { loadCredentials } from "./credentials.js";
 import { el, button, link } from "./dom.js";
 
 const form = document.querySelector("#connection-form");
@@ -119,26 +120,12 @@ method.onchange = () => {
   clearOutput();
 };
 function restoreCredentials() {
-  try {
-    const key = "backlog:auth:/mcp";
-    const authorization = sessionStorage.getItem(key) || localStorage.getItem(key) || "";
-    if (authorization.startsWith("Basic ")) {
-      const bytes = Uint8Array.from(atob(authorization.slice(6)), (c) => c.charCodeAt(0));
-      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      const separator = decoded.indexOf(":");
-      if (separator < 0) return;
-      method.value = "basic";
-      method.onchange();
-      username.value = decoded.slice(0, separator);
-      secret.value = decoded.slice(separator + 1);
-    } else if (authorization.startsWith("Bearer ")) {
-      method.value = "bearer";
-      method.onchange();
-      secret.value = authorization.slice(7);
-    }
-  } catch {
-    // Keep manual entry available if storage is blocked or credentials are malformed.
-  }
+  const credentials = loadCredentials(endpoint.value);
+  if (!credentials) return;
+  method.value = credentials.method;
+  method.onchange();
+  username.value = credentials.username;
+  secret.value = credentials.secret;
 }
 restoreCredentials();
 form.addEventListener("input", clearOutput);

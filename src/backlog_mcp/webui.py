@@ -7,6 +7,7 @@ from aiohttp import web
 STATIC = Path(__file__).with_name("static")
 MODULES = (
     "app.js",
+    "credentials.js",
     "mcp.js",
     "markdown.js",
     "dom.js",

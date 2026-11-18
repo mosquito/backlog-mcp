@@ -23,6 +23,7 @@ async def test_ui_is_public_and_mcp_is_protected(backlog: Backlog, console: bool
             assert "/ui/static/app.js" in text
         for path in [
             "app.js",
+            "credentials.js",
             "breadcrumbs.js",
             "app.css",
             "mcp.js",
@@ -65,6 +66,16 @@ async def test_root_redirects_to_public_ui(backlog: Backlog) -> None:
         assert response.status == 302
         assert response.headers["Location"] == "/ui/"
         assert "WWW-Authenticate" not in response.headers
+
+
+async def test_console_uses_one_credential_storage_path(backlog: Backlog) -> None:
+    async with TestClient(TestServer(application(backlog, basic=["user:secret"]))) as client:
+        response = await client.get("/console/?example=value", allow_redirects=False)
+        assert response.status == 302
+        assert response.headers["Location"] == "/console?example=value"
+        assert "WWW-Authenticate" not in response.headers
+        assert (await client.get(response.headers["Location"])).status == 200
+        assert (await client.get("/console/console.js")).status == 200
 
 
 async def test_index_supports_head_and_conditional_requests(backlog: Backlog) -> None:
