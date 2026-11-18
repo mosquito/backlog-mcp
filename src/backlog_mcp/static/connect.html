@@ -8,6 +8,7 @@
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./app.css" />
     <link rel="stylesheet" href="./connect.css" />
+    <script src="./console-agent-config.js"></script>
     <script type="module" src="./connect.js"></script>
   </head>
   <body>
@@ -45,12 +46,19 @@
           <button type="submit" class="primary">Generate setup</button>
         </form>
         <section class="panel setup-panel" aria-labelledby="setup-title">
-          <h2 id="setup-title">2. Choose your agent</h2>
-          <div id="agent-tabs" class="agent-tabs" aria-label="Agent">
-            <button type="button" data-agent="claude" aria-pressed="true">Claude Code</button>
-            <button type="button" data-agent="codex" aria-pressed="false">Codex</button>
-            <button type="button" data-agent="antigravity" aria-pressed="false">Antigravity</button>
+          <h2 id="setup-title">2. Configure your agent</h2>
+          <div class="agent-options">
+            <label>Agent<select id="agent"></select></label>
+            <label>Configuration level<select id="level">
+              <option value="user">User · all projects</option>
+              <option value="project">Project · this project only</option>
+            </select></label>
+            <label>Server name<input id="server-name" form="connection-form" value="backlog"
+              pattern="[A-Za-z0-9_-]{1,64}" maxlength="64" spellcheck="false" required /></label>
           </div>
+          <label id="include-credentials-field" class="inline">
+            <input id="include-credentials" type="checkbox" checked />Include authentication headers
+          </label>
           <p id="setup-empty" class="setup-empty">
             Enter your connection details to generate a ready-to-copy setup.
           </p>

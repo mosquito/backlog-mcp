@@ -26,8 +26,8 @@ jobs:
         with:
           node-version: "22"
 
-      - run: node --test tests/webui_client.mjs
       - run: uv sync --all-groups
+      - run: node --test tests/webui_client.mjs tests/webui_credentials.mjs tests/webui_agent_config.mjs
 
       - run: uv run ruff format --check src tests
       - run: uv run ruff check src tests

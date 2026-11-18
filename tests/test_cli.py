@@ -3,11 +3,14 @@
 import asyncio
 import json
 import os
+import shlex
+import threading
 import tomllib
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import argclass
+import bcrypt
 import pytest
 from yarl import URL
 
@@ -15,6 +18,18 @@ from backlog_mcp import cli, render
 from backlog_mcp.backlog import Backlog
 from backlog_mcp.models import Priority, Status
 from backlog_mcp.records import Note, Task
+
+STORED_ACCOUNT = "bcrypt|stored|$2b$10$wBnkrehiY8O.zVQbN/tlxeYzxnWkYMUO8w8ulizSvJkUJqIrluWcO"
+
+
+def assert_hashed_accounts(values: Sequence[str], expected: Sequence[tuple[str, str]]) -> None:
+    assert len(values) == len(expected)
+    for value, (username, password) in zip(values, expected, strict=True):
+        prefix, actual_username, hashed = str(value).split("|", 2)
+        assert prefix == "bcrypt"
+        assert actual_username == username
+        assert hashed.startswith("$2b$10$")
+        assert bcrypt.checkpw(password.encode("utf-8"), hashed.encode("ascii"))
 
 
 class Runner:
@@ -114,13 +129,16 @@ def test_aliases_are_unique_and_show_the_same_help(capsys: pytest.CaptureFixture
     def check(parser: argclass.Parser, names: list[str], short: list[str]) -> None:
         for name, child in parser.__subparsers__.items():
             aliases = child._parser_kwargs["aliases"]
-            assert len(aliases) == 1
-            alias = aliases[0]
-            assert len(alias) == 2 and alias.isalpha() and alias.islower()
-            assert alias not in seen
-            seen.add(alias)
-            assert help_text([*short, alias]) == help_text([*names, name])
-            check(child, [*names, name], [*short, alias])
+            if isinstance(child, cli.HashPassword):
+                assert set(aliases) == {"hash-password", "pwhash", "pw", "hash"}
+            else:
+                assert len(aliases) == 1
+                assert len(aliases[0]) == 2 and aliases[0].isalpha() and aliases[0].islower()
+            for alias in aliases:
+                assert alias not in seen
+                seen.add(alias)
+                assert help_text([*short, alias]) == help_text([*names, name])
+            check(child, [*names, name], [*short, aliases[0]])
 
     check(root, [], [])
 
@@ -481,6 +499,8 @@ def test_grouped_server_config_round_trip(
         )
     assert raised.value.code == 0
     values = tomllib.loads(target.read_text())["mcp"]
+    accounts = values["auth"]["basic"]
+    assert_hashed_accounts(accounts, [("alice", "one"), ("bob", "two:parts")])
     assert values == {
         "protocol": "http",
         "http": {
@@ -491,7 +511,7 @@ def test_grouped_server_config_round_trip(
             "trust_proxy": True,
         },
         "auth": {
-            "basic": ["alice:one", "bob:two:parts"],
+            "basic": accounts,
             "jwt": {
                 "public_key": "/etc/public.pem",
                 "pre_shared_key": secret,
@@ -513,7 +533,7 @@ def test_grouped_server_config_round_trip(
         "console": False,
         "allowed_origins": frozenset(URL(origin) for origin in origins),
         "trust_proxy": True,
-        "basic": ["alice:one", "bob:two:parts"],
+        "basic": accounts,
         "jwt_public_key": "/etc/public.pem",
         "jwt_pre_shared_key": secret,
         "jwt_issuer": "issuer",
@@ -654,20 +674,167 @@ def test_basic_accounts_accept_multiple_values_and_config(
     target.write_text('[mcp.auth]\nbasic = ["alice:one", "bob:two:parts"]\n')
     parser = cli.CLI(config_files=[target], config_parser_class=argclass.TOMLDefaultsParser)
     parser.parse_args(["mcp"])
-    assert [str(value) for value in parser.mcp.auth.basic] == ["alice:one", "bob:two:parts"]
+    assert_hashed_accounts(parser.mcp.auth.basic, [("alice", "one"), ("bob", "two:parts")])
     assert "two:parts" not in repr(parser.mcp.auth.basic)
     parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
     parser.parse_args(["mcp", "--auth-basic=alice:one", "--auth-basic", "bob:two", "carol:three"])
-    assert [str(value) for value in parser.mcp.auth.basic] == [
-        "alice:one",
-        "bob:two",
-        "carol:three",
-    ]
+    assert_hashed_accounts(
+        parser.mcp.auth.basic, [("alice", "one"), ("bob", "two"), ("carol", "three")]
+    )
     assert "alice:one" not in repr(parser.mcp.auth.basic)
     monkeypatch.setenv("BACKLOG_MCP_AUTH_BASIC", "alice:one bob:two")
     parser = cli.CLI(auto_env_var_prefix="BACKLOG_MCP_")
     parser.parse_args(["mcp"])
-    assert [str(value) for value in parser.mcp.auth.basic] == ["alice:one", "bob:two"]
+    assert_hashed_accounts(parser.mcp.auth.basic, [("alice", "one"), ("bob", "two")])
+
+
+def test_basic_converter_hashes_in_a_worker_and_masks_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caller = threading.get_ident()
+    workers: list[int] = []
+    hashpw = bcrypt.hashpw
+
+    def recording_hash(password: bytes, salt: bytes) -> bytes:
+        workers.append(threading.get_ident())
+        return hashpw(password, salt)
+
+    monkeypatch.setattr(bcrypt, "hashpw", recording_hash)
+    accounts = cli.secret_accounts(["foo:password", "literal:bcrypt|not-a-hash"])
+    assert_hashed_accounts(accounts, [("foo", "password"), ("literal", "bcrypt|not-a-hash")])
+    assert len(workers) == 2
+    assert all(worker != caller for worker in workers)
+    assert all(isinstance(account, argclass.SecretString) for account in accounts)
+    assert "password" not in repr(accounts)
+    assert "not-a-hash" not in repr(accounts)
+    assert cli.secret_accounts(accounts) == accounts
+    assert len(workers) == 2
+
+
+def test_basic_prehashed_accounts_survive_repeated_flags(tmp_path: Path) -> None:
+    source = tmp_path / "hashed.toml"
+    source.write_text(f"[mcp.auth]\nbasic = {json.dumps([STORED_ACCOUNT])}\n")
+    parser = cli.CLI(config_files=[source], config_parser_class=argclass.TOMLDefaultsParser)
+    parser.parse_args(["mcp", "--auth-basic", "alice:one", "--auth-basic", "bob:two:parts"])
+    accounts = parser.mcp.auth.basic
+    assert str(accounts[0]) == STORED_ACCOUNT
+    assert_hashed_accounts(accounts[1:], [("alice", "one"), ("bob", "two:parts")])
+    assert "one" not in repr(accounts)
+    assert "two:parts" not in repr(accounts)
+
+
+@pytest.mark.parametrize("source_kind", ["toml", "environment"])
+@pytest.mark.parametrize("command", [[], ["mcp"]])
+def test_generate_config_hashes_default_accounts_and_preserves_existing_hashes(
+    run: Runner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+    command: list[str],
+) -> None:
+    accounts = [STORED_ACCOUNT, "new:password with spaces"]
+    arguments: list[str] = []
+    if source_kind == "toml":
+        source = tmp_path / "source.toml"
+        source.write_text(f"[mcp.auth]\nbasic = {json.dumps(accounts)}\n")
+        arguments.extend(["--config", str(source)])
+    else:
+        monkeypatch.setenv("BACKLOG_MCP_AUTH_BASIC", shlex.join(accounts))
+    target = tmp_path / "generated.toml"
+    with pytest.raises(SystemExit) as raised:
+        run(*arguments, *command, "--generate-config", str(target))
+    assert raised.value.code == 0
+    text = target.read_text()
+    saved = tomllib.loads(text)["mcp"]["auth"]["basic"]
+    assert saved[0] == STORED_ACCOUNT
+    assert_hashed_accounts(saved[1:], [("new", "password with spaces")])
+    assert "password with spaces" not in text
+    assert not run.database.exists()
+    monkeypatch.delenv("BACKLOG_MCP_AUTH_BASIC", raising=False)
+    parser = cli.CLI(config_files=[target], config_parser_class=argclass.TOMLDefaultsParser)
+    parser.parse_args(["mcp"])
+    assert [str(account) for account in parser.mcp.auth.basic] == saved
+
+
+@pytest.mark.parametrize("command", ["hash-password", "pwhash", "pw", "hash"])
+def test_hash_password_uses_secure_prompts_and_needs_no_database_or_connection(
+    run: Runner, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    password = "p:a:ss🔑"
+    prompts: list[tuple[str, dict[str, object]]] = []
+    workers: list[int] = []
+    caller = threading.get_ident()
+    hashpw = bcrypt.hashpw
+
+    def ask(prompt: str, **kwargs: object) -> str:
+        prompts.append((prompt, kwargs))
+        return password if kwargs.get("password") else "foo"
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("hash-password must not open a database or an MCP connection")
+
+    def recording_hash(value: bytes, salt: bytes) -> bytes:
+        workers.append(threading.get_ident())
+        return hashpw(value, salt)
+
+    monkeypatch.setattr(cli.Prompt, "ask", ask)
+    monkeypatch.setattr(cli, "connect", unexpected)
+    monkeypatch.setattr(cli, "build", unexpected)
+    monkeypatch.setattr(bcrypt, "hashpw", recording_hash)
+    code = cli.main(
+        [
+            "--database",
+            str(run.database),
+            "--url",
+            "https://unreachable.example/mcp",
+            command,
+        ]
+    )
+    output = run.capsys.readouterr()
+    assert code == 0
+    assert len(output.out.splitlines()) == 1
+    assert_hashed_accounts(output.out.splitlines(), [("foo", password)])
+    assert password not in output.out + output.err
+    assert len(prompts) == 2
+    assert not prompts[0][1].get("password")
+    assert prompts[1][1]["password"] is True
+    assert all(options.get("console") is render.errors for _, options in prompts)
+    assert len(workers) == 1 and workers[0] != caller
+    assert not run.database.exists()
+
+
+@pytest.mark.parametrize(
+    "username,password",
+    [("", "secret"), ("bad:name", "secret"), ("foo", ""), ("foo", "é" * 37)],
+)
+def test_hash_password_rejects_invalid_credentials_without_printing_them(
+    run: Runner, monkeypatch: pytest.MonkeyPatch, username: str, password: str
+) -> None:
+    def ask(prompt: str, **kwargs: object) -> str:
+        return password if kwargs.get("password") else username
+
+    monkeypatch.setattr(cli.Prompt, "ask", ask)
+    code = cli.main(["--database", str(run.database), "hash-password"])
+    output = run.capsys.readouterr()
+    assert code == 1
+    assert output.out == ""
+    assert output.err
+    if password:
+        assert password not in output.err
+    assert not run.database.exists()
+
+
+def test_hash_password_can_be_cancelled_without_output(
+    run: Runner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def cancel(prompt: str, **kwargs: object) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.Prompt, "ask", cancel)
+    assert cli.main(["--database", str(run.database), "hash-password"]) == 130
+    output = run.capsys.readouterr()
+    assert output.out == ""
+    assert not run.database.exists()
 
 
 def test_computers_on_the_command_line(run: Runner, tmp_path: Path) -> None:

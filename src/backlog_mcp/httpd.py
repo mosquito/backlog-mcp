@@ -19,7 +19,13 @@ from aiohttp_tiny_mcp.storage.sqlite import SqliteStorage
 from yarl import URL
 
 from . import webui
-from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, user_identity
+from .auth import (
+    VERIFIED,
+    BasicAuthentication,
+    JWTAuthentication,
+    normalize_accounts,
+    user_identity,
+)
 from .backlog import Backlog, register
 from .server import ACTIVE_REGISTRY, VERSION, persistent_registry, use
 
@@ -147,12 +153,10 @@ def application(
     policies: list[Authentication] = []
     accounts: list[tuple[str, str]] = []
     if basic:
-        for account in basic:
-            user, separator, password = account.partition(":")
-            if not separator or not user or not password:
-                raise ValueError("Basic accounts must use username:password with non-empty values")
-            accounts.append((user, password))
-        policies.append(BasicAuthentication(*accounts))
+        for account in normalize_accounts(basic):
+            user, hashed = account.removeprefix("bcrypt|").rsplit("|", 1)
+            accounts.append((user, hashed))
+        policies.append(BasicAuthentication(hashed_accounts=accounts))
     if jwt_pre_shared_key:
         policies.append(
             JWTAuthentication(
@@ -197,7 +201,14 @@ def application(
             title=f"backlog {VERSION}",
             description=CONSOLE_ABOUT,
         )
-        page.setup(app, CONSOLE_PATH)
+
+        async def console_index(request: web.Request) -> web.Response:
+            raise web.HTTPFound(request.rel_url.with_path(CONSOLE_PATH, keep_query=True))
+
+        app.router.add_get(f"{CONSOLE_PATH}/", console_index)
+        app.add_routes(
+            route for route in page.routes(CONSOLE_PATH) if route.path != f"{CONSOLE_PATH}/"
+        )
 
     async def lifespan(app: web.Application) -> AsyncIterator[None]:
         connection = await backlog.open()

@@ -33,17 +33,14 @@
   font-size: 12px;
   line-height: 1.6;
 }
-.agent-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.agent-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--line);
 }
-.agent-tabs [aria-pressed="true"] {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
+.agent-options label {
+  margin: 0;
 }
 .setup-empty {
   padding: 50px 12px;
@@ -94,10 +91,7 @@
   .setup-empty {
     padding: 24px 0;
   }
-  .agent-tabs {
-    gap: 6px;
-  }
-  .agent-tabs button {
-    padding: 8px 10px;
+  .agent-options {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

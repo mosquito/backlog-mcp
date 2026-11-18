@@ -1,4 +1,5 @@
 import { agentConfig } from "./agent-config.js";
+import { loadCredentials } from "./credentials.js";
 import { el, button, link } from "./dom.js";
 
 const form = document.querySelector("#connection-form");
@@ -7,98 +8,79 @@ const computer = document.querySelector("#computer");
 const method = document.querySelector("#method");
 const username = document.querySelector("#username");
 const secret = document.querySelector("#secret");
+const agent = document.querySelector("#agent");
+const level = document.querySelector("#level");
+const serverName = document.querySelector("#server-name");
+const includeCredentials = document.querySelector("#include-credentials");
 const output = document.querySelector("#setup-output");
 const empty = document.querySelector("#setup-empty");
 const error = document.querySelector("#connection-error");
 const status = document.querySelector("#copy-status");
+const levelKey = "mcp-console-agent-level:/console";
 endpoint.value = new URL("/mcp", location.origin).href;
 const computerWords = ["cedar", "maple", "birch", "pine", "oak", "elm", "willow", "aspen"];
 computer.value =
   computerWords[Math.floor(Math.random() * computerWords.length)] +
   "-" +
   (Math.floor(Math.random() * 9999) + 1);
-let selected = "claude",
-  generated;
-const guides = {
-  claude: {
-    commandTitle: "Add to Claude Code",
-    commandHelp:
-      "Run in bash or zsh. This registers Backlog for your user account. If “backlog” already exists, update its configuration instead.",
-    configTitle: "Or merge into ~/.claude.json",
-    configHelp: "Add the backlog entry under mcpServers. Keep your other servers and settings.",
-    next: "Open Claude Code and run /mcp to check the connection.",
-    docs: "https://code.claude.com/docs/en/mcp",
-  },
-  codex: {
-    commandTitle: "Try in one Codex session",
-    commandHelp:
-      "Run in bash or zsh. These options apply to this session only. Use the configuration below to keep the connection.",
-    configTitle: "Save in ~/.codex/config.toml",
-    configHelp:
-      "Add this section, or replace the existing mcp_servers.backlog section. Keep your other settings.",
-    next: "Restart Codex after saving, then run /mcp to check the connection.",
-    docs: "https://developers.openai.com/codex/mcp",
-  },
-  antigravity: {
-    configTitle: "Merge into mcp_config.json",
-    configHelp:
-      "In the IDE, open MCP Servers → Manage MCP Servers → View raw config. Add backlog under mcpServers and keep your other servers. For the CLI, use ~/.gemini/config/mcp_config.json.",
-    next: "Refresh the MCP servers list. In the CLI, use /mcp to check the connection.",
-    docs: "https://antigravity.google/docs/mcp",
-  },
-};
-function codeBlock(title, help, value) {
-  const code = el("textarea", {
-    class: "setup-code",
-    readOnly: true,
-    spellcheck: false,
-    "aria-label": title,
-    rows: Math.min(12, value.split("\n").length + 1),
+try {
+  if (localStorage.getItem(levelKey) === "project") level.value = "project";
+} catch {}
+let generated;
+
+function populateAgents() {
+  const selected = agent.value;
+  const variants = agentConfig({
+    endpoint: endpoint.value, computer: "computer", method: "none", level: level.value,
   });
-  code.value = value;
-  const copy = button("Copy", async () => {
+  agent.replaceChildren(...variants.map((variant) => el("option", { value: variant.id }, variant.label)));
+  if (variants.some((variant) => variant.id === selected)) agent.value = selected;
+}
+
+function codeBlock(variant) {
+  const code = el("textarea", {
+    class: "setup-code", readOnly: true, spellcheck: false,
+    "aria-label": `${variant.language.toUpperCase()} configuration`,
+    rows: Math.min(12, variant.code.split("\n").length + 1),
+  });
+  code.value = variant.code;
+  const copy = button("Copy configuration", async () => {
     try {
-      await navigator.clipboard.writeText(value);
-      status.textContent = "Copied to clipboard.";
+      await navigator.clipboard.writeText(variant.code);
+      status.textContent = "Configuration copied.";
     } catch {
       code.focus();
       code.select();
       status.textContent = "Copy is unavailable. The text is selected; press Ctrl+C or ⌘C.";
     }
   });
-  copy.setAttribute("aria-label", `Copy ${title}`);
   return el(
-    "section",
-    { class: "setup-block" },
-    el("div", { class: "section-heading" }, el("h3", {}, title), copy),
-    el("p", { class: "muted" }, help),
+    "section", { class: "setup-block" },
+    el("div", { class: "section-heading" }, el("h3", {}, variant.target), copy),
+    el("p", { class: "muted" }, variant.instructions),
     code,
   );
 }
+
 function render() {
-  for (const tab of document.querySelectorAll("[data-agent]"))
-    tab.setAttribute("aria-pressed", String(tab.dataset.agent === selected));
   status.textContent = "";
   if (!generated) return;
-  const guide = guides[selected],
-    data = generated[selected];
+  const variant = generated.find((item) => item.id === agent.value);
   output.replaceChildren(
     ...[
-      el(
-        "p",
-        { class: "connection-note muted" },
-        "Generated text contains your credentials. Keep it private.",
-      ),
-      data.command ? codeBlock(guide.commandTitle, guide.commandHelp, data.command) : null,
-      codeBlock(guide.configTitle, guide.configHelp, data.config),
-      el("p", { class: "setup-next" }, guide.next),
-      link("Official setup documentation ↗", guide.docs),
+      includeCredentials.checked && method.value !== "none"
+        ? el("p", { class: "connection-note muted" }, "Generated text contains your credentials. Keep it private.")
+        : null,
+      codeBlock(variant),
+      el("p", { class: "setup-next" }, variant.verify),
+      link("Official setup documentation ↗", variant.link),
     ].filter(Boolean),
   );
   empty.hidden = true;
   output.hidden = false;
   requestAnimationFrame(fitCode);
 }
+
 function clearOutput() {
   generated = undefined;
   output.replaceChildren();
@@ -107,43 +89,10 @@ function clearOutput() {
   status.textContent = "";
   error.hidden = true;
 }
-method.onchange = () => {
-  const basic = method.value === "basic",
-    authenticated = method.value !== "none";
-  document.querySelector("#username-field").hidden = !basic;
-  document.querySelector("#secret-field").hidden = !authenticated;
-  username.required = basic;
-  secret.required = authenticated;
-  secret.value = "";
-  document.querySelector("#secret-label").textContent = basic ? "Password" : "Bearer token";
+
+function generate() {
   clearOutput();
-};
-function restoreCredentials() {
-  try {
-    const key = "backlog:auth:/mcp";
-    const authorization = sessionStorage.getItem(key) || localStorage.getItem(key) || "";
-    if (authorization.startsWith("Basic ")) {
-      const bytes = Uint8Array.from(atob(authorization.slice(6)), (c) => c.charCodeAt(0));
-      const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-      const separator = decoded.indexOf(":");
-      if (separator < 0) return;
-      method.value = "basic";
-      method.onchange();
-      username.value = decoded.slice(0, separator);
-      secret.value = decoded.slice(separator + 1);
-    } else if (authorization.startsWith("Bearer ")) {
-      method.value = "bearer";
-      method.onchange();
-      secret.value = authorization.slice(7);
-    }
-  } catch {
-    // Keep manual entry available if storage is blocked or credentials are malformed.
-  }
-}
-restoreCredentials();
-form.addEventListener("input", clearOutput);
-form.onsubmit = (event) => {
-  event.preventDefault();
+  if (!form.checkValidity()) return;
   try {
     generated = agentConfig({
       endpoint: endpoint.value,
@@ -151,20 +100,56 @@ form.onsubmit = (event) => {
       method: method.value,
       username: username.value,
       secret: secret.value,
+      name: serverName.value,
+      level: level.value,
+      includeCredentials: includeCredentials.checked,
     });
-    error.hidden = true;
     render();
   } catch (failure) {
-    clearOutput();
     error.textContent = failure.message;
     error.hidden = false;
   }
+}
+
+function authenticationFields() {
+  const basic = method.value === "basic", authenticated = method.value !== "none";
+  document.querySelector("#username-field").hidden = !basic;
+  document.querySelector("#secret-field").hidden = !authenticated;
+  document.querySelector("#include-credentials-field").hidden = !authenticated;
+  username.required = basic && includeCredentials.checked;
+  secret.required = authenticated && includeCredentials.checked;
+  document.querySelector("#secret-label").textContent = basic ? "Password" : "Bearer token";
+}
+method.onchange = () => {
+  secret.value = "";
+  authenticationFields();
+  generate();
 };
-for (const tab of document.querySelectorAll("[data-agent]"))
-  tab.onclick = () => {
-    selected = tab.dataset.agent;
-    render();
-  };
+const credentials = loadCredentials(endpoint.value);
+if (credentials) {
+  method.value = credentials.method;
+  username.value = credentials.username;
+  secret.value = credentials.secret;
+}
+authenticationFields();
+populateAgents();
+generate();
+form.addEventListener("input", generate);
+form.onsubmit = (event) => {
+  event.preventDefault();
+  generate();
+};
+agent.onchange = render;
+level.onchange = () => {
+  try { localStorage.setItem(levelKey, level.value); } catch {}
+  populateAgents();
+  generate();
+};
+serverName.oninput = generate;
+includeCredentials.onchange = () => {
+  authenticationFields();
+  generate();
+};
 
 function fitCode() {
   for (const code of output.querySelectorAll("textarea")) {

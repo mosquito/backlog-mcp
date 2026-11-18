@@ -1,63 +1,32 @@
-/** Generate configuration text without accessing storage or the network. */
-export function shellQuote(value) {
-  return "'" + value.replaceAll("'", "'\"'\"'") + "'";
-}
+import { authorization } from "./credentials.js";
 
-export function agentConfig({ endpoint, computer = "", method = "basic", username = "", secret = "" }) {
+export function agentConfig({
+  endpoint, computer = "", method = "basic", username = "", secret = "",
+  name = "backlog", level = "user", includeCredentials = true,
+}) {
   const url = new URL(endpoint);
-  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password)
-    throw new Error("Use an HTTP or HTTPS MCP URL without embedded credentials.");
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || endpoint.includes("#"))
+    throw new Error("Use an HTTP or HTTPS MCP URL without embedded credentials or a fragment.");
   if (!computer.trim()) throw new Error("Enter your computer name.");
   url.searchParams.set("computer", computer.trim());
-  let authorization = "";
-  if (method === "basic") {
-    if (!username || !secret) throw new Error("Enter your username and password.");
-    if (username.includes(":")) throw new Error("The username cannot contain a colon.");
-    const bytes = new TextEncoder().encode(`${username}:${secret}`);
-    authorization = "Basic " + btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(""));
-  } else if (method === "bearer") {
-    if (!secret.trim() || /[\r\n]/.test(secret))
-      throw new Error("Enter a token without line breaks.");
-    authorization = "Bearer " + secret.trim();
-  } else if (method !== "none") throw new Error("Unknown authentication method.");
-  const headers = authorization ? { Authorization: authorization } : {};
-  const http = { type: "http", url: url.href, ...(authorization ? { headers } : {}) };
-  const toml =
-    `url = ${JSON.stringify(url.href)}\n` +
-    (authorization ? `http_headers = { Authorization = ${JSON.stringify(authorization)} }\n` : "");
-  return {
-    claude: {
-      config: JSON.stringify({ mcpServers: { backlog: http } }, null, 2),
-      command:
-        `claude mcp add --scope user --transport http` +
-        (authorization ? ` --header ${shellQuote("Authorization: " + authorization)}` : "") +
-        ` backlog ${shellQuote(url.href)}`,
-    },
-    codex: {
-      config: `[mcp_servers.backlog]\n${toml}`,
-      command:
-        "codex -c " +
-        shellQuote(`mcp_servers.backlog.url=${JSON.stringify(url.href)}`) +
-        (authorization
-          ? " -c " +
-            shellQuote(
-              `mcp_servers.backlog.http_headers={ Authorization = ${JSON.stringify(authorization)} }`,
-            )
-          : ""),
-    },
-    antigravity: {
-      config: JSON.stringify(
-        {
-          mcpServers: {
-            backlog: {
-              serverUrl: url.href,
-              ...(authorization ? { headers } : {}),
-            },
-          },
-        },
-        null,
-        2,
-      ),
-    },
-  };
+  let headers = {};
+  if (includeCredentials && method !== "none") {
+    if (method === "basic" && (!username || !secret))
+      throw new Error("Enter your username and password.");
+    const token = method === "bearer" ? secret.trim() : secret;
+    headers = { Authorization: authorization({ method, username, secret: token }) };
+  }
+  const variants = globalThis.agentConfigurations({ endpoint: url.href, name, headers, level });
+  if (level === "user") {
+    variants.push({
+      id: "antigravity", label: "Antigravity", target: "mcp_config.json", language: "json",
+      instructions: "In Antigravity, open MCP Servers → Manage MCP Servers → View raw config. Merge this server entry with existing settings.",
+      code: JSON.stringify({
+        mcpServers: { [name]: { serverUrl: url.href, ...(Object.keys(headers).length ? { headers } : {}) } },
+      }, null, 2),
+      verify: "Refresh the MCP servers list in Antigravity and check the server.",
+      link: "https://antigravity.google/docs/mcp",
+    });
+  }
+  return variants;
 }
