@@ -1,10 +1,15 @@
 """Basic and JWT credentials verified against trusted server configuration."""
 
+import asyncio
+import re
 from base64 import b64decode
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
+import bcrypt
 from aiohttp import web
-from aiohttp_tiny_mcp import Authentication, Principal, StaticBasicAuth, Unauthorized
+from aiohttp_tiny_mcp import Authentication, BasicAuth, Principal, Unauthorized
 from aiohttp_tiny_mcp.auth import TokenVerifier
 
 
@@ -23,6 +28,7 @@ def decode_pair(token: str) -> tuple[str, str] | None:
 
 
 REALM = "backlog-mcp"
+BCRYPT_COST = 10
 
 
 def user_identity(username: str) -> str:
@@ -56,11 +62,82 @@ def credentials(request: web.Request) -> tuple[str, str] | None:
     return decode_pair(request_token(request, scheme="Basic", query_parameter="auth"))
 
 
-class BasicAuthentication(StaticBasicAuth):
-    """Use library verification with Backlog's header and query transports."""
+def validate_account(username: str, password: str) -> None:
+    """Reject values that cannot be represented by HTTP Basic credentials."""
+    user_identity(username)
+    if (
+        not password
+        or ":" in username
+        or any(ord(char) < 32 or ord(char) == 127 for char in password)
+    ):
+        raise ValueError(
+            "Basic accounts need a non-empty password without controls "
+            "and a username without a colon"
+        )
 
-    def __init__(self, *accounts: tuple[str, str]) -> None:
-        super().__init__(*accounts, realm=REALM)
+
+def bcrypt_account(value: str) -> str:
+    """Convert one plaintext entry or validate an existing bcrypt entry."""
+    if value.startswith("bcrypt|") and ":" not in value:
+        username, separator, hashed = value.removeprefix("bcrypt|").rpartition("|")
+        if not separator or not re.fullmatch(
+            r"\$2[aby]\$(?:0[4-9]|[12][0-9]|3[01])\$[./A-Za-z0-9]{53}", hashed
+        ):
+            raise ValueError("Use bcrypt|username|<hash> with a valid bcrypt hash")
+        validate_account(username, hashed)
+        return value
+    username, separator, password = value.partition(":")
+    if not separator:
+        raise ValueError("Use username:password or bcrypt|username|<hash> for Basic accounts")
+    validate_account(username, password)
+    encoded = password.encode("utf-8")
+    if len(encoded) > 72:
+        raise ValueError("Bcrypt passwords must not exceed 72 UTF-8 bytes")
+    hashed = bcrypt.hashpw(encoded, bcrypt.gensalt(rounds=BCRYPT_COST)).decode("ascii")
+    return f"bcrypt|{username}|{hashed}"
+
+
+def normalize_accounts(values: Sequence[str]) -> list[str]:
+    """Hash configuration values in a worker while keeping existing hashes unchanged."""
+    if not values:
+        return []
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return list(executor.map(bcrypt_account, values))
+
+
+class BasicAuthentication(BasicAuth):
+    """Verify bcrypt passwords over Basic headers and query credentials."""
+
+    def __init__(
+        self, *accounts: tuple[str, str], hashed_accounts: Sequence[tuple[str, str]] = ()
+    ) -> None:
+        super().__init__(realm=REALM)
+        if not accounts and not hashed_accounts:
+            raise ValueError("At least one Basic account is required")
+        for username, password in (*accounts, *hashed_accounts):
+            validate_account(username, password)
+        normalized = normalize_accounts(
+            [f"{username}:{password}" for username, password in accounts]
+            + [f"bcrypt|{username}|{hashed}" for username, hashed in hashed_accounts]
+        )
+        self.password_hashes: dict[str, bytes] = {}
+        for value in normalized:
+            username, hashed = value.removeprefix("bcrypt|").rsplit("|", 1)
+            if username in self.password_hashes:
+                raise ValueError("Basic account usernames must be unique")
+            self.password_hashes[username] = hashed.encode("ascii")
+
+    async def verify(self, username: str, password: str) -> Principal | None:
+        hashed = self.password_hashes.get(username)
+        expected = hashed if hashed is not None else next(iter(self.password_hashes.values()))
+        encoded = password.encode("utf-8")
+        if len(encoded) > 72:
+            return None
+        try:
+            matched = await asyncio.to_thread(bcrypt.checkpw, encoded, expected)
+        except ValueError:
+            return None
+        return Principal(subject=username) if hashed is not None and matched else None
 
     async def authenticate(self, request: web.Request) -> Principal | None:
         verified: dict[Authentication, Principal | None] = request.setdefault(VERIFIED, {})

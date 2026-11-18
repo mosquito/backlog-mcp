@@ -19,7 +19,13 @@ from aiohttp_tiny_mcp.storage.sqlite import SqliteStorage
 from yarl import URL
 
 from . import webui
-from .auth import VERIFIED, BasicAuthentication, JWTAuthentication, user_identity
+from .auth import (
+    VERIFIED,
+    BasicAuthentication,
+    JWTAuthentication,
+    normalize_accounts,
+    user_identity,
+)
 from .backlog import Backlog, register
 from .server import ACTIVE_REGISTRY, VERSION, persistent_registry, use
 
@@ -147,12 +153,10 @@ def application(
     policies: list[Authentication] = []
     accounts: list[tuple[str, str]] = []
     if basic:
-        for account in basic:
-            user, separator, password = account.partition(":")
-            if not separator or not user or not password:
-                raise ValueError("Basic accounts must use username:password with non-empty values")
-            accounts.append((user, password))
-        policies.append(BasicAuthentication(*accounts))
+        for account in normalize_accounts(basic):
+            user, hashed = account.removeprefix("bcrypt|").rsplit("|", 1)
+            accounts.append((user, hashed))
+        policies.append(BasicAuthentication(hashed_accounts=accounts))
     if jwt_pre_shared_key:
         policies.append(
             JWTAuthentication(

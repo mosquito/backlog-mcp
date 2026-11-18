@@ -26,7 +26,7 @@ from rich.prompt import Confirm, Prompt
 from yarl import URL
 
 from . import embeddings, httpd, paths, skills
-from .auth import user_identity
+from .auth import bcrypt_account, normalize_accounts, user_identity, validate_account
 from .backlog import Backlog, UnknownProject, slugify
 from .client import Connection, Registration, ToolError, bind_directory, connect, directory_project
 from .models import (
@@ -139,10 +139,17 @@ def repeated(*aliases: str, help: str, choices: tuple[str, ...] | None = None) -
     return cast(list[str], argclass.Argument(*aliases, **settings))
 
 
+def account_value(value: str) -> str:
+    """Require an account marker before converting a list of account values."""
+    if ":" not in value and not value.startswith("bcrypt|"):
+        raise ValueError("Use username:password or bcrypt|username|<hash> for Basic accounts")
+    return value
+
+
 def secret_accounts(value: str | Sequence[str]) -> list[str]:
-    """Normalize environment defaults and keep every account masked in repr."""
+    """Hash plaintext account values and keep every account masked in repr."""
     values = shlex.split(value) if isinstance(value, str) else value
-    return [argclass.SecretString(str(item)) for item in values]
+    return [argclass.SecretString(item) for item in normalize_accounts(values)]
 
 
 class BasicAccountsAction(argparse.Action):
@@ -308,6 +315,8 @@ class ConfigTemplate(argclass.TOMLConfigGenerator):
 
     @staticmethod
     def named(field: argclass.ConfigField) -> argclass.ConfigField:
+        if field.attr_path == ("mcp", "auth", "basic") and field.value is not None:
+            return dataclasses.replace(field, value=secret_accounts(field.value))
         if field.key == "allowed_origin" and field.value is not None:
             return dataclasses.replace(field, value=[str(origin) for origin in field.value])
         if field.key != "log_level" or field.value is None:
@@ -437,14 +446,29 @@ class AuthOptions(argclass.Group):
     basic: list[str] = argclass.Secret(
         action=BasicAccountsAction,
         nargs="+",
-        type=str,
+        type=account_value,
         converter=secret_accounts,
         default=[],
         metavar="USERNAME:PASSWORD",
-        help="Basic accounts, HTTP only; accepts multiple values or repeated flags alongside JWT",
+        help=(
+            "Basic accounts, HTTP only; use username:password or bcrypt|username|<hash>; "
+            "accepts multiple values or repeated flags alongside JWT"
+        ),
     )
 
     jwt = JWTOptions(title="JWT authentication")
+
+
+class HashPassword(Command):
+    """Prompt for Basic credentials and print one bcrypt account entry."""
+
+    async def __call__(self) -> int:
+        username = Prompt.ask("Username", console=errors)
+        password = Prompt.ask("Password", password=True, console=errors)
+        validate_account(username, password)
+        hashed = await asyncio.to_thread(bcrypt_account, f"{username}:{password}")
+        print(hashed)
+        return 0
 
 
 class Serve(Command):
@@ -1799,6 +1823,10 @@ class CLI(argclass.Parser):
         config_argument="--config",
         config_parser_class=argclass.TOMLDefaultsParser,
     )
+    hash_password = HashPassword(
+        aliases=["hash-password", "pwhash", "pw", "hash"],
+        help="Prompt for credentials and print a bcrypt account entry",
+    )
     whoami = Whoami(aliases=["wi"], help="Show the current principal and computer")
     board = Board(aliases=["bo"], help="Show a project board with ready and claimed tasks")
     init = Init(
@@ -1896,7 +1924,7 @@ class CLI(argclass.Parser):
                     return await command()
                 finally:
                     await backlog.close()
-            if isinstance(command, (Install, Notes, TaskCommands)):
+            if isinstance(command, (HashPassword, Install, Notes, TaskCommands)):
                 return await command()
             if isinstance(command, Watch):
                 self.url = command.endpoint or self.url

@@ -468,7 +468,7 @@ settings to `[mcp.auth.jwt]`. Replace `--basic` with `--auth-basic` and
 
 HTTP authentication uses the
 [aiohttp-tiny-mcp policies](https://github.com/mosquito/aiohttp-tiny-mcp/blob/master/docs/guide/auth.md).
-The dependency `aiohttp-tiny-mcp[jwt]~=0.5.0` supplies Basic authentication and
+The dependency `aiohttp-tiny-mcp[jwt]` supplies Basic authentication and
 asynchronous JWT verifiers. Backlog adds header/query credential handling and isolates
 stored data and notifications by authenticated identity.
 Basic and JWT policies accept the existing header and query credentials. Basic rejection
@@ -492,6 +492,25 @@ basic = ["alice:secret", "bob:another-secret"]
 Use `[mcp.http]` for HTTP settings and `[mcp.auth]` for credentials.
 `BACKLOG_MCP_AUTH_BASIC` accepts a shell-quoted list, such as
 `alice:secret 'bob:password with spaces'`. CLI values extend the configured account list.
+
+Basic accounts accept `foo:password` for plaintext or `bcrypt|foo|<hash>` for an
+existing bcrypt hash. The argument converter hashes plaintext passwords with a random
+salt and cost 10. Existing hashes remain unchanged, including their salt and cost.
+This applies to CLI arguments, environment variables, and TOML configuration.
+
+Generate an account entry interactively with `backlog hash-password` (aliases: `pwhash`,
+`pw`, `hash`). It prompts for a username and a hidden password, then prints
+`bcrypt|username|<hash>`. This command does not open the database or connect to an MCP server.
+
+Use `--generate-config` to write the converted accounts to a configuration file:
+
+```sh
+uv run backlog mcp --protocol=http --auth-basic 'foo:password' --generate-config server.toml
+```
+
+The generated `basic` array contains `bcrypt|foo|<hash>`, not the plaintext password.
+Clients still send `foo` and the original password. Hashing and verification run in worker threads.
+Bcrypt passwords must fit in 72 UTF-8 bytes; longer passwords are rejected without truncation.
 
 All principals use one SQLite file. It holds projects, memberships, tasks, comments,
 notes, MCP sessions and notification events. New projects belong to their creator.

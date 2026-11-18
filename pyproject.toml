@@ -12,6 +12,7 @@ dependencies = [
     "aiosql>=15.0",
     "aiosqlite>=0.21.0",
     "argclass>=1.11.0",
+    "bcrypt>=5.0.0",
     "model2vec>=0.9.0",
     "numpy>=2.0",
     "rich>=15.0.0",
