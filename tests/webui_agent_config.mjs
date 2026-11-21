@@ -19,6 +19,7 @@ const targets = {
   copilot: ["~/.copilot/mcp-config.json", ".mcp.json"],
   gemini: ["~/.gemini/settings.json", ".gemini/settings.json"],
   pi: ["~/.pi/agent/mcp.json", ".pi/mcp.json"],
+  antigravity: ["~/.gemini/config/mcp_config.json", ".agents/mcp_config.json"],
   opencode: ["~/.config/opencode/opencode.json", "opencode.json"],
 };
 
@@ -42,11 +43,15 @@ function serverHeaders(server) {
   return server.headers || server.http_headers;
 }
 
-test("all seven console agents have user and project instructions", () => {
+function expectedEndpoint(id) {
+  return endpoint + "?computer=workstation" +
+    (["pi", "antigravity", "copilot"].includes(id) ? "&resources=tool" : "");
+}
+
+test("console agents have one configuration per user and project level", () => {
   for (const level of ["user", "project"]) {
     const variants = agentConfig({ endpoint, computer, method: "none", level });
     const expected = Object.keys(targets);
-    if (level === "user") expected.push("antigravity");
     assert.deepEqual(variants.map((variant) => variant.id), expected);
     for (const variant of variants) {
       assert.ok(variant.label);
@@ -54,15 +59,10 @@ test("all seven console agents have user and project instructions", () => {
       assert.ok(variant.verify);
       assert.ok(variant.link.startsWith("https://"));
       assert.ok(["json", "toml"].includes(variant.language));
-      if (variant.id === "antigravity") {
-        assert.equal(variant.target, "mcp_config.json");
-        assert.match(variant.instructions, /raw config/i);
-      } else {
-        assert.equal(variant.target, targets[variant.id][level === "user" ? 0 : 1]);
-        assert.ok(variant.instructions.includes(variant.target));
-      }
+      assert.equal(variant.target, targets[variant.id][level === "user" ? 0 : 1]);
+      assert.ok(variant.instructions.includes(variant.target));
       const server = parseServer(variant);
-      assert.equal(serverEndpoint(server), endpoint + "?computer=workstation");
+      assert.equal(serverEndpoint(server), expectedEndpoint(variant.id));
       assert.equal(serverHeaders(server), undefined);
     }
   }
@@ -75,7 +75,7 @@ test("all agents preserve custom server names and UTF-8 Basic credentials", () =
   const variants = agentConfig({ endpoint, computer, name, username, secret });
   for (const variant of variants) {
     const server = parseServer(variant, name);
-    assert.equal(serverEndpoint(server), endpoint + "?computer=workstation");
+    assert.equal(serverEndpoint(server), expectedEndpoint(variant.id));
     const headers = serverHeaders(server);
     assert.deepEqual(Object.keys(headers), ["Authorization"]);
     assert.ok(headers.Authorization.startsWith("Basic "));
@@ -114,7 +114,7 @@ test("computer is required and replaces only its own URL parameter", () => {
   for (const computer of [undefined, "", "  "])
     assert.throws(() => agentConfig({ endpoint, computer, method: "none" }), /computer name/i);
   const variants = agentConfig({
-    endpoint: endpoint + "?project=owner%2Frepo&computer=old&computer=duplicate&label=a&label=b",
+    endpoint: endpoint + "?project=owner%2Frepo&computer=old&computer=duplicate&label=a&label=b&resources=native&resources=tool",
     computer: "  laptop & стол  ",
     method: "none",
   });
@@ -123,6 +123,8 @@ test("computer is required and replaces only its own URL parameter", () => {
     assert.equal(url.searchParams.get("project"), "owner/repo");
     assert.deepEqual(url.searchParams.getAll("computer"), ["laptop & стол"]);
     assert.deepEqual(url.searchParams.getAll("label"), ["a", "b"]);
+    assert.deepEqual(url.searchParams.getAll("resources"),
+      ["pi", "antigravity", "copilot"].includes(variant.id) ? ["tool"] : []);
   }
 });
 

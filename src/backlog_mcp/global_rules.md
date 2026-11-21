@@ -1,6 +1,14 @@
 <!-- BACKLOG_START -->
 ## Backlog workflow
 
+Read `backlog://guide` for the topic index and `backlog://guide/workflow` for the
+workflow. Use MCP `resources/read`, or `mcp_resources_read(uri=...)` when the HTTP
+connection uses `resources=tool`. Discover URIs with `resources/list` and
+`resources/templates/list`, or `mcp_resources_list` in tool mode.
+Read `backlog://guide/tasks` for task rules, `backlog://guide/memory` for memory,
+`backlog://guide/search` for search syntax, and `backlog://guide/projects` for scope
+and registration.
+
 ### 1. Check project registration first
 
 The simplest way to find a project is to read its board by absolute local path.

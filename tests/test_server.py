@@ -58,7 +58,6 @@ async def test_catalogue(client: BaseClient) -> None:
     tools = {tool.name: tool for tool in await client.list_tools()}
     assert set(tools) == {
         "whoami",
-        "guide",
         "project_board",
         "project_share",
         "project_members",
@@ -906,7 +905,7 @@ async def test_initialize_includes_agent_workflow(client: BaseClient) -> None:
 
     result = await client.initialize()
     assert result["instructions"] == INSTRUCTIONS
-    for tool in ("project_board", "guide"):
+    for tool in ("project_board", "backlog://guide/workflow", "mcp_resources_read"):
         assert tool in result["instructions"]
 
 

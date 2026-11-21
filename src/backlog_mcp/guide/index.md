@@ -6,4 +6,6 @@
 - [search](backlog://guide/search): text, vector and mixed queries with examples.
 - [projects](backlog://guide/projects): connection scope, roots and sharing.
 
-Call `guide(topic)` or read the corresponding resource. Omit topic for this index.
+Read these URIs with `resources/read`, or `mcp_resources_read(uri=...)` in tool mode.
+Use `resources/list` and `resources/templates/list`, or `mcp_resources_list`, to find URIs.
+For HTTP clients without native resource access, add `resources=tool` to the MCP URL.

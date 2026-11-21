@@ -560,8 +560,10 @@ Use **Connect agent** in the header (or footer on phones) to open the public set
 `/ui/static/connect.html`. It derives the MCP URL from the current origin and
 accepts Basic credentials or a Bearer token. Configuration generation runs in
 the browser without sending or saving credentials. Copy commands or configuration
-for Claude Code, Codex, and Antigravity; each tab links to its official guide.
-The Codex command applies to one session; its TOML section provides persistent setup.
+for Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, Pi, Antigravity, and
+OpenCode; each choice links to its official guide. Choose user or project configuration.
+The shared console generator selects native resources for supported clients and
+adds `resources=tool` for clients that need resource access through tools.
 
 Task links use `/ui/#123`. Other state uses query parameters, such as
 `/ui/?view=edit#123` or `/ui/?project=owner%2Frepo&priority=high`.
@@ -610,7 +612,7 @@ the query to select content types; the All projects checkbox controls the scope.
 semantic similarity. Status applies only to tasks. Computer scope applies when
 **All projects** is selected. The browser remembers search filters in localStorage.
 Quoted expressions search text; unquoted words enable vector search. Mixed queries use both.
-The **query syntax** link reads the same packaged Markdown as `guide("search")`.
+The **query syntax** link reads the packaged Markdown at `backlog://guide/search`.
 Statistics tags open a
 filtered task list in the same scope.
 Task drafts also survive
@@ -732,9 +734,19 @@ delete <slug>` does the same and asks first unless `--yes` is given. Archive wit
 `project_save` when the history should stay.
 
 The MCP initialize response points to `project_board(project)` as the entry point.
-Call `guide()` for an index or `guide(topic)` for workflow, tasks, memory, search or projects.
-The same packaged Markdown is available at `backlog://guide` and
-`backlog://guide/<topic>`. Clients choose whether to include instructions in model context.
+Read `backlog://guide` for the index and `backlog://guide/workflow` for workflow rules.
+The other topics are `backlog://guide/tasks`, `backlog://guide/memory`,
+`backlog://guide/search`, and `backlog://guide/projects`.
+Use MCP `resources/read` to read these URIs. There is no separate `guide` tool.
+
+For HTTP clients without native resource access, add `resources=tool` to the MCP URL,
+for example `https://host/mcp?computer=laptop&resources=tool`. This exposes
+`mcp_resources_list` and `mcp_resources_read` instead of the native resource interface.
+Call `mcp_resources_read(uri="backlog://guide/workflow")` to read the workflow;
+`mcp_resources_list(query="backlog://guide")` lists the guide URIs.
+Without this parameter, native resources remain the default. To expose both interfaces,
+use `resources=native&resources=tool`. Stdio uses native resources.
+Resource data, access checks, and subscriptions stay the same in either HTTP mode.
 
 The parameterless MCP prompt `install_backlog_rules`, titled **Install Backlog rules into the
 global Agents config**, returns the complete workflow and instructions to install it in global

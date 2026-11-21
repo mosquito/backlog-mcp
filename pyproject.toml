@@ -1,6 +1,6 @@
 [project]
 name = "backlog-mcp"
-version = "0.32.6"
+version = "0.33.0"
 description = "A project backlog over MCP: projects scoped to directories, tasks scoped to projects"
 readme = "README.md"
 authors = [
@@ -8,7 +8,7 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
-    "aiohttp-tiny-mcp[jwt]~=0.7.1",
+    "aiohttp-tiny-mcp[jwt]~=0.8.2",
     "aiosql>=15.0",
     "aiosqlite>=0.21.0",
     "argclass>=1.11.0",

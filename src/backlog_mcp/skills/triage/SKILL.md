@@ -53,7 +53,7 @@ suggestions, verification, and proposed requirement changes. The body is the agr
 definition. Use `task_update(body=...)` only on an explicit user request or to reflect
 explicitly agreed requirements that make it incorrect or outdated. Add a separate comment
 explaining every body edit and its authorization. New findings alone do not authorize edits.
-Status transitions create separate history entries. See `guide('tasks')`.
+Status transitions create separate history entries. See `backlog://guide/tasks`.
 Follow the project's `preferred_language` for task and comment text.
 
 ## 4. File what is missing

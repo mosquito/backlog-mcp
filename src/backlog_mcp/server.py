@@ -103,8 +103,10 @@ from .version import VERSION
 log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """Backlog is a task tracker and memory for agents.
-Start with project_board(project). For workflow rules and topic help, call guide().
-The same Markdown is available at backlog://guide and backlog://guide/<topic>.
+Start with project_board(project), then read backlog://guide/workflow.
+Read backlog://guide for the topic index. Use resources/read, or mcp_resources_read(uri=...)
+when connected with resources=tool. Discover resource addresses with resources/list and
+resources/templates/list, or mcp_resources_list in tool mode.
 """.strip()
 
 #: The backlog the handlers work on. A context variable, so tests can run several at once.
@@ -566,7 +568,8 @@ class Members(Actor):
 async def project_members(
     args: ProjectRef, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Members:
-    """List project members, roles and their computer/path bindings. Members only."""
+    """List project members, roles and their computer/path bindings. Members only.
+    Read backlog://guide/projects for rules."""
     project = await backlog.resolve(args.project)
     return await member_details(backlog, connection, project.id)
 
@@ -589,7 +592,8 @@ async def member_details(
 async def project_share(
     args: ShareProject, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> Members:
-    """Grant read or edit access to a registered principal. Only the owner can share."""
+    """Grant read or edit access to a registered principal. Only the owner can share.
+    Read backlog://guide/projects for rules."""
     from .auth import user_identity
 
     project = await backlog.resolve(args.project)
@@ -921,7 +925,8 @@ class StatsOf(BaseModel):
 @registry.tool(title="Current identity", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def whoami(args: Nothing, backlog: Backlog, connection: aiosqlite.Connection) -> Identity:
     """Report principal as user@computer, authentication type and owner handle without selecting a
-    project."""
+    project.
+    Read backlog://guide/projects for rules."""
     return Identity(
         principal=backlog.principal,
         handle=owner_name(backlog.principal),
@@ -949,7 +954,7 @@ async def project_board(
     """Start here for project context, counts and ready/claimed tasks.
     Read memory_list(full=true) before work. Verify principal and roots, and follow
     preferred_language. Read task_get before claiming; the board is not a reservation.
-    This read never creates a project or changes connection scope. See guide('workflow')."""
+    This read never creates a project or changes connection scope. See backlog://guide/workflow."""
     project = await backlog.lookup(args.project)
     shown = project_out(project, computer=backlog.computer, principal=backlog.principal)
     counts, ready, claimed = await board(connection, backlog.actor, project.id)
@@ -970,7 +975,8 @@ async def project_list(
 ) -> Projects:
     """List registered projects with open and total task counts.
 
-    `computer` lists another computer's projects, `all_computers` every project there is."""
+    `computer` lists another computer's projects, `all_computers` every project there is.
+    Read backlog://guide/projects for rules."""
     reach = await backlog.reach(
         all_projects=True, computer=args.computer, all_computers=args.all_computers
     )
@@ -996,7 +1002,7 @@ async def project_save(
 
     `preferred_language` sets the language for project work and task text. Omit it to keep
     the current value, or send null to clear it. New projects default to null.
-    """
+    Read backlog://guide/projects for rules."""
     project = await backlog.save(
         connection,
         transaction,
@@ -1029,7 +1035,8 @@ async def project_delete(
     many words. Never call it on your own initiative, and never to tidy up: archive with
     `project_save(archived=true)`, which keeps the history. The tool always asks the user to
     confirm. A client that cannot ask is refused; the terminal command `backlog projects delete`
-    asks there instead."""
+    asks there instead.
+    Read backlog://guide/projects for rules."""
     project = await backlog.lookup(args.project)
     await require(connection, backlog.actor, project.id, role="owner")
     contents = await project_contents(connection, backlog.actor, project.id)
@@ -1088,7 +1095,7 @@ async def task_add(
     args: AddTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> TaskOut:
     """Create a task for work that spans more than one step or session. Search for an existing task
-    first. See guide('tasks')."""
+    first. See backlog://guide/tasks."""
     project = await backlog.resolve(args.project)
     async with transaction:
         task = await add_task(
@@ -1111,7 +1118,7 @@ async def task_list(
     args: ListTasks, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Tasks | FullTasks:
     """List tasks with filters. To pick the next task, use project_board. Defaults to open tasks
-    ordered by priority. See guide('tasks')."""
+    ordered by priority. See backlog://guide/tasks."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1163,7 +1170,7 @@ async def task_get(args: TaskId, backlog: Backlog, connection: aiosqlite.Connect
     The body is only the description. Comments are chronological. Links use relation types
     relative to this task and include current target titles and statuses, without nested links.
     Links to tasks you cannot access are omitted.
-    """
+    Read backlog://guide/tasks for rules."""
     task = await read_task(connection, backlog.actor, args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
@@ -1180,7 +1187,7 @@ async def task_assigned(
     principal or username@computer:marker for an agent marker prefix. Percent and underscore
     are literal characters, not wildcards. Matching is case-sensitive. Closed tasks remain
     assigned until explicitly released. Count includes all matches before pagination.
-    """
+    Read backlog://guide/tasks for rules."""
     prefix = args.prefix
     if prefix is None:
         prefix = principal_label(backlog.principal, backlog.computer) + ":"
@@ -1207,7 +1214,7 @@ async def task_claim(
     Any editor may take a task over through CAS. Non-null assigned must use this principal
     and a URL-safe marker. Keep the marker across reconnects. On conflict, reread before
     retrying.
-    Closing does not release assignment; release with assigned=null. See guide('tasks').
+    Closing does not release assignment; release with assigned=null. See backlog://guide/tasks.
 
     temporary=true saves the previous assignment for exclusive UI editing. restore=true
     with assigned=null restores it; only that claimant may restore. Writes require the edit
@@ -1244,7 +1251,7 @@ async def task_link(
     Read links through task_get. Requires editor access to both tasks. Self-links and cycles
     in part_of or depends_on are rejected. Repeated calls are safe, including from the inverse
     direction. Links do not change task statuses. Closing or soft-deleting tasks keeps links.
-    """
+    Read backlog://guide/tasks for rules."""
     async with transaction:
         updated = await link_task(
             connection, backlog.actor, args.task, args.relation, args.target, reason=args.reason
@@ -1265,7 +1272,7 @@ async def task_unlink(
 
     Requires editor access to both tasks. A missing link is a safe no-op. Other relation types
     between the same tasks are preserved.
-    """
+    Read backlog://guide/tasks for rules."""
     async with transaction:
         updated = await unlink_task(
             connection, backlog.actor, args.task, args.relation, args.target
@@ -1287,7 +1294,7 @@ async def task_comment_add(
     Use this for progress, review feedback, research results, hypotheses, questions,
     suggestions, and proposed requirement changes. New findings do not authorize body edits.
     Keep proposals here until the user explicitly agrees. After an authorized body edit,
-    add a separate comment explaining its reason. See guide('tasks').
+    add a separate comment explaining its reason. See backlog://guide/tasks.
     Follow the project's preferred_language. Repeated calls create separate comments.
     """
     async with transaction:
@@ -1303,7 +1310,8 @@ async def task_comment_add(
 async def task_comment_list(
     args: ListComments, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Comments:
-    """Read comments and history in creation-time order, with id as a stable tie-breaker."""
+    """Read comments and history in creation-time order, with id as a stable tie-breaker.
+    Read backlog://guide/tasks for rules."""
     task = await read_task(connection, backlog.actor, args.task_id)
     if task is None:
         raise LookupError(f"no task #{args.task_id}")
@@ -1335,7 +1343,7 @@ async def task_update(
     release_edit=true restores its previous assignment in the same transaction.
     Waiting for another task is a depends_on link, not blocked status. Use blocked for external
     blockers and explain in a comment. Before closing, update project memory this task made
-    obsolete. After closing, release through task_claim(assigned=null). See guide('tasks')."""
+    obsolete. After closing, release through task_claim(assigned=null). See backlog://guide/tasks."""
     async with transaction:
         task = await update_task(
             connection,
@@ -1377,7 +1385,8 @@ async def task_update(
 async def task_move(
     args: MoveTask, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> TaskOut:
-    """Move a task to another project board and record the move in its history."""
+    """Move a task to another project board and record the move in its history.
+    Read backlog://guide/tasks for rules."""
     project = await backlog.lookup(args.project)
     existing = await read_task(connection, backlog.actor, args.id)
     if existing is None:
@@ -1445,7 +1454,8 @@ async def task_delete(
 ) -> Deleted:
     """Delete a task. Marks its status as `deleted` without removing the record.
 
-    Keeps history intact and allows recovery. Works across projects without confirmation."""
+    Keeps history intact and allows recovery. Works across projects without confirmation.
+    Read backlog://guide/tasks for rules."""
     task = await read_task(connection, backlog.actor, args.id)
     if task is None:
         raise LookupError(f"no task #{args.id}")
@@ -1477,7 +1487,7 @@ async def memory_save(
     near-duplicate. A correction rewrites the body with the current truth; do not append
     history.
     Do not store task status, progress or code snapshots; use tasks and comments.
-    Body replaces the whole body, at most 1024 characters. See guide('memory')."""
+    Body replaces the whole body, at most 1024 characters. See backlog://guide/memory."""
     if args.create_only and args.id is not None:
         raise ValueError("create_only cannot be used with id")
     if args.id is None:
@@ -1524,7 +1534,7 @@ async def memory_append(
     args: AppendNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> NoteOut:
     """Add a new related fact to an entry. To correct or update existing content, use memory_save.
-    See guide('memory')."""
+    See backlog://guide/memory."""
     found = await note_of(backlog, args.id, args.title, args.project)
     async with transaction:
         updated = await append_note(connection, backlog.actor, found.id, args.text)
@@ -1538,7 +1548,7 @@ async def memory_append(
 @registry.tool(title="Read a memory entry", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
     """Read one memory entry by id or title. IDs work across accessible projects; titles resolve
-    within project scope and shared memory. See guide('memory')."""
+    within project scope and shared memory. See backlog://guide/memory."""
     return note_out(await note_of(backlog, args.id, args.title, args.project))
 
 
@@ -1547,7 +1557,7 @@ async def memory_list(
     args: ListNotes, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Notes | FullNotes:
     """List project memory, including accessible shared entries. Read it with full=true before
-    working on a project; project memory is kept small on purpose. See guide('memory')."""
+    working on a project; project memory is kept small on purpose. See backlog://guide/memory."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1599,7 +1609,8 @@ async def memory_delete(
 ) -> Deleted:
     """Delete a memory entry permanently, only at the user's request. Entries within the
     connection's project scope are deleted immediately. Other entries require user confirmation;
-    clients without elicitation are refused."""
+    clients without elicitation are refused.
+    Read backlog://guide/memory for rules."""
     found = await read_note(connection, backlog.actor, args.id)
     if found is None:
         raise LookupError(f"no note #{args.id}")
@@ -1631,13 +1642,14 @@ async def search(
     Quoted expressions use full-text search, unquoted text uses vectors, mixed queries use both.
     Examples: `"refresh token"` matches a phrase; `"token"*` matches a prefix;
     `token reset` searches meaning. Pass a list in query for alternative formulations.
-    See guide('search') for full syntax and filters."""
+    See backlog://guide/search for full syntax and filters."""
     return await embeddings.search(args, backlog, connection, transaction)
 
 
 @registry.tool(title="Backlog statistics", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def stats(args: StatsOf, backlog: Backlog) -> Stats:
-    """Aggregate counts across projects or computers. For one project, use project_board."""
+    """Aggregate counts across projects or computers. For one project, use project_board.
+    Read backlog://guide/workflow for rules."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1645,16 +1657,6 @@ async def stats(args: StatsOf, backlog: Backlog) -> Stats:
         all_computers=args.all_computers,
     )
     return await stats_of(backlog, reach)
-
-
-class GuideTopic(BaseModel):
-    topic: str | None = Field(default=None, description="Topic name; omit for the index.")
-
-
-@registry.tool(title="Backlog guide", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
-async def guide(args: GuideTopic) -> str:
-    """Read workflow rules or help on tasks, memory, search and projects."""
-    return guidance.read(args.topic)
 
 
 def register_guide(topic: str | None) -> None:

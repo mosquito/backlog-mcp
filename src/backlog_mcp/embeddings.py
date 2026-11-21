@@ -111,7 +111,7 @@ class Search(BaseModel):
             "1–5 formulations of what to find. "
             "2–5 short rephrasings of the same intent, e.g. in both languages; improves recall. "
             "Quoted expressions search text; unquoted text searches vectors. "
-            "Mixed queries use both. See guide('search') for syntax and examples."
+            "Mixed queries use both. See backlog://guide/search for syntax and examples."
         ),
     )
 
