@@ -404,6 +404,9 @@ def board_panel(board: ProjectBoard) -> Panel:
     parts: list[RenderableType] = [fields(rows)]
     if project.description:
         parts.append(Markdown(project.description))
+    if board.global_memory:
+        parts.append(Rule("Global memory"))
+        parts.extend(note_panel(entry) for entry in board.global_memory)
     for name, section in (("ready", board.ready), ("claimed", board.claimed)):
         tasks = Table("id", "title", title=f"{name} · {section.count} total · top 10")
         for task in section.items:

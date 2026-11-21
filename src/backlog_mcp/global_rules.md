@@ -36,6 +36,9 @@ Pass `project=` explicitly on unscoped HTTP connections.
 
 ### 2. Search context before decisions
 
+Read all `global_memory` entries returned by `project_board` in full before work.
+They are mandatory context, regardless of search relevance or list pagination.
+
 After the registration check, first call
 `memory_list(project=<returned full_name>)` for project memory.
 Keep the default compact result and use `memory_get` for relevant entries.
@@ -105,6 +108,8 @@ Use `shared=false` for entries visible only to the entry author.
 Choose by who needs the fact: "my dev server" is personal; "team dev servers catalog"
 is shared because the team needs it. `global_scope=true` extends the entry to all projects
 without changing its audience. Use `memory_sharing` to set shared and global_scope.
+If the project, audience or global scope is unclear, ask the user before saving or
+changing sharing. Do not guess or use defaults to resolve uncertainty.
 Use task comments for temporary findings, bugs, and implementation progress.
 Do not save code or documentation snapshots as lasting memory.
 `memory_save(body=...)` replaces the body; `memory_append` adds related context.

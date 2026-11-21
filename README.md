@@ -388,7 +388,10 @@ switches the authenticated user or exposes another user's projects.
 
 ### Notes
 
-Agents first call `memory_list(project=<full_name>)` after checking the
+Agents read every `global_memory` entry returned by `project_board` in full before work.
+The board always includes all visible global entries, independently of search relevance
+or list pagination. The CLI board prints their full contents too.
+Then agents call `memory_list(project=<full_name>)` after checking the
 project board. Keep the default compact result and read relevant entries with
 `memory_get`. The list contains your personal entries and entries shared with this project.
 Use a topic-specific `search` for context from other projects only when needed.
@@ -405,7 +408,7 @@ agreements and preferences before making decisions or asking the user again. Use
 documentation, and the web for current technical facts. Search for relevant notes instead of
 reading them all; update outdated context when the user corrects it.
 
-Save proactively whenever the user provides useful new knowledge unavailable elsewhere.
+Once the project, audience and scope are clear, save new user knowledge proactively.
 Do not wait for an explicit request to remember it or for the session to end. Capture preferences,
 constraints, corrections, and reasons for decisions as they arise. Search first, then update an
 existing note or create one short note per topic. Omit guesses and duplicates.
@@ -417,7 +420,9 @@ the same title in that visibility scope replaces the body. `--shared` makes a no
 to project members; other entries are personal to their author. All entries stay within
 their source project. `global_scope=true` makes an entry available in all projects to
 the same audience. Use `memory_sharing(id, shared, global_scope)` to change both flags;
-the Web UI uses this tool too. Existing entries retain project access after the migration
+the Web UI uses this tool too. If the project, audience or global scope is unclear,
+the agent must ask the user before saving or changing sharing, rather than guessing
+or using defaults to resolve uncertainty. Existing entries retain project access after the migration
 and are not made global. Notes are in the search index with the
 tasks. Never write a secret into a note, only where the secret lives.
 

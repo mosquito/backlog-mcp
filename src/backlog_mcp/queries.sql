@@ -419,7 +419,7 @@ AND (:computer IS NULL OR n.global_scope = 1 OR EXISTS (SELECT 1 FROM project_ro
     WHERE r.project_id = p.id AND r.principal = :principal AND r.computer = :computer))
 AND (:shared IS NULL OR n.shared = :shared)
 AND (:tag IS NULL OR (',' || n.tags || ',') LIKE :tag)
-ORDER BY CASE WHEN n.project_id = :project_id THEN 0 ELSE 1 END, n.updated_at DESC, n.id DESC
+ORDER BY n.global_scope DESC, n.updated_at DESC, n.id DESC
 LIMIT :limit OFFSET :offset;
 
 -- name: count_notes(principal, project_id, computer, shared, tag)^
@@ -431,6 +431,14 @@ AND (:computer IS NULL OR n.global_scope = 1 OR EXISTS (SELECT 1 FROM project_ro
     WHERE r.project_id = p.id AND r.principal = :principal AND r.computer = :computer))
 AND (:shared IS NULL OR n.shared = :shared)
 AND (:tag IS NULL OR (',' || n.tags || ',') LIKE :tag);
+
+-- name: global_notes(principal)
+SELECT n.*, (SELECT handle FROM principals WHERE identity = p.owner) || '/' || p.slug AS project
+FROM notes n JOIN projects p ON p.id = n.project_id
+WHERE n.global_scope = 1 AND (n.shared = 1 OR n.created_principal = :principal)
+AND EXISTS (SELECT 1 FROM project_members m
+    WHERE m.project_id = p.id AND m.principal = :principal)
+ORDER BY n.updated_at DESC, n.id DESC;
 
 -- name: search_notes(match, principal, project_id, computer, shared, tag, limit)
 SELECT n.*, (SELECT handle FROM principals WHERE identity = p.owner) || '/' || p.slug AS project,

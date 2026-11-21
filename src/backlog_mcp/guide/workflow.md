@@ -1,7 +1,8 @@
 # Workflow
 
 1. Call `project_board(project=<absolute local path>)`. Verify principal and roots;
-   then use the returned owner/slug. Leave correct bindings unchanged.
+   then use the returned owner/slug. Read every `global_memory` entry in full before
+   work; it is mandatory context. Leave correct bindings unchanged.
 2. First call `memory_list(project=<full_name>)` for project memory.
    Keep the compact result; read relevant entries with `memory_get`.
    Use topic-specific `search` for related tasks and agreements.

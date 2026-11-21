@@ -104,6 +104,7 @@ log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """Backlog is a task tracker and memory for agents.
 Start with project_board(project), then read backlog://guide/workflow.
+Read all global_memory returned by project_board before work; it is required context.
 First list memory_list(project=<returned full_name>) with compact results.
 Read relevant entries with memory_get, including entries shared with this project.
 Search other projects by topic only when needed; do not load unrelated memory.
@@ -963,6 +964,7 @@ async def project_board(
     args: ReadBoard, backlog: Backlog, connection: aiosqlite.Connection
 ) -> ProjectBoard:
     """Start here for project context, counts and ready/claimed tasks.
+    Read every entry in global_memory before work: all visible global entries are included in full.
     Verify principal and roots, then call memory_list(project=<returned full_name>).
     Read relevant entries with memory_get and follow preferred_language.
     Read task_get before claiming; the board is not a reservation.
@@ -975,6 +977,10 @@ async def project_board(
         computer=backlog.computer,
         project=BoardProject(**shown.model_dump()),
         tasks=BoardCounts(**counts),
+        global_memory=[
+            note_out(to_note(row))
+            async for row in QUERIES.global_notes(connection, principal=backlog.principal)
+        ],
         memory=await count_notes(connection, backlog.actor, project_id=project.id),
         ready=ready,
         claimed=claimed,
@@ -1495,6 +1501,8 @@ async def memory_save(
     args: SaveNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> NoteOut:
     """Record a lasting agreement, preference or invariant the user stated.
+    If the project, audience or global scope is unclear, ask the user before saving.
+    Do not guess or use defaults to resolve uncertainty.
     Choose the audience by who needs the fact: "my dev server" is personal (shared=false),
     while "team dev servers catalog" is shared with project members (shared=true).
     Use global_scope=true only when the same audience needs it in every project.
@@ -1593,6 +1601,8 @@ async def memory_sharing(
     transaction: Transaction,
 ) -> NoteOut:
     """Set who can read an entry and whether it appears in all projects.
+    If the project, audience or global scope is unclear, ask the user before changing it.
+    Do not guess or use defaults to resolve uncertainty.
     shared=false means only the entry author; shared=true means source-project members.
     global_scope=true keeps that audience and makes the entry available in every project.
     Only the entry author can make a shared entry personal.
@@ -1622,7 +1632,7 @@ async def memory_list(
     """List memory entries. For initial context, use project=<full_name>.
     Keep the default compact result, then read relevant entries with memory_get.
     Includes your personal entries and entries shared with the selected project.
-    Explicit global entries are also included; entries from this project come first.
+    Explicit global entries are also included and come first.
     Use shared only to filter visibility, not to select a project.
     See backlog://guide/memory."""
     reach = await backlog.reach(

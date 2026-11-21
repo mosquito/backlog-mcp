@@ -469,6 +469,9 @@ class BoardSection(BaseModel):
 class ProjectBoard(Actor):
     project: BoardProject
     tasks: BoardCounts
+    global_memory: list[NoteOut] = Field(
+        default_factory=list, description="All visible global memory entries with full bodies."
+    )
     memory: int = Field(
         description="Personal and project-shared memory, plus visible global entries."
     )

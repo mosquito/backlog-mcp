@@ -75,12 +75,17 @@ async def test_memory_sharing_and_scope(backlog, adapter):
         ):
             listed = await call(client, "memory_list", project=other)
             assert {item["id"] for item in listed["items"]} == visible
-            assert listed["items"][0]["id"] == elsewhere["id"]
+            assert listed["items"][0]["global_scope"]
+            assert listed["items"][-1]["id"] == elsewhere["id"]
+            board = await call(client, "project_board", project=other)
+            assert {item["id"] for item in board["global_memory"]} == visible - {elsewhere["id"]}
             for query in (['"needle"'], ["needle"]):
                 result = await call(
                     client, "search", project=other, query=query, kinds=["memory"], min_score=-1
                 )
                 assert {item["id"] for item in result["memory"]} == visible
+        outsider = (await call(eve, "project_save", root="", name="Outside"))["full_name"]
+        assert (await call(eve, "project_board", project=outsider))["global_memory"] == []
         assert (await call(alice, "memory_get", project=other, title="needle"))["id"] == elsewhere[
             "id"
         ]
