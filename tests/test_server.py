@@ -77,6 +77,7 @@ async def test_catalogue(client: BaseClient) -> None:
         "task_move",
         "task_delete",
         "memory_save",
+        "memory_sharing",
         "memory_append",
         "memory_get",
         "memory_list",
@@ -336,7 +337,7 @@ async def test_statistics(client: BaseClient) -> None:
     await call(client, "memory_save", title="Shared agreement", project=other["slug"], shared=True)
     await call(client, "memory_save", title="Private agreement", project=other["slug"])
     stats = await call(client, "stats")
-    assert (stats["total"], stats["open"], stats["closed"], stats["memory"]) == (5, 3, 2, 2)
+    assert (stats["total"], stats["open"], stats["closed"], stats["memory"]) == (5, 3, 2, 1)
     assert stats["by_status"] == {"todo": 1, "doing": 1, "blocked": 1, "done": 1, "cancelled": 1}
     assert stats["by_priority"] == {"urgent": 1, "normal": 4}
     assert set(stats["tags"]) == {"api", "docs"}
@@ -586,7 +587,7 @@ async def test_search_covers_tasks_and_notes_together(client: BaseClient) -> Non
     assert (await call(client, "search", query=['"port"']))["memory"][0]["id"] == saved["id"]
 
 
-async def test_shared_notes_cross_projects(client: BaseClient) -> None:
+async def test_shared_notes_stay_in_their_project(client: BaseClient) -> None:
     other = await call(client, "project_save", root="../other", name="Other")
     theirs = await call(
         client, "memory_save", title="staging", body="theirs", shared=True, project=other["slug"]
@@ -594,16 +595,17 @@ async def test_shared_notes_cross_projects(client: BaseClient) -> None:
     await call(client, "memory_save", title="private", body="theirs only", project=other["slug"])
 
     listed = await call(client, "memory_list")
-    assert [item["id"] for item in listed["items"]] == [theirs["id"]]
-    assert (await call(client, "memory_get", title="staging"))["project"] == other["full_name"]
-    assert (await call(client, "search", query=['"theirs"']))["count"] == 1
+    assert listed["items"] == []
+    assert (await client.call_tool("memory_get", {"title": "staging"})).is_error
+    assert (await call(client, "memory_get", id=theirs["id"]))["project"] == other["full_name"]
+    assert (await call(client, "search", query=['"theirs"']))["count"] == 0
 
     #: Saving by title from here creates a local note; the shared note of the other project stays.
     mine = await call(client, "memory_save", title="staging", body="mine")
     assert mine["id"] != theirs["id"]
     assert (await call(client, "memory_get", title="staging"))["id"] == mine["id"]
-    assert (await call(client, "memory_list"))["count"] == 2
-    assert (await call(client, "memory_list", shared=True))["count"] == 1
+    assert (await call(client, "memory_list"))["count"] == 1
+    assert (await call(client, "memory_list", shared=True))["count"] == 0
     assert (await call(client, "memory_list", shared=False))["count"] == 1
     assert (await call(client, "memory_list", all_projects=True))["count"] == 3
     assert (await call(client, "search", query=['"theirs"'], all_projects=True, min_score=1))[

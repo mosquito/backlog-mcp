@@ -133,14 +133,14 @@ async def test_board_memory_and_membership(client: BaseClient, backlog: Backlog)
         result = await client.call_tool("project_board", {"project": reference})
         assert isinstance(result, CallToolResult) and result.is_error
     board = await call(client, "project_board", project=project["full_name"])
-    assert board["memory"] == 2
+    assert board["memory"] == 1
     await mutate(
         scope.share(await alice.open(), alice.actor, private.id, backlog.principal, "reader"),
         alice.transaction,
     )
     board = await call(client, "project_board", project=private.full_name)
     assert board["project"]["role"] == "reader"
-    assert board["memory"] == 2  # Secret shared plus the accessible shared note.
+    assert board["memory"] == 1
 
 
 async def test_ready_dependencies_close_reopen_and_blocked_union(client: BaseClient) -> None:

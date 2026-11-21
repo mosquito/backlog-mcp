@@ -37,10 +37,10 @@ Pass `project=` explicitly on unscoped HTTP connections.
 ### 2. Search context before decisions
 
 After the registration check, first call
-`memory_list(project=<returned full_name>, shared=false)` for project memory.
+`memory_list(project=<returned full_name>)` for project memory.
 Keep the default compact result and use `memory_get` for relevant entries.
-Without `shared=false`, the list also includes shared entries from other projects.
-Find shared agreements with topic-specific `search`; do not load all shared memory.
+The list includes personal entries and entries shared with this project.
+Use topic-specific `search` for other projects only when needed.
 Use `search` before investigating a problem,
 choosing an approach, creating tasks or memory, or asking about prior agreements.
 Use natural-language queries that describe the problem or question.
@@ -100,7 +100,11 @@ Use `#{ID}` for task references and `#note{ID}` for memory notes.
 Proactively save user preferences, constraints, and decisions with `memory_save`
 or `memory_append`. Search first and update an existing record when appropriate.
 Use the selected project's memory first; read full entries only when relevant.
-Use `shared=true` for agreements that apply across accessible projects.
+Use `shared=true` to share an entry with members of this project.
+Use `shared=false` for entries visible only to the entry author.
+Choose by who needs the fact: "my dev server" is personal; "team dev servers catalog"
+is shared because the team needs it. `global_scope=true` extends the entry to all projects
+without changing its audience. Use `memory_sharing` to set shared and global_scope.
 Use task comments for temporary findings, bugs, and implementation progress.
 Do not save code or documentation snapshots as lasting memory.
 `memory_save(body=...)` replaces the body; `memory_append` adds related context.

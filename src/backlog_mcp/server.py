@@ -104,9 +104,9 @@ log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """Backlog is a task tracker and memory for agents.
 Start with project_board(project), then read backlog://guide/workflow.
-First list memory_list(project=<returned full_name>, shared=false) with compact results.
-Read relevant entries with memory_get. Find shared agreements with topic-specific search;
-do not load all shared memory into context.
+First list memory_list(project=<returned full_name>) with compact results.
+Read relevant entries with memory_get, including entries shared with this project.
+Search other projects by topic only when needed; do not load unrelated memory.
 Read backlog://guide for the topic index. Use resources/read, or mcp_resources_read(uri=...)
 when connected with resources=tool. Discover resource addresses with resources/list and
 resources/templates/list, or mcp_resources_list in tool mode.
@@ -307,6 +307,7 @@ def note_out(note: Note) -> NoteOut:
         body=note.body,
         tags=note.tags,
         shared=note.shared,
+        global_scope=note.global_scope,
         created_by=note.created_by,
         updated_by=note.updated_by,
         created_at=note.created_at,
@@ -323,6 +324,7 @@ def note_list_item(note: Note) -> NoteListItem:
         title=note.title,
         tags=note.tags,
         shared=note.shared,
+        global_scope=note.global_scope,
         created_by=note.created_by,
         updated_by=note.updated_by,
         created_at=note.created_at,
@@ -512,8 +514,7 @@ async def note_of(
 ) -> Note:
     """The memory entry an id or a title names, or `LookupError`.
 
-    A title is looked up in the resolved project first, then among shared memory entries
-    of other projects. Only the owning project can replace it by title.
+    A title resolves in the selected project first, then in visible global entries.
     """
     connection = await backlog.open()
     if note_id is not None:
@@ -524,14 +525,9 @@ async def note_of(
     if not title:
         raise ValueError("name the note by id or by title")
     owner = await backlog.resolve(project)
-    found = await note_by_title(connection, backlog.actor, title, project_id=owner.id)
-    if found is None:
-        shared = [
-            item
-            for item in await read_notes(connection, backlog.actor, shared=True)
-            if item.title == title
-        ]
-        found = shared[0] if shared else None
+    found = await note_by_title(
+        connection, backlog.actor, title, project_id=owner.id, include_global=True
+    )
     if found is None:
         raise LookupError(f"no note {title!r} in {owner.full_name}")
     return found
@@ -797,6 +793,10 @@ class MoveTask(BaseModel):
 
 
 class SaveNote(BaseModel):
+    global_scope: bool | None = Field(
+        default=None,
+        description="Make the entry visible in all projects without changing its audience.",
+    )
     model_config = {"title": "SaveMemory"}
 
     create_only: bool = Field(
@@ -818,7 +818,11 @@ class SaveNote(BaseModel):
     )
     tags: list[str] | None = Field(default=None, description="Replaces the whole tag list.")
     shared: bool | None = Field(
-        default=None, description="Make memory entry visible across all projects."
+        default=None,
+        description=(
+            "True shares with project members. False restricts access to the entry author. "
+            "Title saves default to personal. ID updates keep visibility when omitted."
+        ),
     )
     id: int | None = Field(
         default=None, description="Change this memory entry, whatever its title."
@@ -897,8 +901,8 @@ class ListNotes(BaseModel):
     shared: bool | None = Field(
         default=None,
         description=(
-            "False lists unshared entries; use it with project for initial context. "
-            "True lists shared entries. Null includes both and shared entries from other projects."
+            "False lists your personal entries. True lists entries shared with the project. "
+            "Null lists both within the selected scope, including visible global entries."
         ),
     )
     limit: int = Field(default=50, ge=1, le=500)
@@ -959,7 +963,7 @@ async def project_board(
     args: ReadBoard, backlog: Backlog, connection: aiosqlite.Connection
 ) -> ProjectBoard:
     """Start here for project context, counts and ready/claimed tasks.
-    Verify principal and roots, then call memory_list(project=<returned full_name>, shared=false).
+    Verify principal and roots, then call memory_list(project=<returned full_name>).
     Read relevant entries with memory_get and follow preferred_language.
     Read task_get before claiming; the board is not a reservation.
     This read never creates a project or changes connection scope. See backlog://guide/workflow."""
@@ -1491,7 +1495,10 @@ async def memory_save(
     args: SaveNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> NoteOut:
     """Record a lasting agreement, preference or invariant the user stated.
-    Check memory_list(project=..., shared=false) and read relevant entries with memory_get.
+    Choose the audience by who needs the fact: "my dev server" is personal (shared=false),
+    while "team dev servers catalog" is shared with project members (shared=true).
+    Use global_scope=true only when the same audience needs it in every project.
+    Check memory_list(project=...) and read relevant entries with memory_get.
     Update an existing entry by id instead of creating a near-duplicate.
     A correction rewrites the body with the current truth; do not append
     history.
@@ -1503,7 +1510,9 @@ async def memory_save(
         if not args.title:
             raise ValueError("a new note needs a title")
         project = await backlog.resolve(args.project)
-        existing = await note_by_title(connection, backlog.actor, args.title, project_id=project.id)
+        existing = await note_by_title(
+            connection, backlog.actor, args.title, project_id=project.id, shared=bool(args.shared)
+        )
         if existing is None:
             async with transaction:
                 saved = await add_note(
@@ -1514,13 +1523,18 @@ async def memory_save(
                     body=args.body or "",
                     tags=args.tags or (),
                     shared=bool(args.shared),
+                    global_scope=bool(args.global_scope),
                 )
             embeddings.enqueue(backlog, saved)
-            await changed(note_event(saved, Action.ADDED, computer=backlog.computer))
+            await changed(
+                note_event(saved, Action.ADDED, computer=backlog.computer),
+                recipients=None if saved.shared else [backlog.principal],
+            )
             return note_out(saved)
         if args.create_only:
             raise ValueError("a note with this title already exists; choose another title")
         args.id = existing.id
+    previous = await read_note(connection, backlog.actor, args.id)
     async with transaction:
         updated = await update_note(
             connection,
@@ -1530,11 +1544,17 @@ async def memory_save(
             body=args.body,
             tags=args.tags,
             shared=args.shared,
+            global_scope=args.global_scope,
         )
     if updated is None:
         raise LookupError(f"no note #{args.id}")
     embeddings.enqueue(backlog, updated)
-    await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
+    if previous and previous.shared and not updated.shared:
+        await changed(note_event(previous, Action.DELETED, computer=backlog.computer))
+    await changed(
+        note_event(updated, Action.UPDATED, computer=backlog.computer),
+        recipients=None if updated.shared else [backlog.principal],
+    )
     return note_out(updated)
 
 
@@ -1550,14 +1570,47 @@ async def memory_append(
     if updated is None:
         raise LookupError(f"no note #{found.id}")
     embeddings.enqueue(backlog, updated)
-    await changed(note_event(updated, Action.UPDATED, computer=backlog.computer))
+    await changed(
+        note_event(updated, Action.UPDATED, computer=backlog.computer),
+        recipients=None if updated.shared else [backlog.principal],
+    )
     return note_out(updated)
+
+
+class MemorySharing(BaseModel):
+    id: int = Field(description="Memory entry id.")
+    shared: bool = Field(
+        description="Project members can read it; false limits it to the entry author."
+    )
+    global_scope: bool = Field(description="Use in all projects without changing who can read it.")
+
+
+@registry.tool(title="Set memory sharing", annotations=Hint.IDEMPOTENT)
+async def memory_sharing(
+    args: MemorySharing,
+    backlog: Backlog,
+    connection: aiosqlite.Connection,
+    transaction: Transaction,
+) -> NoteOut:
+    """Set who can read an entry and whether it appears in all projects.
+    shared=false means only the entry author; shared=true means source-project members.
+    global_scope=true keeps that audience and makes the entry available in every project.
+    Only the entry author can make a shared entry personal.
+    See backlog://guide/memory."""
+    saved: NoteOut = await memory_save(
+        SaveNote(id=args.id, shared=args.shared, global_scope=args.global_scope),
+        backlog,
+        connection,
+        transaction,
+    )
+    return saved
 
 
 @registry.tool(title="Read a memory entry", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
     """Read one memory entry by id or title. IDs work across accessible projects; titles resolve
-    within project scope and shared memory. Read entries relevant to the current work.
+    within the selected project first, then visible global entries. Personal entries take
+    precedence within each scope. Read entries relevant to the current work.
     See backlog://guide/memory."""
     return note_out(await note_of(backlog, args.id, args.title, args.project))
 
@@ -1566,10 +1619,11 @@ async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
 async def memory_list(
     args: ListNotes, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Notes | FullNotes:
-    """List memory entries. For initial context, use project=<full_name>, shared=false.
+    """List memory entries. For initial context, use project=<full_name>.
     Keep the default compact result, then read relevant entries with memory_get.
-    An omitted shared filter includes shared entries from other projects.
-    Find shared agreements with topic-specific search instead of loading them all.
+    Includes your personal entries and entries shared with the selected project.
+    Explicit global entries are also included; entries from this project come first.
+    Use shared only to filter visibility, not to select a project.
     See backlog://guide/memory."""
     reach = await backlog.reach(
         args.project,
@@ -1632,7 +1686,10 @@ async def memory_delete(
     async with transaction:
         deleted = await delete_note(connection, backlog.actor, args.id)
     embeddings.enqueue(backlog, found, deleted=True)
-    await changed(note_event(found, Action.DELETED, computer=backlog.computer))
+    await changed(
+        note_event(found, Action.DELETED, computer=backlog.computer),
+        recipients=None if found.shared else [backlog.principal],
+    )
     return Deleted(
         principal=backlog.principal,
         computer=backlog.computer,
@@ -1745,8 +1802,8 @@ async def one_task(
 async def known_notes(
     args: Nothing, backlog: Backlog, connection: aiosqlite.Connection
 ) -> list[dict[str, Any]]:
-    """Full memory entries in connection project scope, including accessible shared entries.
-    For initial context, use memory_list(project=<full_name>, shared=false) instead.
+    """Full memory entries in connection project scope: your personal and project-shared entries.
+    For initial context, use memory_list(project=<full_name>) instead.
     See backlog://guide/memory."""
     project = await backlog.resolve(None)
     found = await read_notes(connection, backlog.actor, project_id=project.id, limit=200)
@@ -2568,10 +2625,21 @@ async def read_note(connection: aiosqlite.Connection, actor: Actor, note_id: int
 
 
 async def note_by_title(
-    connection: aiosqlite.Connection, actor: Actor, title: str, *, project_id: int
+    connection: aiosqlite.Connection,
+    actor: Actor,
+    title: str,
+    *,
+    project_id: int,
+    shared: bool | None = None,
+    include_global: bool = False,
 ) -> Note | None:
     row = await QUERIES.note_by_title(
-        connection, project_id=project_id, title=title, principal=actor.principal
+        connection,
+        project_id=project_id,
+        title=title,
+        principal=actor.principal,
+        shared=shared,
+        include_global=include_global,
     )
     return to_note(row) if row else None
 
@@ -2585,6 +2653,7 @@ async def add_note(
     body: str = "",
     tags: Iterable[str] = (),
     shared: bool = False,
+    global_scope: bool = False,
 ) -> Note:
     check_note(body)
     await require(connection, actor, project_id, role="editor")
@@ -2597,6 +2666,7 @@ async def add_note(
         body=body,
         tags=join_tags(tags),
         shared=int(shared),
+        global_scope=int(global_scope),
         created_at=now,
         updated_at=now,
         created_principal=actor.principal,
@@ -2618,12 +2688,19 @@ async def update_note(
     body: str | None = None,
     tags: Iterable[str] | None = None,
     shared: bool | None = None,
+    global_scope: bool | None = None,
     project_id: int | None = None,
 ) -> Note | None:
     existing = await read_note(connection, actor, note_id)
     if existing is None:
         return None
     await require(connection, actor, existing.project_id, role="editor")
+    if (
+        shared is False
+        and existing.shared
+        and (existing.created_by is None or existing.created_by.principal != actor.principal)
+    ):
+        raise PermissionError("only the author can make a shared memory entry personal")
     if project_id is not None:
         await require(connection, actor, project_id, role="editor")
     changes: dict[str, Any] = {}
@@ -2636,6 +2713,8 @@ async def update_note(
         changes["tags"] = join_tags(tags)
     if shared is not None:
         changes["shared"] = int(shared)
+    if global_scope is not None:
+        changes["global_scope"] = int(global_scope)
     if project_id is not None:
         changes["project_id"] = project_id
     if changes:

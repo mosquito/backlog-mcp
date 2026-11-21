@@ -257,6 +257,7 @@ class Change:
     project_id: int
     text: str | None
     passages: tuple[str, ...] = ()
+    private_to: str | None = None
 
 
 def record_passages(record: Task | Note | Comment | Project) -> tuple[str, ...]:
@@ -299,7 +300,14 @@ def change(record: Task | Note | Comment | Project, *, deleted: bool = False) ->
                 record_passages(record),
             )
     return Change(
-        kind, record.id, record.project_id, None if deleted else text, record_passages(record)
+        kind,
+        record.id,
+        record.project_id,
+        None if deleted else text,
+        record_passages(record),
+        record.created_by.principal
+        if isinstance(record, Note) and not record.shared and record.created_by
+        else None,
     )
 
 
@@ -417,6 +425,7 @@ class Indexer:
                                         updates.append(
                                             item
                                             if allowed[item.project_id]
+                                            and item.private_to in (None, state.backlog.principal)
                                             else Change(item.kind, item.id, item.project_id, None)
                                         )
                             snapshots.append((state, updates, full))
@@ -623,9 +632,11 @@ async def search_mode(
     project_id, computer = reach.project_id, reach.computer
 
     def inside(record: Task | Note | Comment) -> bool:
-        """True when the record is in reach by itself, shared notes aside."""
+        """True when the record is in the selected project scope."""
         if project_id is not None:
-            return record.project_id == project_id
+            return record.project_id == project_id or (
+                isinstance(record, Note) and record.global_scope
+            )
         if computer is not None:
             return True
         return True
@@ -738,9 +749,7 @@ async def search_mode(
         and (item.status != Status.DELETED or (args.status and Status.DELETED in args.status))
         and (not tag or tag in item.tags)
     }
-    allowed_notes = {
-        item.id for item in notes if (inside(item) or item.shared) and (not tag or tag in item.tags)
-    }
+    allowed_notes = {item.id for item in notes if inside(item) and (not tag or tag in item.tags)}
     comments = (
         await server.read_comments(
             connection,
@@ -807,7 +816,7 @@ async def search_mode(
         )
     for record_id in ranked_notes:
         note = await server.read_note(connection, backlog.actor, record_id)
-        if note is None or not (inside(note) or note.shared):
+        if note is None or not inside(note):
             continue
         if tag and tag not in note.tags:
             continue

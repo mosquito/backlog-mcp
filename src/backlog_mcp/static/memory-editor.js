@@ -13,10 +13,11 @@ export function memoryEditor(
   } catch {
     saved = null;
   }
+  existing ||= saved?.base || null;
   const writable = projects.filter((p) => ["owner", "editor"].includes(p.role));
   const names = writable.map((p) => p.full_name);
   const initial = saved || (existing ? { ...existing, tags: existing.tags.join(", ") } : {});
-  const base = saved?.base || existing;
+  let base = saved?.base || existing;
   const scope = select(["", ...names], saved?.project || project, { required: true });
   scope.options[0].text = "Choose a project";
   scope.disabled = Boolean(existing);
@@ -24,6 +25,7 @@ export function memoryEditor(
   const body = el("textarea", { value: initial.body || "", rows: 8 });
   const tags = el("input", { value: initial.tags || "", placeholder: "Comma-separated tags" });
   const shared = el("input", { type: "checkbox", checked: initial.shared === true });
+  const globalScope = el("input", { type: "checkbox", checked: initial.global_scope === true });
   const count = el("small", { class: "muted", "aria-live": "polite" });
   const error = el("p", { class: "error", role: "alert", hidden: true });
   const preview = el("div", { class: "markdown editor-preview", hidden: true });
@@ -54,6 +56,8 @@ export function memoryEditor(
       field("Project", scope),
       field("Title", title),
       field("Tags", tags),
+      el("label", { class: "inline" }, shared, "Share with project members"),
+      el("label", { class: "inline" }, globalScope, "Available in all projects to the same people"),
       field("Content", body),
       count,
       el(
@@ -65,7 +69,6 @@ export function memoryEditor(
         }),
       ),
       preview,
-      el("label", { class: "inline" }, shared, "Shared across accessible projects"),
     ),
     error,
     el(
@@ -90,6 +93,7 @@ export function memoryEditor(
       body: body.value,
       tags: tags.value,
       shared: shared.checked,
+      global_scope: globalScope.checked,
     };
   }
   function update() {
@@ -121,7 +125,7 @@ export function memoryEditor(
       if (existing) {
         const current = await call("memory_get", { id: existing.id });
         if (
-          ["title", "body", "tags", "shared", "updated_at"].some(
+          ["title", "body", "tags", "shared", "global_scope", "updated_at"].some(
             (k) => JSON.stringify(current[k]) !== JSON.stringify(base[k]),
           )
         )
@@ -129,8 +133,9 @@ export function memoryEditor(
             "This note changed while you were editing. Your draft is saved. Copy your changes, then discard the draft and reopen the note to review the latest version.",
           );
       }
-      const note = await call("memory_save", {
-        ...data,
+      const { shared: shareEntry, global_scope: globalEntry, ...content } = data;
+      let note = await call("memory_save", {
+        ...content,
         title: data.title.trim(),
         tags: [
           ...new Set(
@@ -142,6 +147,15 @@ export function memoryEditor(
         ],
         ...(existing ? { id: existing.id } : { create_only: true }),
       });
+      existing = base = note;
+      scope.disabled = true;
+      persist();
+      if (note.shared !== shareEntry || Boolean(note.global_scope) !== globalEntry) {
+        note = await call("memory_sharing", {
+          id: note.id, shared: shareEntry, global_scope: globalEntry,
+        });
+        existing = base = note;
+      }
       try {
         localStorage.removeItem(key);
       } catch {

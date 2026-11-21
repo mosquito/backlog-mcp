@@ -492,7 +492,7 @@ async def test_notes_are_saved_by_title_appended_and_deleted(store: Backlog) -> 
     assert await operations.read_note(await store.open(), store.actor, saved.id) is None
 
 
-async def test_note_listing_reaches_shared_notes_of_other_projects(store: Backlog) -> None:
+async def test_note_listing_keeps_shared_notes_in_their_project(store: Backlog) -> None:
     here = await register(store, "here", Path("/tmp/here"))
     there = await register(store, "there", Path("/tmp/there"))
     mine = await mutate(
@@ -518,7 +518,7 @@ async def test_note_listing_reaches_shared_notes_of_other_projects(store: Backlo
     )
 
     listed = await operations.read_notes(await store.open(), store.actor, project_id=here.id)
-    assert [item.id for item in listed] == [shared.id, mine.id]
+    assert [item.id for item in listed] == [mine.id]
     assert [
         item.id
         for item in await operations.read_notes(
@@ -530,7 +530,7 @@ async def test_note_listing_reaches_shared_notes_of_other_projects(store: Backlo
         for item in await operations.read_notes(
             await store.open(), store.actor, project_id=here.id, shared=True
         )
-    ] == [shared.id]
+    ] == []
     assert [
         item.id
         for item in await operations.read_notes(
@@ -538,22 +538,19 @@ async def test_note_listing_reaches_shared_notes_of_other_projects(store: Backlo
         )
     ] == [mine.id]
     assert len(await operations.read_notes(await store.open(), store.actor)) == 3
-    assert await operations.count_notes(await store.open(), store.actor, project_id=here.id) == 2
+    assert await operations.count_notes(await store.open(), store.actor, project_id=here.id) == 1
     assert (
         await operations.count_notes(
             await store.open(), store.actor, project_id=here.id, tag="docs"
         )
-        == 1
+        == 0
     )
     assert [
         item.id
         for item in await operations.read_notes(
             await store.open(), store.actor, project_id=here.id, tag="infra"
         )
-    ] == [
-        shared.id,
-        mine.id,
-    ]
+    ] == [mine.id]
     assert [
         item.id
         for item in await operations.read_notes(await store.open(), store.actor, limit=1, offset=1)
@@ -601,7 +598,7 @@ async def test_note_search_follows_scope_and_edits(store: Backlog) -> None:
                 await store.open(), store.actor, "staging", project_id=here.id
             )
         )
-        == 1
+        == 0
     )
     assert len(await operations.search_notes(await store.open(), store.actor, "vm")) == 2
     assert (

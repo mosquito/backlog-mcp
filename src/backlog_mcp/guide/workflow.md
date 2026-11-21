@@ -2,10 +2,10 @@
 
 1. Call `project_board(project=<absolute local path>)`. Verify principal and roots;
    then use the returned owner/slug. Leave correct bindings unchanged.
-2. First call `memory_list(project=<full_name>, shared=false)` for project memory.
+2. First call `memory_list(project=<full_name>)` for project memory.
    Keep the compact result; read relevant entries with `memory_get`.
-   Use topic-specific `search` for related tasks and shared agreements.
-   Do not load all shared memory. Verify technical facts in code.
+   Use topic-specific `search` for related tasks and agreements.
+   Include project-shared entries; do not load unrelated project memory. Verify technical facts in code.
 3. For work spanning multiple steps or sessions, reuse or create a task.
    Read it with `task_get`, then claim through `task_claim` before starting.
 4. Set doing. Use `task_comment_add` for progress, review, findings, checks, questions,

@@ -360,9 +360,12 @@ class NoteOut(Attributed):
     title: str
     body: str = ""
     tags: list[str] = Field(default_factory=list)
+    global_scope: bool = Field(
+        default=False, description="Visible in all projects, to the same audience."
+    )
     shared: bool = Field(
         default=False,
-        description="Visible across accessible projects; source-project membership is required.",
+        description="True: project members can read it. False: only the entry author can read it.",
     )
     created_at: Seconds
     updated_at: Seconds
@@ -376,9 +379,12 @@ class NoteListItem(Attributed):
     project: str = Field(description="Owner-qualified name of the owning project.")
     title: str
     tags: list[str] = Field(default_factory=list)
+    global_scope: bool = Field(
+        default=False, description="Visible in all projects, to the same audience."
+    )
     shared: bool = Field(
         default=False,
-        description="Visible across accessible projects; source-project membership is required.",
+        description="True: project members can read it. False: only the entry author can read it.",
     )
     created_at: Seconds
     updated_at: Seconds
@@ -463,7 +469,9 @@ class BoardSection(BaseModel):
 class ProjectBoard(Actor):
     project: BoardProject
     tasks: BoardCounts
-    memory: int = Field(description="Project memory plus accessible shared memory.")
+    memory: int = Field(
+        description="Personal and project-shared memory, plus visible global entries."
+    )
     ready: BoardSection = Field(description="Unassigned, unblocked tasks; up to ten by priority.")
     claimed: BoardSection = Field(
         description="Open tasks assigned to this principal and computer, across all markers."

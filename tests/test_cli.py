@@ -890,7 +890,7 @@ def test_note_group_prints_its_help_and_opens_nothing(run: Runner, command: str)
     assert code == 0
     assert "memory [-h]" in output
     assert "{list,nl,show,ns,add,na,append,np,edit,ne,delete,nd}" in output
-    assert "List the notes of this project" in output
+    assert "List your personal" in output
     assert "append" in output
     assert not run.database.exists()
 
@@ -934,7 +934,7 @@ def test_notes_add_replace_append_search_and_show(run: Runner) -> None:
     assert run("memory", "append", "42", "more") == (1, "no note #42\n")
 
 
-def test_shared_notes_show_up_in_another_project(run: Runner, tmp_path: Path) -> None:
+def test_shared_notes_stay_in_their_project(run: Runner, tmp_path: Path) -> None:
     second = tmp_path / "second"
     second.mkdir()
     run("-r", str(second), "memory", "add", "staging", "-b", "https://staging", "--shared")
@@ -942,17 +942,15 @@ def test_shared_notes_show_up_in_another_project(run: Runner, tmp_path: Path) ->
 
     code, output = run("memory", "list")
     assert code == 0
-    assert "1 note(s) of stdio-user/workspace" in output
-    assert "staging" in output
+    assert "0 note(s) of stdio-user/workspace" in output
+    assert "staging" not in output
     assert "private" not in output
-    #: A note from another board says where it comes from, and that it is shared.
-    assert "second" in output
-    assert "yes" in output
 
     assert "private" in run("memory", "list", "--all-projects")[1]
     assert "2 note(s) of every project" in run("memory", "list", "--all-projects")[1]
-    assert "1 note(s)" in run("memory", "list", "--shared")[1]
-    assert "within accessible projects" in run("memory", "show", "1")[1]
+    assert "0 note(s)" in run("memory", "list", "--shared")[1]
+    assert "1 note(s)" in run("-r", str(second), "memory", "list", "--shared")[1]
+    assert "project members" in run("memory", "show", "1")[1]
 
 
 @pytest.mark.parametrize("flags", [[], ["--yes"]])
@@ -996,7 +994,7 @@ def test_note_edit_uses_the_form(run: Runner, monkeypatch: pytest.MonkeyPatch) -
     assert "updated note #1" in output
     assert "New" in output
     assert "docs, infra" in output
-    assert "within accessible projects" in output
+    assert "project members" in output
     assert "Hosts" in output
     assert "New body." in output
 

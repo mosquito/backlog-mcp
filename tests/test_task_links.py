@@ -351,7 +351,7 @@ async def test_existing_schema_is_registered_without_changing_links(backlog: Bac
     assert (await operations.task_links(await backlog.open(), backlog.actor, b))[
         0
     ].reason == "Keep this"
-    assert len(await rows(await backlog.open(), "SELECT * FROM migrations")) == 3
+    assert len(await rows(await backlog.open(), "SELECT * FROM migrations")) == 4
     await backlog.close()
     assert (await operations.task_links(await backlog.open(), backlog.actor, b))[
         0

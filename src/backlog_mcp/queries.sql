@@ -107,12 +107,12 @@ INSERT INTO tasks (
     :closed_at, :created_principal, :created_computer, :updated_principal, :updated_computer
 );
 
--- name: add_note(project_id, title, body, tags, shared, created_at, updated_at, created_principal, created_computer, updated_principal, updated_computer)<!
+-- name: add_note(project_id, title, body, tags, shared, global_scope, created_at, updated_at, created_principal, created_computer, updated_principal, updated_computer)<!
 INSERT INTO notes (
-    project_id, title, body, tags, shared, created_at, updated_at, created_principal,
+    project_id, title, body, tags, shared, global_scope, created_at, updated_at, created_principal,
     created_computer, updated_principal, updated_computer
 ) VALUES (
-    :project_id, :title, :body, :tags, :shared, :created_at, :updated_at,
+    :project_id, :title, :body, :tags, :shared, :global_scope, :created_at, :updated_at,
     :created_principal, :created_computer, :updated_principal, :updated_computer
 );
 
@@ -265,6 +265,8 @@ UPDATE notes SET title = CASE WHEN json_type(:changes, '$.title') IS NULL THEN t
     '$.tags') END,
     shared = CASE WHEN json_type(:changes, '$.shared') IS NULL THEN shared ELSE
     json_extract(:changes, '$.shared') END,
+    global_scope = CASE WHEN json_type(:changes, '$.global_scope') IS NULL THEN global_scope ELSE
+    json_extract(:changes, '$.global_scope') END,
     project_id = CASE WHEN json_type(:changes, '$.project_id') IS NULL THEN project_id ELSE
     json_extract(:changes, '$.project_id') END,
     updated_principal = CASE WHEN json_type(:changes, '$.updated_principal') IS NULL THEN
@@ -388,13 +390,17 @@ AND (:priority IS NULL OR t.priority = :priority) GROUP BY key;
 -- name: note(note_id, principal)^
 SELECT n.*, (SELECT handle FROM principals WHERE identity = p.owner) || '/' || p.slug AS project
     FROM notes n JOIN projects p ON p.id = n.project_id WHERE n.id = :note_id AND EXISTS (SELECT 1
-    FROM project_members m WHERE m.project_id = p.id AND m.principal = :principal);
+    FROM project_members m WHERE m.project_id = p.id AND m.principal = :principal)
+    AND (n.shared = 1 OR n.created_principal = :principal);
 
--- name: note_by_title(project_id, title, principal)^
+-- name: note_by_title(project_id, title, principal, shared, include_global)^
 SELECT n.*, (SELECT handle FROM principals WHERE identity = p.owner) || '/' || p.slug AS project
-    FROM notes n JOIN projects p ON p.id = n.project_id WHERE n.project_id = :project_id AND n.title
+    FROM notes n JOIN projects p ON p.id = n.project_id
+    WHERE (n.project_id = :project_id OR (:include_global AND n.global_scope = 1)) AND n.title
     = :title AND EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = p.id AND m.principal =
-    :principal);
+    :principal) AND (n.shared = 1 OR n.created_principal = :principal)
+    AND (:shared IS NULL OR n.shared = :shared)
+    ORDER BY (n.project_id = :project_id) DESC, n.shared, n.updated_at DESC, n.id DESC LIMIT 1;
 
 -- name: append_note(text, suffix, now, principal, computer, note_id)!
 UPDATE notes SET body = CASE WHEN body = '' THEN :text ELSE body || :suffix END,
@@ -407,18 +413,21 @@ DELETE FROM notes WHERE id = :note_id;
 SELECT n.*, (SELECT handle FROM principals WHERE identity = p.owner) || '/' || p.slug AS project
     FROM notes n JOIN projects p ON p.id = n.project_id WHERE EXISTS (SELECT 1 FROM project_members
     m WHERE m.project_id = p.id AND m.principal = :principal)
-AND (:project_id IS NULL OR n.project_id = :project_id OR n.shared = 1)
-AND (:computer IS NULL OR n.shared = 1 OR EXISTS (SELECT 1 FROM project_roots r
+AND (n.shared = 1 OR n.created_principal = :principal)
+AND (:project_id IS NULL OR n.project_id = :project_id OR n.global_scope = 1)
+AND (:computer IS NULL OR n.global_scope = 1 OR EXISTS (SELECT 1 FROM project_roots r
     WHERE r.project_id = p.id AND r.principal = :principal AND r.computer = :computer))
 AND (:shared IS NULL OR n.shared = :shared)
-AND (:tag IS NULL OR (',' || n.tags || ',') LIKE :tag) ORDER BY n.updated_at DESC, n.id DESC LIMIT
-    :limit OFFSET :offset;
+AND (:tag IS NULL OR (',' || n.tags || ',') LIKE :tag)
+ORDER BY CASE WHEN n.project_id = :project_id THEN 0 ELSE 1 END, n.updated_at DESC, n.id DESC
+LIMIT :limit OFFSET :offset;
 
 -- name: count_notes(principal, project_id, computer, shared, tag)^
 SELECT COUNT(*) AS found FROM notes n JOIN projects p ON p.id = n.project_id WHERE EXISTS (SELECT 1
     FROM project_members m WHERE m.project_id = p.id AND m.principal = :principal)
-AND (:project_id IS NULL OR n.project_id = :project_id OR n.shared = 1)
-AND (:computer IS NULL OR n.shared = 1 OR EXISTS (SELECT 1 FROM project_roots r
+AND (n.shared = 1 OR n.created_principal = :principal)
+AND (:project_id IS NULL OR n.project_id = :project_id OR n.global_scope = 1)
+AND (:computer IS NULL OR n.global_scope = 1 OR EXISTS (SELECT 1 FROM project_roots r
     WHERE r.project_id = p.id AND r.principal = :principal AND r.computer = :computer))
 AND (:shared IS NULL OR n.shared = :shared)
 AND (:tag IS NULL OR (',' || n.tags || ',') LIKE :tag);
@@ -430,8 +439,9 @@ SELECT n.*, (SELECT handle FROM principals WHERE identity = p.owner) || '/' || p
 JOIN notes_fts ON notes_fts.rowid = n.id
 WHERE notes_fts MATCH :match AND EXISTS (SELECT 1 FROM project_members m WHERE m.project_id = p.id
     AND m.principal = :principal)
-AND (:project_id IS NULL OR n.project_id = :project_id OR n.shared = 1)
-AND (:computer IS NULL OR n.shared = 1 OR EXISTS (SELECT 1 FROM project_roots r
+AND (n.shared = 1 OR n.created_principal = :principal)
+AND (:project_id IS NULL OR n.project_id = :project_id OR n.global_scope = 1)
+AND (:computer IS NULL OR n.global_scope = 1 OR EXISTS (SELECT 1 FROM project_roots r
     WHERE r.project_id = p.id AND r.principal = :principal AND r.computer = :computer))
 AND (:shared IS NULL OR n.shared = :shared)
 AND (:tag IS NULL OR (',' || n.tags || ',') LIKE :tag)
