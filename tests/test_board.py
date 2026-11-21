@@ -1,14 +1,43 @@
 """The onboarding board reads an explicit project without creating or selecting one."""
 
+from io import StringIO
+
 from aiohttp_tiny_mcp.client.base import BaseClient
 from aiohttp_tiny_mcp.protocol.models import CallToolResult
 from helpers import mutate
+from rich.console import Console
 from test_server import call
 
 from backlog_mcp import backlog as scope
 from backlog_mcp import server as operations
 from backlog_mcp.auth import user_identity
 from backlog_mcp.backlog import Backlog
+from backlog_mcp.models import ProjectBoard
+from backlog_mcp.render import board_panel
+
+
+async def test_board_returns_all_global_memory_without_pagination(client: BaseClient) -> None:
+    project = await call(client, "project_save", root=".")
+    source = await call(client, "project_save", root="../other")
+    expected = {}
+    for number in range(51):
+        body = f"Mandatory rule {number}. " + "Full global context. " * 10
+        entry = await call(
+            client,
+            "memory_save",
+            project=source["full_name"],
+            title=f"Global {number}",
+            body=body,
+            global_scope=True,
+        )
+        expected[entry["id"]] = body
+    board = await call(client, "project_board", project=project["full_name"])
+    assert {entry["id"]: entry["body"] for entry in board["global_memory"]} == expected
+    assert len((await call(client, "memory_list", project=project["full_name"]))["items"]) == 50
+    output = StringIO()
+    Console(file=output, width=100).print(board_panel(ProjectBoard.model_validate(board)))
+    assert "Mandatory rule 0." in output.getvalue()
+    assert "Mandatory rule 50." in output.getvalue()
 
 
 async def test_board_missing_or_unknown_project_creates_nothing(
@@ -133,14 +162,14 @@ async def test_board_memory_and_membership(client: BaseClient, backlog: Backlog)
         result = await client.call_tool("project_board", {"project": reference})
         assert isinstance(result, CallToolResult) and result.is_error
     board = await call(client, "project_board", project=project["full_name"])
-    assert board["memory"] == 2
+    assert board["memory"] == 1
     await mutate(
         scope.share(await alice.open(), alice.actor, private.id, backlog.principal, "reader"),
         alice.transaction,
     )
     board = await call(client, "project_board", project=private.full_name)
     assert board["project"]["role"] == "reader"
-    assert board["memory"] == 2  # Secret shared plus the accessible shared note.
+    assert board["memory"] == 1
 
 
 async def test_ready_dependencies_close_reopen_and_blocked_union(client: BaseClient) -> None:

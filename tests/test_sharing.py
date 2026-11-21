@@ -71,7 +71,12 @@ async def test_project_access_and_search_candidates(
     )
     visible_note = await mutate(
         operations.add_note(
-            await alice.open(), alice.actor, project_id=shared.id, title="needle", body="public"
+            await alice.open(),
+            alice.actor,
+            project_id=shared.id,
+            title="needle",
+            body="public",
+            shared=True,
         ),
         alice.transaction,
     )

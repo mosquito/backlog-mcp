@@ -16,17 +16,5 @@ export function agentConfig({
     const token = method === "bearer" ? secret.trim() : secret;
     headers = { Authorization: authorization({ method, username, secret: token }) };
   }
-  const variants = globalThis.agentConfigurations({ endpoint: url.href, name, headers, level });
-  if (level === "user") {
-    variants.push({
-      id: "antigravity", label: "Antigravity", target: "mcp_config.json", language: "json",
-      instructions: "In Antigravity, open MCP Servers → Manage MCP Servers → View raw config. Merge this server entry with existing settings.",
-      code: JSON.stringify({
-        mcpServers: { [name]: { serverUrl: url.href, ...(Object.keys(headers).length ? { headers } : {}) } },
-      }, null, 2),
-      verify: "Refresh the MCP servers list in Antigravity and check the server.",
-      link: "https://antigravity.google/docs/mcp",
-    });
-  }
-  return variants;
+  return globalThis.agentConfigurations({ endpoint: url.href, name, headers, level });
 }

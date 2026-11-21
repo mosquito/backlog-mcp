@@ -180,9 +180,8 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
     )
     assert result.tasks[0].id == task.id
     assert result.tasks[0].title == task.title
-    assert result.memory[0].id == note.id
-    assert result.memory[0].shared
-    assert result.count == 2
+    assert result.memory == []
+    assert result.count == 1
     filtered = await embeddings.search(
         embeddings.Search(query=["Сбросить пароль"], status=[Status.TODO], tag="auth"),
         backlog,
@@ -190,7 +189,7 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
         transaction=backlog.transaction,
     )
     assert filtered.tasks == []
-    assert [item.id for item in filtered.memory] == [note.id]
+    assert filtered.memory == []
     global_result = await embeddings.search(
         embeddings.Search(query=["password"], all_projects=True, min_score=-1),
         backlog,
@@ -200,6 +199,7 @@ async def test_semantic_search_scopes_ids_and_hydrates_records(backlog: Backlog)
     # An explicit -1 includes every nonzero vector, even with lexical matches.
     assert len(global_result.tasks) == 3
     assert len(global_result.memory) == 2
+    assert note.id in {item.id for item in global_result.memory}
 
 
 @pytest.mark.parametrize("min_score", [None, 0.12, 0.15, 0.5])

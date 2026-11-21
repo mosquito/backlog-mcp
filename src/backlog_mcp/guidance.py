@@ -1,4 +1,4 @@
-"""Packaged Markdown shared by the guide tool, resources and Web UI."""
+"""Packaged Markdown for MCP resources and the Web UI."""
 
 from importlib.resources import files
 

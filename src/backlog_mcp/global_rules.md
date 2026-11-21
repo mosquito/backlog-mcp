@@ -1,6 +1,14 @@
 <!-- BACKLOG_START -->
 ## Backlog workflow
 
+Read `backlog://guide` for the topic index and `backlog://guide/workflow` for the
+workflow. Use MCP `resources/read`, or `mcp_resources_read(uri=...)` when the HTTP
+connection uses `resources=tool`. Discover URIs with `resources/list` and
+`resources/templates/list`, or `mcp_resources_list` in tool mode.
+Read `backlog://guide/tasks` for task rules, `backlog://guide/memory` for memory,
+`backlog://guide/search` for search syntax, and `backlog://guide/projects` for scope
+and registration.
+
 ### 1. Check project registration first
 
 The simplest way to find a project is to read its board by absolute local path.
@@ -28,7 +36,15 @@ Pass `project=` explicitly on unscoped HTTP connections.
 
 ### 2. Search context before decisions
 
-After the registration check, use `search` before investigating a problem,
+Read all `global_memory` entries returned by `project_board` in full before work.
+They are mandatory context, regardless of search relevance or list pagination.
+
+After the registration check, first call
+`memory_list(project=<returned full_name>)` for project memory.
+Keep the default compact result and use `memory_get` for relevant entries.
+The list includes personal entries and entries shared with this project.
+Use topic-specific `search` for other projects only when needed.
+Use `search` before investigating a problem,
 choosing an approach, creating tasks or memory, or asking about prior agreements.
 Use natural-language queries that describe the problem or question.
 Search again when a new question arises. Read relevant matches with `task_get`
@@ -86,7 +102,14 @@ Use `#{ID}` for task references and `#note{ID}` for memory notes.
 
 Proactively save user preferences, constraints, and decisions with `memory_save`
 or `memory_append`. Search first and update an existing record when appropriate.
-Use `shared=true` for agreements that apply across accessible projects.
+Use the selected project's memory first; read full entries only when relevant.
+Use `shared=true` to share an entry with members of this project.
+Use `shared=false` for entries visible only to the entry author.
+Choose by who needs the fact: "my dev server" is personal; "team dev servers catalog"
+is shared because the team needs it. `global_scope=true` extends the entry to all projects
+without changing its audience. Use `memory_sharing` to set shared and global_scope.
+If the project, audience or global scope is unclear, ask the user before saving or
+changing sharing. Do not guess or use defaults to resolve uncertainty.
 Use task comments for temporary findings, bugs, and implementation progress.
 Do not save code or documentation snapshots as lasting memory.
 `memory_save(body=...)` replaces the body; `memory_append` adds related context.

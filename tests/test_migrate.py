@@ -26,6 +26,61 @@ async def test_fresh_schema_and_repeat() -> None:
         assert await connection.execute_fetchall("SELECT * FROM migrations") == before
 
 
+async def test_memory_migration_preserves_access_data_ids_and_search(tmp_path: Path) -> None:
+    for path in MIGRATIONS.glob("000[123]-*.sql"):
+        (tmp_path / path.name).write_bytes(path.read_bytes())
+    async with aiosqlite.connect(":memory:") as connection:
+        await connection.execute("PRAGMA foreign_keys=ON")
+        await migrate(connection, tmp_path)
+        await connection.execute("INSERT INTO principals VALUES ('alice', 'alice', 'Alice')")
+        await connection.execute(
+            "INSERT INTO projects(id, owner, slug, name, created_at, updated_at, "
+            "created_principal, "
+            "created_computer, updated_principal, updated_computer) "
+            "VALUES (1, 'alice', 'project', 'Project', 1, 2, 'alice', 'here', 'alice', 'here')"
+        )
+        for note_id, shared in ((1, 0), (2, 1), (100, 0)):
+            await connection.execute(
+                "INSERT INTO notes VALUES (?, 1, ?, 'needle body', 'tag', ?, 1, 2, "
+                "'alice', 'here', 'alice', 'here')",
+                (note_id, f"Note {note_id}", shared),
+            )
+        await connection.execute("DELETE FROM notes WHERE id=100")
+        await connection.commit()
+        expected = await connection.execute_fetchall("SELECT * FROM notes ORDER BY id")
+        path = MIGRATIONS / "0004-memory-visibility.sql"
+        (tmp_path / path.name).write_bytes(path.read_bytes())
+        await migrate(connection, tmp_path)
+        actual = await connection.execute_fetchall("SELECT * FROM notes ORDER BY id")
+        assert actual == [(*row[:5], 1, 0, *row[6:]) for row in expected]
+        assert await connection.execute_fetchall("PRAGMA foreign_key_check") == []
+        assert await connection.execute_fetchall(
+            "SELECT rowid FROM notes_fts WHERE notes_fts MATCH 'needle' ORDER BY rowid"
+        ) == [(1,), (2,)]
+        cursor = await connection.execute(
+            "INSERT INTO notes(project_id, title, body, created_at, updated_at, "
+            "created_principal, created_computer, updated_principal, updated_computer) "
+            "VALUES (1, 'Personal', 'after', 3, 3, 'alice', 'here', 'alice', 'here')"
+        )
+        assert cursor.lastrowid > 100
+        await connection.execute("UPDATE notes SET body='changed' WHERE title='Personal'")
+        assert (
+            len(
+                await connection.execute_fetchall(
+                    "SELECT rowid FROM notes_fts WHERE notes_fts MATCH 'changed'"
+                )
+            )
+            == 1
+        )
+        await connection.execute("DELETE FROM notes WHERE title='Personal'")
+        assert (
+            await connection.execute_fetchall(
+                "SELECT rowid FROM notes_fts WHERE notes_fts MATCH 'changed'"
+            )
+            == []
+        )
+
+
 async def test_order_triggers_quoted_semicolons_and_apply_once(tmp_path: Path) -> None:
     (tmp_path / "0002-change.sql").write_text(
         "ALTER TABLE sample ADD COLUMN label TEXT;\n"
@@ -117,7 +172,7 @@ async def test_memory_database_uses_same_connection() -> None:
     store = Backlog(Path(":memory:"))
     try:
         await store.open()
-        assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 3
+        assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 4
         assert await rows(await store.open(), "SELECT * FROM task_links") == []
     finally:
         await store.close()
@@ -128,7 +183,7 @@ async def test_concurrent_startups(tmp_path: Path) -> None:
     try:
         await asyncio.gather(*(store.open() for store in stores))
         for store in stores:
-            assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 3
+            assert len(await rows(await store.open(), "SELECT * FROM migrations")) == 4
     finally:
         await asyncio.gather(*(store.close() for store in stores))
 
@@ -154,6 +209,7 @@ async def test_candidates_are_collected_on_a_worker_thread(
         MIGRATIONS / "0001-initial.sql",
         MIGRATIONS / "0002-task-assignment.sql",
         MIGRATIONS / "0003-task-edit-claims.sql",
+        MIGRATIONS / "0004-memory-visibility.sql",
     }
 
 
@@ -161,7 +217,7 @@ async def test_migration_logs_include_commit_and_no_work(caplog: pytest.LogCaptu
     caplog.set_level(logging.INFO, logger="backlog_mcp.migrate")
     async with aiosqlite.connect(":memory:") as connection:
         await migrate(connection)
-        assert "3 migrations needed" in caplog.messages
+        assert "4 migrations needed" in caplog.messages
         assert "Applying migration 0001-initial.sql" in caplog.messages
         assert any(
             message.startswith("Applied migration 0001-initial.sql (sha256=")

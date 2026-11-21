@@ -166,7 +166,7 @@ async def test_noninteractive_first_use_requires_explicit_init(
 ) -> None:
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     code, output = await registration("task", "add", "Not created")
-    assert code == 2 and "backlog init NAME" in output
+    assert code == 2 and "backlog init NAME" in " ".join(output.split())
     assert (
         await scope.read_projects(
             await registration.backlog.open(), registration.backlog.actor, computer="client"

@@ -312,7 +312,9 @@ def note_panel(item: NoteOut, *, computer: str | None = None) -> Panel:
     if item.tags:
         rows.append(("tags", Text(", ".join(item.tags), style="blue")))
     if item.shared:
-        rows.append(("shared", Text("yes, within accessible projects", style="green")))
+        rows.append(("shared", Text("yes, project members", style="green")))
+    if item.global_scope:
+        rows.append(("scope", Text("all projects", style="green")))
     rows.append(("created", Text(since(item.created_at), style="dim")))
     if item.updated_at > item.created_at:
         rows.append(("changed", Text(since(item.updated_at), style="dim")))
@@ -402,6 +404,9 @@ def board_panel(board: ProjectBoard) -> Panel:
     parts: list[RenderableType] = [fields(rows)]
     if project.description:
         parts.append(Markdown(project.description))
+    if board.global_memory:
+        parts.append(Rule("Global memory"))
+        parts.extend(note_panel(entry) for entry in board.global_memory)
     for name, section in (("ready", board.ready), ("claimed", board.claimed)):
         tasks = Table("id", "title", title=f"{name} · {section.count} total · top 10")
         for task in section.items:

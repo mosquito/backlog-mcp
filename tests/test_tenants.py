@@ -21,13 +21,19 @@ from backlog_mcp.backlog import Backlog
 
 @asynccontextmanager
 async def account(
-    server: TestServer, username: str, *, password: str = "password", adapter: str = "2026-07-28"
+    server: TestServer,
+    username: str,
+    *,
+    password: str = "password",
+    adapter: str = "2026-07-28",
+    project: str | None = None,
 ) -> AsyncIterator[Client]:
+    url = server.make_url("/mcp?computer=here")
+    if project is not None:
+        url = url.update_query(project=project)
     async with (
         ClientSession(headers={"Authorization": encode_basic_auth(username, password)}) as session,
-        Client(
-            str(server.make_url("/mcp?computer=here")), pick(adapter), session=session
-        ) as client,
+        Client(str(url), pick(adapter), session=session) as client,
     ):
         await client.initialize()
         yield client

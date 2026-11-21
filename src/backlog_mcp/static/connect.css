@@ -52,6 +52,7 @@
   min-width: 0;
 }
 .setup-block .section-heading {
+  flex-wrap: wrap;
   margin-bottom: 8px;
 }
 .setup-block h3 {

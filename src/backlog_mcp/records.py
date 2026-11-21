@@ -150,6 +150,7 @@ class Note:
     shared: bool
     created_at: float
     updated_at: float
+    global_scope: bool = False
     snippet: str | None = None
     created_by: Actor | None = None
     updated_by: Actor | None = None
@@ -207,6 +208,7 @@ def to_note(row: aiosqlite.Row) -> Note:
         body=row["body"],
         tags=split_tags(row["tags"]),
         shared=bool(row["shared"]),
+        global_scope=bool(row["global_scope"]) if "global_scope" in keys else False,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         snippet=row["snippet"] if "snippet" in keys else None,

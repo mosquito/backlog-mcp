@@ -234,7 +234,8 @@ to each selected content kind.
 Project membership and scope filter candidates before ranking and limits in both searches.
 Project results include their owner-qualified `full_name`; archived projects are excluded.
 Status filters apply to tasks and their comments. Tags apply to tasks, comments, and memory.
-Shared memory remains visible across projects only when the caller can access its source project.
+Shared memory is limited to its project. Only entries marked `global_scope=true` appear
+in other projects; the source-project membership and personal-entry checks still apply.
 Use `backlog search orchestration --kind projects --all-computers` to find accessible projects
 without selecting a current project. `min_score` (`--min-score` in the terminal) defaults to `0.15`
 and applies only to vector search. Web UI searches use `0.12`. Text matches ignore
@@ -376,8 +377,9 @@ up to ten `items`, each containing only `id` and `title`, sorted by priority, cr
 The `tasks` counters cover the whole project: total, open, claimed, unclaimed, blocked,
 done, cancelled and deleted. Blocked counts each open task once if its status is blocked
 or a dependency prevents readiness. It can overlap claimed. The total includes deleted tasks.
-The memory count includes accessible shared memory. Read a task and use `task_claim`
-before starting it: the board is a snapshot, not a reservation.
+The memory count includes your personal entries, entries shared with this project, and
+visible global entries. Read a task and use `task_claim` before starting it:
+the board is a snapshot, not a reservation.
 `backlog board [project]` shows the same summary; omitting the project uses the CLI checkout
 or `--project` selection. `project_save` with an explicit `root`
 checks that the directory exists on this computer; for another computer it takes the path as
@@ -385,6 +387,14 @@ given. A user may name any computer within their own data. Computer selection ne
 switches the authenticated user or exposes another user's projects.
 
 ### Notes
+
+Agents read every `global_memory` entry returned by `project_board` in full before work.
+The board always includes all visible global entries, independently of search relevance
+or list pagination. The CLI board prints their full contents too.
+Then agents call `memory_list(project=<full_name>)` after checking the
+project board. Keep the default compact result and read relevant entries with
+`memory_get`. The list contains your personal entries and entries shared with this project.
+Use a topic-specific `search` for context from other projects only when needed.
 
 Code changes; notes remain. Notes preserve lasting user context unavailable elsewhere:
 preferences, working agreements, people and responsibilities, business constraints, and reasons
@@ -398,25 +408,33 @@ agreements and preferences before making decisions or asking the user again. Use
 documentation, and the web for current technical facts. Search for relevant notes instead of
 reading them all; update outdated context when the user corrects it.
 
-Save proactively whenever the user provides useful new knowledge unavailable elsewhere.
+Once the project, audience and scope are clear, save new user knowledge proactively.
 Do not wait for an explicit request to remember it or for the session to end. Capture preferences,
 constraints, corrections, and reasons for decisions as they arise. Search first, then update an
 existing note or create one short note per topic. Omit guesses and duplicates.
 
 A note body holds at most 1,024 characters, including appended paragraphs.
-A note has a Markdown body, tags and a stable id, so a task body can say `see #note3`. One title per project: saving the same title again replaces the
-body. `--shared` makes a note visible from every project. Notes are in the search index with the
+A note has a Markdown body, tags and a stable id, so a task body can say `see #note3`.
+Titles are unique within your personal memory or the shared memory of a project. Saving
+the same title in that visibility scope replaces the body. `--shared` makes a note visible
+to project members; other entries are personal to their author. All entries stay within
+their source project. `global_scope=true` makes an entry available in all projects to
+the same audience. Use `memory_sharing(id, shared, global_scope)` to change both flags;
+the Web UI uses this tool too. If the project, audience or global scope is unclear,
+the agent must ask the user before saving or changing sharing, rather than guessing
+or using defaults to resolve uncertainty. Existing entries retain project access after the migration
+and are not made global. Notes are in the search index with the
 tasks. Never write a secret into a note, only where the secret lives.
 
 ```bash
 # Save this only if the user supplied it and it is unavailable elsewhere.
 backlog memory add release coordination -b "Ask Anna before scheduling a customer rollout." -t people
 backlog memory append 1 "Anna prefers one day of advance notice."
-backlog memory list                      # this project plus every shared note
+backlog memory list                      # your personal and shared entries in this project
 backlog memory show 1
 backlog memory edit 1                    # the same form, in $EDITOR
 backlog search release coordination    # relevant tasks and past agreements
-backlog memory add communication --shared # visible from every project
+backlog memory add communication --shared # visible to project members
 ```
 
 ## Serve it to an agent
@@ -560,8 +578,10 @@ Use **Connect agent** in the header (or footer on phones) to open the public set
 `/ui/static/connect.html`. It derives the MCP URL from the current origin and
 accepts Basic credentials or a Bearer token. Configuration generation runs in
 the browser without sending or saving credentials. Copy commands or configuration
-for Claude Code, Codex, and Antigravity; each tab links to its official guide.
-The Codex command applies to one session; its TOML section provides persistent setup.
+for Claude Code, Codex, Cursor, GitHub Copilot, Gemini CLI, Pi, Antigravity, and
+OpenCode; each choice links to its official guide. Choose user or project configuration.
+The shared console generator selects native resources for supported clients and
+adds `resources=tool` for clients that need resource access through tools.
 
 Task links use `/ui/#123`. Other state uses query parameters, such as
 `/ui/?view=edit#123` or `/ui/?project=owner%2Frepo&priority=high`.
@@ -610,7 +630,7 @@ the query to select content types; the All projects checkbox controls the scope.
 semantic similarity. Status applies only to tasks. Computer scope applies when
 **All projects** is selected. The browser remembers search filters in localStorage.
 Quoted expressions search text; unquoted words enable vector search. Mixed queries use both.
-The **query syntax** link reads the same packaged Markdown as `guide("search")`.
+The **query syntax** link reads the packaged Markdown at `backlog://guide/search`.
 Statistics tags open a
 filtered task list in the same scope.
 Task drafts also survive
@@ -710,8 +730,8 @@ The agent gets tools for identity (`whoami`), project access (`project_share`, `
 projects (`project_board`, `project_list`, `project_save`, `project_delete`), and content:
 `task_add`, `task_get`, `task_list`, `task_update`, `task_comment_add`, `task_comment_list`,
 `task_move`, `task_delete`, `task_link`, `task_unlink`, `memory_save`,
-`memory_append`, `memory_get`, `memory_list`, `memory_delete`, `search`, `stats`. They use the same
-boards, and the same database. `search` is the one search: it answers with the tasks, comments, and
+`memory_append`, `memory_get`, `memory_list`, `memory_sharing`, `memory_delete`, `search`, `stats`.
+They use the same boards and database. `search` answers with the tasks, comments, and
 notes that match, so a new kind of record later is one more list in the result, not a new
 tool. The resources `backlog://project`, `backlog://projects`, `backlog://tasks`,
 `backlog://tasks/{id}`, `backlog://memory` and `backlog://memory/{id}` read the same data without a
@@ -732,9 +752,19 @@ delete <slug>` does the same and asks first unless `--yes` is given. Archive wit
 `project_save` when the history should stay.
 
 The MCP initialize response points to `project_board(project)` as the entry point.
-Call `guide()` for an index or `guide(topic)` for workflow, tasks, memory, search or projects.
-The same packaged Markdown is available at `backlog://guide` and
-`backlog://guide/<topic>`. Clients choose whether to include instructions in model context.
+Read `backlog://guide` for the index and `backlog://guide/workflow` for workflow rules.
+The other topics are `backlog://guide/tasks`, `backlog://guide/memory`,
+`backlog://guide/search`, and `backlog://guide/projects`.
+Use MCP `resources/read` to read these URIs. There is no separate `guide` tool.
+
+For HTTP clients without native resource access, add `resources=tool` to the MCP URL,
+for example `https://host/mcp?computer=laptop&resources=tool`. This exposes
+`mcp_resources_list` and `mcp_resources_read` instead of the native resource interface.
+Call `mcp_resources_read(uri="backlog://guide/workflow")` to read the workflow;
+`mcp_resources_list(query="backlog://guide")` lists the guide URIs.
+Without this parameter, native resources remain the default. To expose both interfaces,
+use `resources=native&resources=tool`. Stdio uses native resources.
+Resource data, access checks, and subscriptions stay the same in either HTTP mode.
 
 The parameterless MCP prompt `install_backlog_rules`, titled **Install Backlog rules into the
 global Agents config**, returns the complete workflow and instructions to install it in global

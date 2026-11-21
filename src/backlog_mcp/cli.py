@@ -118,7 +118,7 @@ HEADERS = ("title", "status", "priority", "tags")
 #: The hints sit on top: the body is markdown, so a '#' line below the headers is a heading.
 NOTE_FORM = """\
 # Everything above the blank line sets a field; everything below it is the note, in markdown.
-# Shared: yes makes the note visible from every project. An empty title cancels the note.
+# Shared: yes makes the note visible to members of this project. An empty title cancels the note.
 # A note is a short fact: the body holds at most {limit} characters.
 Title: {title}
 Tags: {tags}
@@ -1258,7 +1258,7 @@ class Stats(Command):
 
 
 class NoteList(Command):
-    """List the notes of this project and the shared ones, or of every project."""
+    """List your personal and shared notes in the selected project, or across projects."""
 
     all_projects: bool = argclass.Argument(
         "-a", "--all-projects", default=False, help="List notes of every project on this computer"
@@ -1309,7 +1309,7 @@ class NoteAdd(Command):
     )
     tag: list[str] = repeated("-t", "--tag", help="Tag to attach. Repeat for more than one")
     shared: bool = argclass.Argument(
-        "--shared", default=False, help="Make the note visible from every project"
+        "--shared", default=False, help="Share the note with members of this project"
     )
 
     async def __call__(self) -> int:
@@ -1405,9 +1405,9 @@ class Notes(Command):
 
     list = NoteList(
         aliases=["nl"],
-        help="List the notes of this project and the shared ones",
+        help="List your personal and shared notes in this project",
         description=(
-            "Print the notes of the current project plus every shared note, most recently "
+            "Print your personal notes and project-shared notes, most recently "
             "changed first. --tag keeps one tag, --shared keeps the shared notes only, and "
             "--all-projects lists every board."
         ),
@@ -1421,9 +1421,9 @@ class Notes(Command):
         aliases=["na"],
         help="Write a note, or replace the one with that title",
         description=(
-            "Save a note from the command line. A title is unique inside a project: a new "
+            "Save a note from the command line. Titles are unique within each audience: a new "
             "title creates the note, a known one replaces its body and tags. --shared makes "
-            "the note visible from every project. Keep secrets out; write where they live."
+            "the note visible to members of this project. Keep secrets out; write where they live."
         ),
     )
     append = NoteAppend(

@@ -21,7 +21,18 @@ status alone does not identify who is working.
 Code changes; notes remain. Keep lasting user context unavailable elsewhere: preferences,
 working agreements, people and responsibilities, business constraints, and reasons for decisions.
 Exclude snapshots of implementation, architecture, configuration, bugs, and documentation.
-A useful note should still help after the code is rewritten. Project scope only organizes notes.
+A useful note should still help after the code is rewritten.
+
+After checking the board, read every `global_memory` entry in full before work.
+Global memory is mandatory context, not filtered by search relevance or list pagination.
+Then call `memory_list(project=<full_name>)`.
+Keep the default compact result and read relevant entries with `memory_get`.
+Search other projects by topic only when needed; do not load unrelated memory.
+Choose the audience by who needs the fact: `my dev server` is personal;
+`team dev servers catalog` is shared. `global_scope` extends scope, not audience.
+If the project, audience or global scope is unclear, ask the user before saving or
+changing sharing. Do not guess or use defaults to resolve uncertainty.
+Use `memory_sharing` to change shared/global flags. See `backlog://guide/memory`.
 
 Use `search` as the primary retrieval tool alongside web search to recall past agreements and
 user preferences. ALWAYS consult notes (`memory_get`, `memory_list`, `search`) whenever you do not
@@ -53,7 +64,7 @@ suggestions, verification, and proposed requirement changes. The body is the agr
 definition. Use `task_update(body=...)` only on an explicit user request or to reflect
 explicitly agreed requirements that make it incorrect or outdated. Add a separate comment
 explaining every body edit and its authorization. New findings alone do not authorize edits.
-Status transitions create separate history entries. See `guide('tasks')`.
+Status transitions create separate history entries. See `backlog://guide/tasks`.
 Follow the project's `preferred_language` for task and comment text.
 
 ## 4. File what is missing
@@ -74,7 +85,7 @@ level means here.
 
 ## 6. Retain knowledge supplied by the user
 
-Save proactively as soon as the user reveals useful new knowledge unavailable elsewhere.
+When the project, audience and scope are clear, save useful new user knowledge proactively.
 Do not wait for a request to remember it or for the session to end. Capture preferences,
 constraints, corrections, and reasons for decisions that a later session would otherwise need
 to ask about again. Search first, then update the existing note or create one short note per topic.

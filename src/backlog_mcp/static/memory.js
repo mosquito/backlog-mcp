@@ -28,7 +28,7 @@ export async function memoryPage(target, actions) {
   const visibility = select(["", "true", "false"], params.get("shared") || "", {
     "aria-label": "Memory visibility",
   });
-  ["All notes", "Shared only", "Project-only notes"].forEach(
+  ["All notes", "Shared only", "Personal only"].forEach(
     (label, i) => (visibility.options[i].text = label),
   );
   const tag = el("input", {
@@ -74,6 +74,7 @@ export async function memoryPage(target, actions) {
         { class: "memory-item-meta" },
         `Note ${note.id}`,
         ...(note.shared ? [el("span", { class: "tag" }, "Shared")] : []),
+        ...(note.global_scope ? [el("span", { class: "tag" }, "All projects")] : []),
       ),
       el("strong", {}, note.title),
       el("p", {}, note.snippet || "No preview available."),
@@ -201,7 +202,8 @@ export async function memoryPage(target, actions) {
           "div",
           { class: "memory-detail-meta" },
           link(note.project, projectRoute(note.project)),
-          el("span", { class: "tag" }, note.shared ? "Shared across projects" : "Project note"),
+          el("span", { class: "tag" }, note.shared ? "Project members" : "Personal"),
+          ...(note.global_scope ? [el("span", { class: "tag" }, "All projects")] : []),
         ),
         el(
           "div",
