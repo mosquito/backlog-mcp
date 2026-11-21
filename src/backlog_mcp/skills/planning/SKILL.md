@@ -20,7 +20,12 @@ Pass `project` explicitly to calls over an unscoped HTTP connection.
 Code changes; notes remain. Keep lasting user context unavailable elsewhere: preferences,
 working agreements, people and responsibilities, business constraints, and reasons for decisions.
 Exclude snapshots of implementation, architecture, configuration, bugs, and documentation.
-A useful note should still help after the code is rewritten. Project scope only organizes notes.
+A useful note should still help after the code is rewritten.
+
+After checking the board, first call `memory_list(project=<full_name>, shared=false)`.
+Keep the default compact result and read relevant entries with `memory_get`.
+Find shared agreements with topic-specific `search`; do not load all shared memory.
+See `backlog://guide/memory`.
 
 Use `search` as the primary retrieval tool alongside web search to recall past agreements and
 user preferences. ALWAYS consult notes (`memory_get`, `memory_list`, `search`) whenever you do not

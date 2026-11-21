@@ -386,6 +386,11 @@ switches the authenticated user or exposes another user's projects.
 
 ### Notes
 
+Agents first call `memory_list(project=<full_name>, shared=false)` after checking the
+project board. Keep the default compact result and read relevant entries with
+`memory_get`. An omitted `shared` filter also includes shared entries from other projects.
+Find shared agreements with a topic-specific `search` instead of loading all shared memory.
+
 Code changes; notes remain. Notes preserve lasting user context unavailable elsewhere:
 preferences, working agreements, people and responsibilities, business constraints, and reasons
 for decisions. They concern the context around the work, not the project's implementation.

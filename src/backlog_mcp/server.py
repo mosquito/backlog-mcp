@@ -104,6 +104,9 @@ log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """Backlog is a task tracker and memory for agents.
 Start with project_board(project), then read backlog://guide/workflow.
+First list memory_list(project=<returned full_name>, shared=false) with compact results.
+Read relevant entries with memory_get. Find shared agreements with topic-specific search;
+do not load all shared memory into context.
 Read backlog://guide for the topic index. Use resources/read, or mcp_resources_read(uri=...)
 when connected with resources=tool. Discover resource addresses with resources/list and
 resources/templates/list, or mcp_resources_list in tool mode.
@@ -892,7 +895,11 @@ class ListNotes(BaseModel):
     all_computers: bool = Field(default=False, description="Every project of every computer.")
     tag: str | None = None
     shared: bool | None = Field(
-        default=None, description="Only shared memory entries, or only local."
+        default=None,
+        description=(
+            "False lists unshared entries; use it with project for initial context. "
+            "True lists shared entries. Null includes both and shared entries from other projects."
+        ),
     )
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
@@ -952,8 +959,9 @@ async def project_board(
     args: ReadBoard, backlog: Backlog, connection: aiosqlite.Connection
 ) -> ProjectBoard:
     """Start here for project context, counts and ready/claimed tasks.
-    Read memory_list(full=true) before work. Verify principal and roots, and follow
-    preferred_language. Read task_get before claiming; the board is not a reservation.
+    Verify principal and roots, then call memory_list(project=<returned full_name>, shared=false).
+    Read relevant entries with memory_get and follow preferred_language.
+    Read task_get before claiming; the board is not a reservation.
     This read never creates a project or changes connection scope. See backlog://guide/workflow."""
     project = await backlog.lookup(args.project)
     shown = project_out(project, computer=backlog.computer, principal=backlog.principal)
@@ -1483,8 +1491,9 @@ async def memory_save(
     args: SaveNote, backlog: Backlog, connection: aiosqlite.Connection, transaction: Transaction
 ) -> NoteOut:
     """Record a lasting agreement, preference or invariant the user stated.
-    Read project memory first and update an existing entry by id instead of creating a
-    near-duplicate. A correction rewrites the body with the current truth; do not append
+    Check memory_list(project=..., shared=false) and read relevant entries with memory_get.
+    Update an existing entry by id instead of creating a near-duplicate.
+    A correction rewrites the body with the current truth; do not append
     history.
     Do not store task status, progress or code snapshots; use tasks and comments.
     Body replaces the whole body, at most 1024 characters. See backlog://guide/memory."""
@@ -1548,7 +1557,8 @@ async def memory_append(
 @registry.tool(title="Read a memory entry", annotations=Hint.READ_ONLY | ~Hint.OPEN_WORLD)
 async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
     """Read one memory entry by id or title. IDs work across accessible projects; titles resolve
-    within project scope and shared memory. See backlog://guide/memory."""
+    within project scope and shared memory. Read entries relevant to the current work.
+    See backlog://guide/memory."""
     return note_out(await note_of(backlog, args.id, args.title, args.project))
 
 
@@ -1556,8 +1566,11 @@ async def memory_get(args: ReadNote, backlog: Backlog) -> NoteOut:
 async def memory_list(
     args: ListNotes, backlog: Backlog, connection: aiosqlite.Connection
 ) -> Notes | FullNotes:
-    """List project memory, including accessible shared entries. Read it with full=true before
-    working on a project; project memory is kept small on purpose. See backlog://guide/memory."""
+    """List memory entries. For initial context, use project=<full_name>, shared=false.
+    Keep the default compact result, then read relevant entries with memory_get.
+    An omitted shared filter includes shared entries from other projects.
+    Find shared agreements with topic-specific search instead of loading them all.
+    See backlog://guide/memory."""
     reach = await backlog.reach(
         args.project,
         all_projects=args.all_projects,
@@ -1732,7 +1745,9 @@ async def one_task(
 async def known_notes(
     args: Nothing, backlog: Backlog, connection: aiosqlite.Connection
 ) -> list[dict[str, Any]]:
-    """Memory entries in connection project scope, including accessible shared entries."""
+    """Full memory entries in connection project scope, including accessible shared entries.
+    For initial context, use memory_list(project=<full_name>, shared=false) instead.
+    See backlog://guide/memory."""
     project = await backlog.resolve(None)
     found = await read_notes(connection, backlog.actor, project_id=project.id, limit=200)
     return [note_out(item).model_dump(mode="json") for item in found]

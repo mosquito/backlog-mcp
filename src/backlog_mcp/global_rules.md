@@ -36,7 +36,12 @@ Pass `project=` explicitly on unscoped HTTP connections.
 
 ### 2. Search context before decisions
 
-After the registration check, use `search` before investigating a problem,
+After the registration check, first call
+`memory_list(project=<returned full_name>, shared=false)` for project memory.
+Keep the default compact result and use `memory_get` for relevant entries.
+Without `shared=false`, the list also includes shared entries from other projects.
+Find shared agreements with topic-specific `search`; do not load all shared memory.
+Use `search` before investigating a problem,
 choosing an approach, creating tasks or memory, or asking about prior agreements.
 Use natural-language queries that describe the problem or question.
 Search again when a new question arises. Read relevant matches with `task_get`
@@ -94,6 +99,7 @@ Use `#{ID}` for task references and `#note{ID}` for memory notes.
 
 Proactively save user preferences, constraints, and decisions with `memory_save`
 or `memory_append`. Search first and update an existing record when appropriate.
+Use the selected project's memory first; read full entries only when relevant.
 Use `shared=true` for agreements that apply across accessible projects.
 Use task comments for temporary findings, bugs, and implementation progress.
 Do not save code or documentation snapshots as lasting memory.

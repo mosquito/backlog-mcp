@@ -1,6 +1,9 @@
 # Memory
 
-Read project memory with `memory_list(full=true)` before work or saving an entry.
+First call `memory_list(project=<full_name>, shared=false)` after checking the board.
+Keep the default compact result; use `memory_get` to read relevant entries in full.
+Without `shared=false`, the list includes shared entries from other projects.
+Find shared agreements with topic-specific `search`; do not load all shared memory.
 Keep it small. Store lasting agreements, preferences and invariants stated by the user.
 Update a matching entry by id instead of adding a near-duplicate.
 
